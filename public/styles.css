@@ -1,0 +1,395 @@
+:root {
+  color-scheme: light dark;
+  font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #0c111d;
+  color: #e8edf5;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: radial-gradient(circle at top, rgba(22, 33, 62, 0.7), rgba(10, 15, 24, 0.95));
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.container {
+  width: min(900px, 90vw);
+  margin: 3rem auto;
+  padding: 2.5rem;
+  border-radius: 24px;
+  background: rgba(12, 17, 29, 0.85);
+  box-shadow: 0 20px 45px rgba(8, 12, 20, 0.45);
+  backdrop-filter: blur(18px);
+  border: 1px solid rgba(88, 132, 255, 0.2);
+}
+
+header h1 {
+  margin: 0;
+  font-size: 2.1rem;
+}
+
+header p {
+  margin-top: 0.5rem;
+  color: rgba(232, 237, 245, 0.75);
+}
+
+.tabs {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 2.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid rgba(88, 132, 255, 0.2);
+}
+
+.tab {
+  padding: 0.75rem 1.25rem;
+  border-radius: 999px;
+  background: rgba(88, 132, 255, 0.12);
+  border: 1px solid transparent;
+  color: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+}
+
+.tab:hover {
+  background: rgba(88, 132, 255, 0.2);
+  transform: translateY(-1px);
+}
+
+.tab.active {
+  background: linear-gradient(135deg, rgba(88, 116, 255, 0.38), rgba(78, 208, 255, 0.55));
+  border-color: rgba(88, 132, 255, 0.35);
+}
+
+.tab:focus-visible {
+  outline: 2px solid rgba(78, 208, 255, 0.6);
+  outline-offset: 3px;
+}
+
+.tab-panel {
+  display: none;
+  margin-top: 2rem;
+}
+
+.tab-panel.active {
+  display: block;
+}
+
+.tab-panel[hidden] {
+  display: none !important;
+}
+
+.upload-section {
+  margin-top: 2rem;
+  padding: 1.5rem;
+  border-radius: 16px;
+  background: rgba(18, 27, 43, 0.9);
+  border: 1px solid rgba(88, 132, 255, 0.15);
+}
+
+.quickbooks-section,
+.companies-section,
+.matcher-section {
+  padding: 1.5rem;
+  border-radius: 16px;
+  background: rgba(18, 27, 43, 0.9);
+  border: 1px solid rgba(88, 132, 255, 0.15);
+}
+
+.quickbooks-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: center;
+  margin-top: 1.5rem;
+}
+
+#qb-add-company {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.9rem 1.6rem;
+  border: none;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #5874ff, #4ed0ff);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+#qb-add-company:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 25px rgba(72, 120, 255, 0.35);
+}
+
+.company-list {
+  list-style: none;
+  margin: 2rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.company-edit-list .company-edit-card {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  padding: 1.2rem 1.3rem;
+  border-radius: 14px;
+  background: rgba(12, 19, 31, 0.95);
+  border: 1px solid rgba(88, 132, 255, 0.18);
+}
+
+.company-edit-title {
+  flex: 1 1 100%;
+  font-weight: 600;
+  font-size: 1.05rem;
+}
+
+.company-edit-meta {
+  flex: 1 1 100%;
+  margin-bottom: 0.5rem;
+  color: rgba(232, 237, 245, 0.6);
+  font-size: 0.85rem;
+}
+
+.company-edit-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 1rem;
+  width: 100%;
+}
+
+.company-edit-form .input-group {
+  flex: 1 1 220px;
+}
+
+.company-edit-form button[type="submit"] {
+  flex: 0 0 auto;
+}
+
+.company-list .company {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1.1rem 1.3rem;
+  border-radius: 14px;
+  background: rgba(12, 19, 31, 0.95);
+  border: 1px solid rgba(88, 132, 255, 0.18);
+}
+
+.company-list .company-name {
+  font-weight: 600;
+  font-size: 1.05rem;
+}
+
+.company-list .company-meta {
+  color: rgba(232, 237, 245, 0.6);
+  font-size: 0.9rem;
+}
+
+.company-list .empty {
+  padding: 1.1rem 1.3rem;
+  border-radius: 14px;
+  background: rgba(12, 19, 31, 0.95);
+  border: 1px dashed rgba(88, 132, 255, 0.25);
+  text-align: center;
+  color: rgba(232, 237, 245, 0.55);
+}
+
+#invoice-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: center;
+}
+
+.file-input {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.9rem 1.3rem;
+  border-radius: 12px;
+  background: rgba(88, 132, 255, 0.15);
+  cursor: pointer;
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+
+.file-input span {
+  white-space: nowrap;
+}
+
+.file-input:hover {
+  background: rgba(88, 132, 255, 0.25);
+  transform: translateY(-1px);
+}
+
+.file-input input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+button[type="submit"] {
+  padding: 0.9rem 1.6rem;
+  border: none;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #5874ff, #4ed0ff);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+button[type="submit"]:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 25px rgba(72, 120, 255, 0.35);
+}
+
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+  background: rgba(8, 12, 20, 0.85);
+  border: 1px solid rgba(88, 132, 255, 0.25);
+  border-radius: 12px;
+  padding: 0.75rem 1rem;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: rgba(78, 208, 255, 0.6);
+  box-shadow: 0 0 0 3px rgba(78, 208, 255, 0.18);
+}
+
+.hint {
+  margin-top: 1rem;
+  color: rgba(232, 237, 245, 0.6);
+  font-size: 0.9rem;
+}
+
+.status,
+.results,
+.duplicate {
+  margin-top: 1.5rem;
+  padding: 1.5rem;
+  border-radius: 14px;
+  background: rgba(18, 27, 43, 0.85);
+  border: 1px solid rgba(88, 132, 255, 0.15);
+}
+
+.status[data-state="error"] {
+  border-color: rgba(255, 107, 129, 0.45);
+  background: rgba(47, 16, 25, 0.9);
+}
+
+pre {
+  overflow-x: auto;
+  background: rgba(8, 12, 20, 0.88);
+  border-radius: 12px;
+  padding: 1.1rem;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.matcher-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  margin-top: 1.5rem;
+}
+
+.matcher-fieldset {
+  border: 1px solid rgba(88, 132, 255, 0.2);
+  border-radius: 16px;
+  padding: 1.25rem;
+  background: rgba(12, 19, 31, 0.9);
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.matcher-fieldset legend {
+  padding: 0 0.5rem;
+  font-weight: 600;
+  color: rgba(232, 237, 245, 0.8);
+}
+
+.matcher-fieldset.readonly input[readonly] {
+  background: rgba(8, 12, 20, 0.65);
+  border-style: dashed;
+}
+
+.input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.input-group span {
+  font-size: 0.85rem;
+  color: rgba(232, 237, 245, 0.7);
+}
+
+.matcher-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.matcher-actions button[type="submit"] {
+  width: auto;
+  padding-inline: 2rem;
+}
+
+@media (max-width: 640px) {
+  .container {
+    padding: 1.8rem;
+  }
+
+  .tabs {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .tab {
+    width: 100%;
+  }
+
+  #invoice-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .file-input,
+  button[type="submit"],
+  #qb-add-company {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .quickbooks-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .matcher-fieldset {
+    grid-template-columns: 1fr;
+  }
+}

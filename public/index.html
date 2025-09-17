@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Invoice Tools</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="container">
+    <header>
+      <h1>Invoice Toolkit</h1>
+      <p>Parse invoices with Gemini or connect QuickBooks companies for downstream matching.</p>
+    </header>
+
+    <nav class="tabs" role="tablist">
+      <button id="parser-tab-button" class="tab active" data-target="parser-tab" role="tab" aria-selected="true" aria-controls="parser-tab">Parser</button>
+      <button id="quickbooks-tab-button" class="tab" data-target="quickbooks-tab" role="tab" aria-selected="false" aria-controls="quickbooks-tab">QuickBooks Connect</button>
+      <button id="companies-tab-button" class="tab" data-target="companies-tab" role="tab" aria-selected="false" aria-controls="companies-tab">Companies</button>
+      <button id="matcher-tab-button" class="tab" data-target="matcher-tab" role="tab" aria-selected="false" aria-controls="matcher-tab">Matcher</button>
+    </nav>
+
+    <section id="parser-tab" class="tab-panel active" role="tabpanel" aria-labelledby="parser-tab-button">
+      <section class="upload-section">
+        <form id="invoice-form">
+          <label class="file-input">
+            <span>Select invoice file</span>
+            <input id="invoice" name="invoice" type="file" accept=".pdf,.png,.jpg,.jpeg,.heic,.tif,.tiff,.txt,.doc,.docx,.json,.xml" required />
+          </label>
+          <button type="submit">Parse Invoice</button>
+        </form>
+        <p class="hint">The file is processed locally and sent securely to Google Gemini for parsing. No data is retained beyond the stored JSON entry.</p>
+      </section>
+
+      <section id="status" class="status" hidden></section>
+
+      <section id="results" class="results" hidden>
+        <h2>Parsed Invoice</h2>
+        <pre id="invoice-json"></pre>
+      </section>
+
+      <section id="duplicate" class="duplicate" hidden>
+        <h2>Possible Duplicate</h2>
+        <p id="duplicate-reason"></p>
+        <pre id="duplicate-json"></pre>
+      </section>
+    </section>
+
+    <section id="quickbooks-tab" class="tab-panel" role="tabpanel" hidden aria-labelledby="quickbooks-tab-button">
+      <section class="quickbooks-section">
+        <p>Link one or more QuickBooks Online companies so invoices can be reconciled downstream.</p>
+        <div class="quickbooks-actions">
+          <button id="qb-add-company" type="button">Add Company</button>
+          <p class="hint">Authorize as many companies as needed. Each connection is stored securely in JSON.</p>
+        </div>
+        <section id="qb-status" class="status" hidden></section>
+        <ul id="qb-company-list" class="company-list">
+          <li class="empty">No companies connected yet.</li>
+        </ul>
+      </section>
+    </section>
+
+    <section id="companies-tab" class="tab-panel" role="tabpanel" hidden aria-labelledby="companies-tab-button">
+      <section class="companies-section">
+        <p>Review connected companies and update the display name shown across the toolkit.</p>
+        <section id="companies-status" class="status" hidden></section>
+        <ul id="company-management-list" class="company-list company-edit-list">
+          <li class="empty">Connect a QuickBooks company to edit its name.</li>
+        </ul>
+      </section>
+    </section>
+
+    <section id="matcher-tab" class="tab-panel" role="tabpanel" hidden aria-labelledby="matcher-tab-button">
+      <section class="matcher-section">
+        <p>Match parsed invoice fields to QuickBooks references before export.</p>
+        <section id="match-status" class="status" hidden></section>
+        <form id="match-form" class="matcher-form">
+          <fieldset class="matcher-fieldset">
+            <legend>QuickBooks Match</legend>
+            <label class="input-group">
+              <span>QuickBooks Company</span>
+              <select id="match-company" name="company" required>
+                <option value="">Connect a QuickBooks company to select it</option>
+              </select>
+            </label>
+            <label class="input-group">
+              <span>Vendor</span>
+              <input id="match-vendor" name="vendor" type="text" placeholder="Vendor" />
+            </label>
+            <label class="input-group">
+              <span>Account / Category</span>
+              <input id="match-account" name="account" type="text" placeholder="e.g. Cost of Goods Sold" />
+            </label>
+            <label class="input-group">
+              <span>Tax Rate</span>
+              <input id="match-tax-rate" name="taxRate" type="text" placeholder="e.g. Standard 20%" />
+            </label>
+          </fieldset>
+
+          <fieldset class="matcher-fieldset readonly">
+            <legend>Invoice Details</legend>
+            <label class="input-group">
+              <span>Invoice Number</span>
+              <input id="match-invoice-number" name="invoiceNumber" type="text" readonly />
+            </label>
+            <label class="input-group">
+              <span>Invoice Name</span>
+              <input id="match-invoice-name" name="invoiceName" type="text" readonly />
+            </label>
+            <label class="input-group">
+              <span>Subtotal</span>
+              <input id="match-subtotal" name="subtotal" type="text" readonly />
+            </label>
+            <label class="input-group">
+              <span>Tax</span>
+              <input id="match-tax" name="tax" type="text" readonly />
+            </label>
+            <label class="input-group">
+              <span>Total (Incl. Tax)</span>
+              <input id="match-total" name="total" type="text" readonly />
+            </label>
+          </fieldset>
+
+          <div class="matcher-actions">
+            <button type="submit">Save Match</button>
+          </div>
+        </form>
+        <p class="hint">Matches are stored locally in your browser so you can refine them before posting to QuickBooks.</p>
+      </section>
+    </section>
+  </main>
+
+  <script src="app.js" defer></script>
+</body>
+</html>
