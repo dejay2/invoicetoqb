@@ -110,6 +110,7 @@ app.post('/api/parse-invoice', upload.single('invoice'), async (req, res) => {
     const storagePayload = {
       ...enrichedInvoice,
       duplicateOf: duplicateMatch?.metadata?.checksum || null,
+      status: 'archive',
     };
 
     await persistInvoice(existingInvoices, storagePayload);
@@ -219,6 +220,59 @@ app.post('/api/quickbooks/companies/:realmId/metadata/refresh', async (req, res)
     }
     console.error('Failed to refresh QuickBooks metadata', error);
     res.status(500).json({ error: 'Failed to refresh QuickBooks metadata.' });
+  }
+});
+
+app.get('/api/invoices', async (req, res) => {
+  try {
+    const invoices = await readStoredInvoices();
+    res.json({ invoices });
+  } catch (error) {
+    console.error('Failed to load stored invoices', error);
+    res.status(500).json({ error: 'Failed to load stored invoices.' });
+  }
+});
+
+app.post('/api/invoices/:checksum/status', async (req, res) => {
+  const checksum = req.params.checksum;
+  const { status } = req.body || {};
+
+  if (!checksum) {
+    return res.status(400).json({ error: 'Checksum is required.' });
+  }
+
+  if (status !== 'archive' && status !== 'review') {
+    return res.status(400).json({ error: 'Status must be archive or review.' });
+  }
+
+  try {
+    const updated = await updateStoredInvoiceStatus(checksum, status);
+    if (!updated) {
+      return res.status(404).json({ error: 'Invoice not found.' });
+    }
+    res.json({ invoice: updated });
+  } catch (error) {
+    console.error('Failed to update invoice status', error);
+    res.status(500).json({ error: 'Failed to update invoice status.' });
+  }
+});
+
+app.delete('/api/invoices/:checksum', async (req, res) => {
+  const checksum = req.params.checksum;
+
+  if (!checksum) {
+    return res.status(400).json({ error: 'Checksum is required.' });
+  }
+
+  try {
+    const deleted = await deleteStoredInvoice(checksum);
+    if (!deleted) {
+      return res.status(404).json({ error: 'Invoice not found.' });
+    }
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Failed to delete invoice', error);
+    res.status(500).json({ error: 'Failed to delete invoice.' });
   }
 });
 
@@ -918,7 +972,11 @@ async function safeReadJson(response) {
 async function readStoredInvoices() {
   try {
     const file = await fs.readFile(DATA_FILE, 'utf-8');
-    return JSON.parse(file);
+    const parsed = JSON.parse(file);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.map((entry) => normalizeStoredInvoice(entry)).filter(Boolean);
   } catch (err) {
     if (err.code === 'ENOENT') {
       return [];
@@ -928,9 +986,64 @@ async function readStoredInvoices() {
 }
 
 async function persistInvoice(existingInvoices, invoice) {
-  const updated = [...existingInvoices, invoice];
+  const normalizedExisting = Array.isArray(existingInvoices)
+    ? existingInvoices.map((entry) => normalizeStoredInvoice(entry)).filter(Boolean)
+    : [];
+  const normalizedInvoice = normalizeStoredInvoice(invoice);
+  const updated = normalizedInvoice ? [...normalizedExisting, normalizedInvoice] : normalizedExisting;
+  await writeStoredInvoices(updated);
+}
+
+async function writeStoredInvoices(invoices) {
   await fs.mkdir(path.dirname(DATA_FILE), { recursive: true });
-  await fs.writeFile(DATA_FILE, JSON.stringify(updated, null, 2));
+  await fs.writeFile(DATA_FILE, JSON.stringify(invoices, null, 2));
+}
+
+async function updateStoredInvoiceStatus(checksum, status) {
+  if (!checksum) {
+    return null;
+  }
+
+  const invoices = await readStoredInvoices();
+  const index = invoices.findIndex((entry) => entry?.metadata?.checksum === checksum);
+  if (index === -1) {
+    return null;
+  }
+
+  invoices[index] = {
+    ...invoices[index],
+    status,
+  };
+
+  await writeStoredInvoices(invoices);
+  return invoices[index];
+}
+
+async function deleteStoredInvoice(checksum) {
+  if (!checksum) {
+    return false;
+  }
+
+  const invoices = await readStoredInvoices();
+  const filtered = invoices.filter((entry) => entry?.metadata?.checksum !== checksum);
+  if (filtered.length === invoices.length) {
+    return false;
+  }
+
+  await writeStoredInvoices(filtered);
+  return true;
+}
+
+function normalizeStoredInvoice(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+
+  const status = entry.status === 'review' ? 'review' : 'archive';
+  return {
+    ...entry,
+    status,
+  };
 }
 
 function normalise(value) {

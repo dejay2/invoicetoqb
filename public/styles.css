@@ -345,6 +345,217 @@ pre {
   cursor: not-allowed;
 }
 
+.selector-card {
+  margin-top: 2.5rem;
+  padding: 1.5rem;
+  border-radius: 16px;
+  background: rgba(18, 27, 43, 0.9);
+  border: 1px solid rgba(88, 132, 255, 0.15);
+  display: flex;
+  gap: 1.5rem;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.selector-field {
+  flex: 1 1 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.selector-field label {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.primary-button,
+.secondary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.85rem 1.5rem;
+  border-radius: 12px;
+  border: none;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.primary-button {
+  background: linear-gradient(135deg, #5874ff, #4ed0ff);
+  color: #fff;
+}
+
+.primary-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 25px rgba(72, 120, 255, 0.35);
+}
+
+.primary-button:disabled,
+.secondary-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+
+.secondary-button {
+  background: rgba(88, 132, 255, 0.18);
+  color: #e8edf5;
+  border: 1px solid rgba(88, 132, 255, 0.35);
+}
+
+.secondary-button:hover {
+  background: rgba(88, 132, 255, 0.28);
+}
+
+.company-dashboard {
+  margin-top: 2.5rem;
+}
+
+.company-panel {
+  margin-top: 2rem;
+}
+
+.panel-card {
+  padding: 1.5rem;
+  border-radius: 16px;
+  background: rgba(18, 27, 43, 0.9);
+  border: 1px solid rgba(88, 132, 255, 0.15);
+}
+
+.panel-card h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.2rem;
+}
+
+.panel-summary {
+  color: rgba(232, 237, 245, 0.7);
+  white-space: pre-line;
+  margin-bottom: 1.25rem;
+}
+
+.panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.entity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.entity-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 1rem 1.1rem;
+  border-radius: 12px;
+  background: rgba(12, 19, 31, 0.9);
+  border: 1px solid rgba(88, 132, 255, 0.12);
+}
+
+.entity-list .empty {
+  padding: 1rem 1.1rem;
+  border-radius: 12px;
+  background: rgba(12, 19, 31, 0.6);
+  border: 1px dashed rgba(88, 132, 255, 0.25);
+  color: rgba(232, 237, 245, 0.6);
+}
+
+.entity-name {
+  font-weight: 600;
+}
+
+.entity-meta {
+  font-size: 0.85rem;
+  color: rgba(232, 237, 245, 0.65);
+}
+
+.table-wrapper {
+  margin-top: 1.5rem;
+  overflow-x: auto;
+}
+
+.archive-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 640px;
+}
+
+.archive-table thead {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.75rem;
+  color: rgba(232, 237, 245, 0.6);
+}
+
+.archive-table th,
+.archive-table td {
+  padding: 0.9rem 1rem;
+  border-bottom: 1px solid rgba(88, 132, 255, 0.12);
+  text-align: left;
+}
+
+.archive-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.cell-primary {
+  font-weight: 600;
+}
+
+.cell-secondary {
+  font-size: 0.82rem;
+  color: rgba(232, 237, 245, 0.6);
+  margin-top: 0.2rem;
+}
+
+.table-actions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.table-action {
+  padding: 0.55rem 1rem;
+  border-radius: 10px;
+  border: 1px solid rgba(88, 132, 255, 0.3);
+  background: rgba(18, 27, 43, 0.8);
+  color: #e8edf5;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s ease;
+}
+
+.table-action:hover {
+  background: rgba(88, 132, 255, 0.28);
+  transform: translateY(-1px);
+}
+
+.table-action.destructive {
+  border-color: rgba(255, 107, 129, 0.4);
+  color: #ff6b81;
+}
+
+.table-action.destructive:hover {
+  background: rgba(255, 107, 129, 0.18);
+}
+
+.empty-row td {
+  text-align: center;
+  color: rgba(232, 237, 245, 0.6);
+}
+
 .matcher-form {
   display: flex;
   flex-direction: column;
