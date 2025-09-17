@@ -32,6 +32,7 @@ const QUICKBOOKS_SCOPES = process.env.QUICKBOOKS_SCOPES || 'com.intuit.quickbook
 const QUICKBOOKS_ENVIRONMENT = process.env.QUICKBOOKS_ENVIRONMENT || 'sandbox';
 const QUICKBOOKS_API_BASE_URL = process.env.QUICKBOOKS_API_BASE_URL || (QUICKBOOKS_ENVIRONMENT === 'production' ? 'https://quickbooks.api.intuit.com' : 'https://sandbox-quickbooks.api.intuit.com');
 const QUICKBOOKS_COMPANIES_FILE = path.join(__dirname, '..', 'data', 'quickbooks_companies.json');
+const QUICKBOOKS_METADATA_DIR = path.join(__dirname, '..', 'data', 'quickbooks');
 const QUICKBOOKS_AUTH_URL = 'https://appcenter.intuit.com/connect/oauth2';
 const QUICKBOOKS_TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
 const QUICKBOOKS_STATE_TTL_MS = 10 * 60 * 1000;
@@ -144,25 +145,80 @@ app.get('/api/quickbooks/companies', async (req, res) => {
 
 app.patch('/api/quickbooks/companies/:realmId', async (req, res) => {
   const realmId = req.params.realmId;
-  const { companyName } = req.body || {};
+  const { companyName, legalName } = req.body || {};
 
   if (!realmId) {
     return res.status(400).json({ error: 'Realm ID is required.' });
   }
 
-  if (typeof companyName !== 'string' || !companyName.trim()) {
-    return res.status(400).json({ error: 'Company name must be a non-empty string.' });
+  if (companyName !== undefined && (typeof companyName !== 'string' || !companyName.trim())) {
+    return res.status(400).json({ error: 'Company name must be a non-empty string when provided.' });
+  }
+
+  if (legalName !== undefined && typeof legalName !== 'string') {
+    return res.status(400).json({ error: 'Legal name must be a string.' });
+  }
+
+  if (companyName === undefined && legalName === undefined) {
+    return res.status(400).json({ error: 'Provide companyName and/or legalName to update.' });
+  }
+
+  const updates = {};
+  if (companyName !== undefined) {
+    updates.companyName = companyName.trim();
+  }
+
+  if (legalName !== undefined) {
+    updates.legalName = legalName.trim() ? legalName.trim() : null;
   }
 
   try {
-    const updated = await updateQuickBooksCompanyName(realmId, companyName.trim());
+    const updated = await updateQuickBooksCompanyFields(realmId, updates);
     res.json({ company: sanitizeQuickBooksCompany(updated) });
   } catch (error) {
     if (error.code === 'NOT_FOUND') {
       return res.status(404).json({ error: 'QuickBooks company not found.' });
     }
-    console.error('Failed to update QuickBooks company name', error);
-    res.status(500).json({ error: 'Failed to update QuickBooks company name.' });
+    console.error('Failed to update QuickBooks company details', error);
+    res.status(500).json({ error: 'Failed to update QuickBooks company details.' });
+  }
+});
+
+app.get('/api/quickbooks/companies/:realmId/metadata', async (req, res) => {
+  const realmId = req.params.realmId;
+
+  if (!realmId) {
+    return res.status(400).json({ error: 'Realm ID is required.' });
+  }
+
+  try {
+    const metadata = await readQuickBooksCompanyMetadata(realmId);
+    res.json({ metadata });
+  } catch (error) {
+    if (error.code === 'NOT_FOUND') {
+      return res.status(404).json({ error: 'QuickBooks company not found.' });
+    }
+    console.error('Failed to load QuickBooks metadata', error);
+    res.status(500).json({ error: 'Failed to load QuickBooks metadata.' });
+  }
+});
+
+app.post('/api/quickbooks/companies/:realmId/metadata/refresh', async (req, res) => {
+  const realmId = req.params.realmId;
+
+  if (!realmId) {
+    return res.status(400).json({ error: 'Realm ID is required.' });
+  }
+
+  try {
+    const metadata = await fetchAndStoreQuickBooksMetadata(realmId, { force: true });
+    res.json({ metadata });
+  } catch (error) {
+    if (error.code === 'NOT_FOUND') {
+      return res.status(404).json({ error: 'QuickBooks company not found.' });
+    }
+    console.error('Failed to refresh QuickBooks metadata', error);
+    res.status(500).json({ error: 'Failed to refresh QuickBooks metadata.' });
   }
 });
 
@@ -211,9 +267,11 @@ async function handleQuickBooksCallback(req, res) {
     const tokenSet = await exchangeQuickBooksCode(code);
 
     let companyName = realmId;
+    let legalName = null;
     try {
       const companyInfo = await fetchQuickBooksCompanyInfo(realmId, tokenSet.accessToken);
       companyName = companyInfo?.CompanyInfo?.CompanyName || companyName;
+      legalName = companyInfo?.CompanyInfo?.LegalName || companyName;
     } catch (infoError) {
       console.warn('QuickBooks company info lookup failed', infoError);
       if (infoError.isQuickBooksError && infoError.status === 403) {
@@ -223,10 +281,19 @@ async function handleQuickBooksCallback(req, res) {
       }
     }
 
+    if (!legalName) {
+      legalName = companyName;
+    }
+
     await storeQuickBooksCompany({
       realmId,
       companyName,
+      legalName,
       tokens: tokenSet,
+    });
+
+    fetchAndStoreQuickBooksMetadata(realmId).catch((error) => {
+      console.warn(`QuickBooks metadata prefetch failed for ${realmId}`, error.message || error);
     });
 
     return res.redirect(`/?quickbooks=connected&company=${encodeURIComponent(companyName)}`);
@@ -242,6 +309,10 @@ app.use((req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Invoice parser listening on http://localhost:${PORT}`);
+});
+
+warmQuickBooksMetadata().catch((error) => {
+  console.error('QuickBooks metadata warmup failed', error);
 });
 
 async function exchangeQuickBooksCode(code) {
@@ -334,27 +405,31 @@ async function readQuickBooksCompanies() {
   }
 }
 
-async function storeQuickBooksCompany({ realmId, companyName, tokens }) {
+async function storeQuickBooksCompany({ realmId, companyName, legalName, tokens }) {
   const companies = await readQuickBooksCompanies();
   const now = new Date().toISOString();
   const existingIndex = companies.findIndex((entry) => entry.realmId === realmId);
+  const existing = existingIndex >= 0 ? companies[existingIndex] : {};
 
   const record = {
+    ...existing,
     realmId,
-    companyName,
+    companyName: companyName ?? existing.companyName ?? null,
+    legalName: legalName ?? existing.legalName ?? null,
     environment: QUICKBOOKS_ENVIRONMENT,
-    connectedAt: existingIndex >= 0 ? companies[existingIndex].connectedAt : now,
+    connectedAt: existing.connectedAt || now,
     updatedAt: now,
-    tokens,
+    tokens: tokens || existing.tokens || null,
   };
 
   if (existingIndex >= 0) {
-    companies[existingIndex] = { ...companies[existingIndex], ...record };
+    companies[existingIndex] = record;
   } else {
     companies.push(record);
   }
 
   await persistQuickBooksCompanies(companies);
+  return record;
 }
 
 async function persistQuickBooksCompanies(companies) {
@@ -362,7 +437,7 @@ async function persistQuickBooksCompanies(companies) {
   await fs.writeFile(QUICKBOOKS_COMPANIES_FILE, JSON.stringify(companies, null, 2));
 }
 
-async function updateQuickBooksCompanyName(realmId, companyName) {
+async function updateQuickBooksCompanyFields(realmId, updates) {
   const companies = await readQuickBooksCompanies();
   const index = companies.findIndex((entry) => entry.realmId === realmId);
 
@@ -373,15 +448,388 @@ async function updateQuickBooksCompanyName(realmId, companyName) {
   }
 
   const now = new Date().toISOString();
-  const record = {
+  const next = {
     ...companies[index],
-    companyName,
+    ...updates,
     updatedAt: now,
   };
 
-  companies[index] = record;
+  companies[index] = next;
   await persistQuickBooksCompanies(companies);
-  return record;
+  return next;
+}
+
+async function updateQuickBooksCompanyTokens(realmId, tokens) {
+  if (!tokens) {
+    return null;
+  }
+
+  const companies = await readQuickBooksCompanies();
+  const index = companies.findIndex((entry) => entry.realmId === realmId);
+
+  if (index < 0) {
+    const error = new Error('QuickBooks company not found.');
+    error.code = 'NOT_FOUND';
+    throw error;
+  }
+
+  companies[index] = {
+    ...companies[index],
+    tokens,
+    updatedAt: new Date().toISOString(),
+  };
+
+  await persistQuickBooksCompanies(companies);
+  return companies[index];
+}
+
+async function getQuickBooksCompanyRecord(realmId) {
+  const companies = await readQuickBooksCompanies();
+  return companies.find((entry) => entry.realmId === realmId) || null;
+}
+
+async function fetchAndStoreQuickBooksMetadata(realmId, { force = false } = {}) {
+  const company = await getQuickBooksCompanyRecord(realmId);
+  if (!company) {
+    const error = new Error('QuickBooks company not found.');
+    error.code = 'NOT_FOUND';
+    throw error;
+  }
+
+  const result = await performQuickBooksFetch(realmId, async (accessToken) => {
+    const [vendors, accounts, taxCodes, taxAgencies] = await Promise.all([
+      fetchQuickBooksVendors(realmId, accessToken).catch((error) =>
+        handleMetadataFetchError(error, 'Vendor', realmId)
+      ),
+      fetchQuickBooksAccounts(realmId, accessToken).catch((error) =>
+        handleMetadataFetchError(error, 'Account', realmId)
+      ),
+      fetchQuickBooksTaxCodes(realmId, accessToken).catch((error) =>
+        handleMetadataFetchError(error, 'TaxCode', realmId)
+      ),
+      fetchQuickBooksTaxAgencies(realmId, accessToken).catch((error) =>
+        handleMetadataFetchError(error, 'TaxAgency', realmId)
+      ),
+    ]);
+
+    const timestamp = new Date().toISOString();
+
+    await Promise.all([
+      writeQuickBooksMetadataFile(realmId, 'vendors', { updatedAt: timestamp, items: vendors }),
+      writeQuickBooksMetadataFile(realmId, 'accounts', { updatedAt: timestamp, items: accounts }),
+      writeQuickBooksMetadataFile(realmId, 'taxCodes', { updatedAt: timestamp, items: taxCodes }),
+      writeQuickBooksMetadataFile(realmId, 'taxAgencies', { updatedAt: timestamp, items: taxAgencies }),
+    ]);
+
+    await updateQuickBooksCompanyFields(realmId, {
+      vendorsUpdatedAt: vendors.length ? timestamp : null,
+      vendorsCount: vendors.length,
+      accountsUpdatedAt: accounts.length ? timestamp : null,
+      accountsCount: accounts.length,
+      taxCodesUpdatedAt: taxCodes.length ? timestamp : null,
+      taxCodesCount: taxCodes.length,
+      taxAgenciesUpdatedAt: taxAgencies.length ? timestamp : null,
+      taxAgenciesCount: taxAgencies.length,
+    });
+
+    return {
+      vendors: { updatedAt: timestamp, items: vendors },
+      accounts: { updatedAt: timestamp, items: accounts },
+      taxCodes: { updatedAt: timestamp, items: taxCodes },
+      taxAgencies: { updatedAt: timestamp, items: taxAgencies },
+    };
+  });
+
+  return result;
+}
+
+async function readQuickBooksCompanyMetadata(realmId) {
+  const company = await getQuickBooksCompanyRecord(realmId);
+  if (!company) {
+    const error = new Error('QuickBooks company not found.');
+    error.code = 'NOT_FOUND';
+    throw error;
+  }
+
+  const [vendors, accounts, taxCodes, taxAgencies] = await Promise.all([
+    readQuickBooksMetadataFile(realmId, 'vendors'),
+    readQuickBooksMetadataFile(realmId, 'accounts'),
+    readQuickBooksMetadataFile(realmId, 'taxCodes'),
+    readQuickBooksMetadataFile(realmId, 'taxAgencies'),
+  ]);
+
+  return {
+    vendors,
+    accounts,
+    taxCodes,
+    taxAgencies,
+  };
+}
+
+function handleMetadataFetchError(error, entity, realmId) {
+  if (error?.status === 403) {
+    console.warn(
+      `QuickBooks ${entity} metadata unavailable for ${realmId}: ${error.message || 'Forbidden.'}`
+    );
+    return [];
+  }
+
+  throw error;
+}
+
+async function readQuickBooksMetadataFile(realmId, type) {
+  try {
+    const file = await fs.readFile(getQuickBooksMetadataPath(realmId, type), 'utf-8');
+    const parsed = JSON.parse(file);
+    return {
+      updatedAt: parsed?.updatedAt || null,
+      items: Array.isArray(parsed?.items) ? parsed.items : [],
+    };
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return { updatedAt: null, items: [] };
+    }
+    throw error;
+  }
+}
+
+async function writeQuickBooksMetadataFile(realmId, type, payload) {
+  const filePath = getQuickBooksMetadataPath(realmId, type);
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, JSON.stringify(payload, null, 2));
+}
+
+function getQuickBooksMetadataPath(realmId, type) {
+  return path.join(QUICKBOOKS_METADATA_DIR, realmId, `${type}.json`);
+}
+
+async function performQuickBooksFetch(realmId, requestFn) {
+  let attempt = 0;
+
+  while (attempt < 2) {
+    const company = await getQuickBooksCompanyRecord(realmId);
+    if (!company?.tokens?.accessToken) {
+      const error = new Error('QuickBooks access token is not available.');
+      error.code = 'TOKEN_MISSING';
+      throw error;
+    }
+
+    try {
+      return await requestFn(company.tokens.accessToken, company);
+    } catch (error) {
+      if (error.status === 401 && company.tokens.refreshToken && attempt === 0) {
+        const refreshed = await refreshQuickBooksAccessToken(company.tokens.refreshToken);
+        await updateQuickBooksCompanyTokens(realmId, refreshed);
+        attempt += 1;
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  const error = new Error('Failed to call QuickBooks API after refreshing token.');
+  error.code = 'TOKEN_REFRESH_FAILED';
+  throw error;
+}
+
+async function refreshQuickBooksAccessToken(refreshToken) {
+  if (!refreshToken) {
+    const error = new Error('QuickBooks refresh token is not available.');
+    error.code = 'TOKEN_MISSING';
+    throw error;
+  }
+
+  if (!QUICKBOOKS_CLIENT_ID || !QUICKBOOKS_CLIENT_SECRET) {
+    const error = new Error('QuickBooks client credentials are not configured.');
+    error.code = 'CONFIG_MISSING';
+    throw error;
+  }
+
+  const params = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+  });
+
+  const authHeader = Buffer.from(`${QUICKBOOKS_CLIENT_ID}:${QUICKBOOKS_CLIENT_SECRET}`).toString('base64');
+  const response = await fetch(QUICKBOOKS_TOKEN_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Authorization: `Basic ${authHeader}`,
+      Accept: 'application/json',
+    },
+    body: params.toString(),
+  });
+
+  if (!response.ok) {
+    const errorBody = await safeReadJson(response);
+    const message =
+      errorBody?.error_description ||
+      errorBody?.error ||
+      `QuickBooks token refresh failed with status ${response.status}`;
+    const err = new Error(message);
+    err.isQuickBooksError = true;
+    err.status = response.status;
+    throw err;
+  }
+
+  const data = await response.json();
+  const now = Date.now();
+
+  return {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token || refreshToken,
+    scope: data.scope,
+    tokenType: data.token_type,
+    expiresAt: data.expires_in ? new Date(now + data.expires_in * 1000).toISOString() : null,
+    refreshTokenExpiresAt: data.refresh_token_expires_in
+      ? new Date(now + data.refresh_token_expires_in * 1000).toISOString()
+      : null,
+  };
+}
+
+async function fetchQuickBooksVendors(realmId, accessToken) {
+  const vendors = await fetchQuickBooksQueryList(realmId, accessToken, 'Vendor');
+  return vendors
+    .filter((vendor) => vendor.Active !== false)
+    .map((vendor) => ({
+      id: vendor.Id,
+      displayName: vendor.DisplayName || vendor.CompanyName || vendor.Title || vendor.FamilyName || vendor.GivenName || `Vendor ${vendor.Id}`,
+      email: vendor.PrimaryEmailAddr?.Address || null,
+      phone: vendor.PrimaryPhone?.FreeFormNumber || null,
+    }));
+}
+
+async function fetchQuickBooksAccounts(realmId, accessToken) {
+  const accounts = await fetchQuickBooksQueryList(realmId, accessToken, 'Account');
+  return accounts
+    .filter((account) => account.Active !== false)
+    .map((account) => ({
+      id: account.Id,
+      name: account.Name || account.FullyQualifiedName || `Account ${account.Id}`,
+      fullyQualifiedName: account.FullyQualifiedName || null,
+      accountType: account.AccountType || null,
+      accountSubType: account.AccountSubType || null,
+    }));
+}
+
+async function fetchQuickBooksTaxCodes(realmId, accessToken) {
+  const taxCodes = await fetchQuickBooksQueryList(realmId, accessToken, 'TaxCode');
+  return taxCodes
+    .filter((code) => code.Active !== false)
+    .map((code) => ({
+      id: code.Id,
+      name: code.Name || `Tax Code ${code.Id}`,
+      description: code.Description || null,
+      rate: deriveTaxCodeRate(code),
+      agency: code.SalesTaxRateList?.TaxAgencyRef?.name || null,
+      active: code.Active !== false,
+    }));
+}
+
+async function fetchQuickBooksTaxAgencies(realmId, accessToken) {
+  const agencies = await fetchQuickBooksQueryList(realmId, accessToken, 'TaxAgency');
+  return agencies
+    .filter((agency) => agency.Active !== false)
+    .map((agency) => ({
+      id: agency.Id,
+      name: agency.DisplayName || agency.Name || `Tax Agency ${agency.Id}`,
+      displayName: agency.DisplayName || null,
+      agencyType: agency.AgencyType || null,
+      taxTrackedOnSales: agency.TaxTrackedOnSales ?? null,
+      taxTrackedOnPurchases: agency.TaxTrackedOnPurchases ?? null,
+      taxRegistrationNumber: agency.TaxRegistrationNumber || null,
+      vendorId: agency.VendorRef?.value || null,
+      active: agency.Active !== false,
+    }));
+}
+
+async function fetchQuickBooksQueryList(realmId, accessToken, entity) {
+  const pageSize = 200;
+  let startPosition = 1;
+  const items = [];
+
+  while (true) {
+    const query = `select * from ${entity} startposition ${startPosition} maxresults ${pageSize}`;
+    const url = `${QUICKBOOKS_API_BASE_URL}/v3/company/${realmId}/query?minorversion=65&query=${encodeURIComponent(query)}`;
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+        'User-Agent': 'InvoiceToQB/1.0',
+      },
+    });
+
+    if (!response.ok) {
+      const errorBody = await safeReadJson(response);
+      const message =
+        errorBody?.Fault?.Error?.[0]?.Detail ||
+        errorBody?.Fault?.Error?.[0]?.Message ||
+        `QuickBooks query for ${entity} failed with status ${response.status}`;
+      const err = new Error(message);
+      err.isQuickBooksError = true;
+      err.status = response.status;
+      throw err;
+    }
+
+    const body = await response.json();
+    const entityKey = entity;
+    const rows = body?.QueryResponse?.[entityKey];
+    const list = Array.isArray(rows) ? rows : rows ? [rows] : [];
+    items.push(...list);
+
+    const maxResults = body?.QueryResponse?.maxResults || list.length;
+    const totalCount = body?.QueryResponse?.totalCount;
+
+    if (list.length < pageSize || (typeof totalCount === 'number' && items.length >= totalCount)) {
+      break;
+    }
+
+    startPosition += Math.max(maxResults, list.length || pageSize);
+  }
+
+  return items;
+}
+
+function deriveTaxCodeRate(taxCode) {
+  const details =
+    taxCode?.SalesTaxRateList?.TaxRateDetail ||
+    taxCode?.PurchaseTaxRateList?.TaxRateDetail ||
+    taxCode?.TaxRateDetails ||
+    [];
+
+  const list = Array.isArray(details) ? details : details ? [details] : [];
+
+  if (!list.length) {
+    return null;
+  }
+
+  const total = list.reduce((sum, detail) => {
+    const rate = Number(detail.RateValue ?? detail.rateValue);
+    if (Number.isFinite(rate)) {
+      return sum + rate;
+    }
+    return sum;
+  }, 0);
+
+  return Number.isFinite(total) ? total : null;
+}
+
+async function warmQuickBooksMetadata() {
+  try {
+    const companies = await readQuickBooksCompanies();
+    for (const company of companies) {
+      try {
+        await fetchAndStoreQuickBooksMetadata(company.realmId);
+      } catch (error) {
+        console.warn(`Failed to warm metadata for ${company.realmId}`, error.message || error);
+      }
+    }
+  } catch (error) {
+    console.error('Unable to warm QuickBooks metadata', error);
+  }
 }
 
 function sanitizeQuickBooksCompany(company) {

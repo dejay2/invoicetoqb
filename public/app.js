@@ -19,9 +19,12 @@ const companiesStatus = document.getElementById('companies-status');
 const matchForm = document.getElementById('match-form');
 const matchStatus = document.getElementById('match-status');
 const matchCompanySelect = document.getElementById('match-company');
-const matchVendorInput = document.getElementById('match-vendor');
-const matchAccountInput = document.getElementById('match-account');
-const matchTaxRateInput = document.getElementById('match-tax-rate');
+const matchVendorSelect = document.getElementById('match-vendor');
+const matchVendorManualInput = document.getElementById('match-vendor-manual');
+const matchAccountSelect = document.getElementById('match-account');
+const matchAccountManualInput = document.getElementById('match-account-manual');
+const matchTaxRateSelect = document.getElementById('match-tax-rate');
+const matchTaxRateManualInput = document.getElementById('match-tax-rate-manual');
 const matchInvoiceNumberInput = document.getElementById('match-invoice-number');
 const matchInvoiceNameInput = document.getElementById('match-invoice-name');
 const matchSubtotalInput = document.getElementById('match-subtotal');
@@ -32,8 +35,19 @@ const MATCH_STORAGE_KEY = 'invoiceMatches';
 let quickBooksCompanies = [];
 let currentInvoiceData = null;
 let currentInvoiceMetadata = null;
+let currentMatchRecord = null;
 let savedMatches = loadSavedMatches();
-const matcherEditableInputs = [matchCompanySelect, matchVendorInput, matchAccountInput, matchTaxRateInput];
+const companyMetadataCache = new Map();
+const metadataRequests = new Map();
+const matcherEditableInputs = [
+  matchCompanySelect,
+  matchVendorSelect,
+  matchVendorManualInput,
+  matchAccountSelect,
+  matchAccountManualInput,
+  matchTaxRateSelect,
+  matchTaxRateManualInput,
+];
 const matcherReadonlyInputs = [matchInvoiceNumberInput, matchInvoiceNameInput, matchSubtotalInput, matchTaxInput, matchTotalInput];
 const matchSubmitButton = matchForm ? matchForm.querySelector('button[type="submit"]') : null;
 
@@ -75,7 +89,7 @@ if (form) {
         currentInvoiceMetadata = payload.invoice.metadata || null;
         invoicePre.textContent = JSON.stringify(payload.invoice.data, null, 2);
         show(resultsPanel);
-        populateMatcherFromInvoice(payload.invoice);
+        await populateMatcherFromInvoice(payload.invoice);
       }
 
       if (payload.duplicate) {
@@ -103,6 +117,22 @@ if (qbAddButton) {
 
 if (matchForm) {
   matchForm.addEventListener('submit', handleMatchSubmit);
+}
+
+if (matchCompanySelect) {
+  matchCompanySelect.addEventListener('change', handleMatchCompanyChange);
+}
+
+if (matchVendorSelect) {
+  matchVendorSelect.addEventListener('change', () => handleMatchSelectChange('vendor'));
+}
+
+if (matchAccountSelect) {
+  matchAccountSelect.addEventListener('change', () => handleMatchSelectChange('account'));
+}
+
+if (matchTaxRateSelect) {
+  matchTaxRateSelect.addEventListener('change', () => handleMatchSelectChange('taxRate'));
 }
 
 activateTab('parser-tab');
@@ -160,8 +190,20 @@ async function refreshQuickBooksCompanies() {
     renderCompanyManagementList(quickBooksCompanies);
     renderMatchCompanyOptions(quickBooksCompanies, preferredRealmId);
 
+    const activeRealmIds = new Set(quickBooksCompanies.map((company) => company.realmId));
+    Array.from(companyMetadataCache.keys()).forEach((realmId) => {
+      if (!activeRealmIds.has(realmId)) {
+        companyMetadataCache.delete(realmId);
+      }
+    });
+
     hide(qbStatus);
     hide(companiesStatus);
+
+    if (currentInvoiceData && matchCompanySelect) {
+      const activeRealmId = matchCompanySelect.value || null;
+      populateMatcherFields(currentInvoiceData, currentMatchRecord, activeRealmId);
+    }
   } catch (error) {
     console.error(error);
     showQuickBooksStatus(error.message || 'Failed to load QuickBooks connections.', 'error');
@@ -226,35 +268,75 @@ function renderCompanyManagementList(companies) {
 
     const title = document.createElement('div');
     title.className = 'company-edit-title';
-    title.textContent = company.companyName || company.realmId;
+    title.textContent = company.companyName || company.legalName || company.realmId;
 
     const meta = document.createElement('div');
     meta.className = 'company-edit-meta';
-    meta.textContent = formatQuickBooksMeta(company);
+    const detailLines = [formatQuickBooksMeta(company)];
+    if (company.vendorsCount || company.accountsCount || company.taxCodesCount || company.taxAgenciesCount) {
+      const counts = [];
+      if (company.vendorsCount) {
+        counts.push(`${company.vendorsCount} vendors`);
+      }
+      if (company.accountsCount) {
+        counts.push(`${company.accountsCount} accounts`);
+      }
+      if (company.taxCodesCount) {
+        counts.push(`${company.taxCodesCount} tax codes`);
+      }
+      if (company.taxAgenciesCount) {
+        counts.push(`${company.taxAgenciesCount} tax agencies`);
+      }
+      detailLines.push(counts.join(' • '));
+    }
+    meta.textContent = detailLines.filter(Boolean).join('\n');
 
     const form = document.createElement('form');
     form.className = 'company-edit-form';
     form.dataset.realmId = company.realmId;
 
-    const label = document.createElement('label');
-    label.className = 'input-group';
+    const displayGroup = document.createElement('label');
+    displayGroup.className = 'input-group';
+    const displaySpan = document.createElement('span');
+    displaySpan.textContent = 'Display Name';
+    const displayInput = document.createElement('input');
+    displayInput.type = 'text';
+    displayInput.placeholder = company.realmId;
+    displayInput.value = company.companyName || '';
+    displayInput.required = true;
+    displayGroup.append(displaySpan, displayInput);
 
-    const span = document.createElement('span');
-    span.textContent = 'Display Name';
+    const legalGroup = document.createElement('label');
+    legalGroup.className = 'input-group';
+    const legalSpan = document.createElement('span');
+    legalSpan.textContent = 'Legal Name';
+    const legalInput = document.createElement('input');
+    legalInput.type = 'text';
+    legalInput.placeholder = company.companyName || 'Registered QuickBooks name';
+    legalInput.value = company.legalName || '';
+    legalGroup.append(legalSpan, legalInput);
 
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.placeholder = company.realmId;
-    input.value = company.companyName || '';
-    input.required = true;
+    const actions = document.createElement('div');
+    actions.className = 'company-edit-actions';
 
-    label.append(span, input);
+    const saveButton = document.createElement('button');
+    saveButton.type = 'submit';
+    saveButton.textContent = 'Save Names';
 
-    const button = document.createElement('button');
-    button.type = 'submit';
-    button.textContent = 'Save Name';
+    const refreshButton = document.createElement('button');
+    refreshButton.type = 'button';
+    refreshButton.className = 'company-refresh';
+    refreshButton.textContent = 'Refresh QuickBooks Data';
+    refreshButton.addEventListener('click', () => {
+      refreshCompanyMetadata(company.realmId, refreshButton).catch((error) => {
+        console.error(error);
+        showCompaniesStatus(error.message || 'Failed to refresh QuickBooks data.', 'error');
+      });
+    });
 
-    form.append(label, button);
+    actions.append(saveButton, refreshButton);
+
+    form.append(displayGroup, legalGroup, actions);
     form.addEventListener('submit', (event) => {
       event.preventDefault();
       handleCompanyRename(event.currentTarget);
@@ -271,17 +353,20 @@ async function handleCompanyRename(form) {
   }
 
   const realmId = form.dataset.realmId;
-  const input = form.querySelector('input');
+  const inputs = form.querySelectorAll('input');
   const button = form.querySelector('button[type="submit"]');
 
-  if (!realmId || !input) {
+  if (!realmId || inputs.length < 2) {
     return;
   }
 
-  const newName = input.value.trim();
-  if (!newName) {
-    showCompaniesStatus('Company name cannot be empty.', 'error');
-    input.focus();
+  const [displayInput, legalInput] = inputs;
+  const displayName = displayInput?.value?.trim();
+  const legalName = legalInput?.value?.trim();
+
+  if (!displayName) {
+    showCompaniesStatus('Display name cannot be empty.', 'error');
+    displayInput?.focus();
     return;
   }
 
@@ -291,7 +376,10 @@ async function handleCompanyRename(form) {
   }
 
   try {
-    const updated = await updateCompanyName(realmId, newName);
+    const updated = await updateCompanyDetails(realmId, {
+      companyName: displayName,
+      legalName: legalName || null,
+    });
     updateSavedMatchesWithCompany(updated);
     showCompaniesStatus(`Updated ${updated.companyName || updated.realmId}.`);
     await refreshQuickBooksCompanies();
@@ -301,18 +389,18 @@ async function handleCompanyRename(form) {
   } finally {
     if (button) {
       button.disabled = false;
-      button.textContent = 'Save Name';
+      button.textContent = 'Save Names';
     }
   }
 }
 
-async function updateCompanyName(realmId, companyName) {
+async function updateCompanyDetails(realmId, updates) {
   const response = await fetch(`/api/quickbooks/companies/${encodeURIComponent(realmId)}`, {
     method: 'PATCH',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ companyName }),
+    body: JSON.stringify(updates),
   });
 
   let payload = null;
@@ -327,7 +415,7 @@ async function updateCompanyName(realmId, companyName) {
     throw new Error(message);
   }
 
-  return payload?.company || { realmId, companyName };
+  return payload?.company || { realmId, ...updates };
 }
 
 function renderMatchCompanyOptions(companies, preferredRealmId = null) {
@@ -348,7 +436,7 @@ function renderMatchCompanyOptions(companies, preferredRealmId = null) {
   companies.forEach((company) => {
     const option = document.createElement('option');
     option.value = company.realmId;
-    option.textContent = company.companyName || `Realm ${company.realmId}`;
+    option.textContent = company.companyName || company.legalName || `Realm ${company.realmId}`;
     matchCompanySelect.appendChild(option);
   });
 
@@ -394,7 +482,8 @@ function getPreferredMatchRealmId() {
   return null;
 }
 
-function populateMatcherFromInvoice(invoicePayload) {
+
+async function populateMatcherFromInvoice(invoicePayload) {
   if (!matchForm) {
     return;
   }
@@ -413,10 +502,26 @@ function populateMatcherFromInvoice(invoicePayload) {
   setMatcherDisabled(false);
 
   const checksum = currentInvoiceMetadata?.checksum;
-  const savedMatch = checksum ? savedMatches[checksum] : null;
+  const savedMatchRaw = checksum ? savedMatches[checksum] : null;
+  const savedMatch = normalizeMatchRecord(savedMatchRaw);
+  currentMatchRecord = savedMatch;
 
-  const preferredRealmId = savedMatch?.companyRealmId || null;
+  const preferredRealmId = savedMatch?.companyRealmId || (quickBooksCompanies.length === 1 ? quickBooksCompanies[0].realmId : null);
   renderMatchCompanyOptions(quickBooksCompanies, preferredRealmId);
+
+  if (preferredRealmId && Array.from(matchCompanySelect?.options || []).some((option) => option.value === preferredRealmId)) {
+    matchCompanySelect.value = preferredRealmId;
+  }
+
+  const activeRealmId = matchCompanySelect?.value || null;
+  if (activeRealmId) {
+    await ensureCompanyMetadata(activeRealmId).catch((error) => {
+      console.error(error);
+      showMatchStatus(error.message || 'Failed to load QuickBooks metadata.', 'error');
+    });
+  }
+
+  populateMatcherFields(invoice, savedMatch, activeRealmId);
 
   if (savedMatch?.companyRealmId && !quickBooksCompanies.some((company) => company.realmId === savedMatch.companyRealmId)) {
     ensureCompanyOption(savedMatch.companyRealmId, savedMatch.companyName || `Realm ${savedMatch.companyRealmId}`);
@@ -424,51 +529,7 @@ function populateMatcherFromInvoice(invoicePayload) {
     matchCompanySelect.value = savedMatch.companyRealmId;
   }
 
-  if (matchVendorInput) {
-    matchVendorInput.value = savedMatch?.vendor ?? invoice.vendor ?? '';
-  }
-
-  if (matchAccountInput) {
-    matchAccountInput.value = savedMatch?.account ?? '';
-  }
-
-  if (matchTaxRateInput) {
-    matchTaxRateInput.value = savedMatch?.taxRate ?? invoice.taxCode ?? '';
-  }
-
-  const invoiceName = deriveInvoiceName({ metadata: currentInvoiceMetadata, data: invoice });
-
-  if (matchInvoiceNumberInput) {
-    matchInvoiceNumberInput.value = invoice.invoiceNumber || '';
-    matchInvoiceNumberInput.readOnly = true;
-  }
-
-  if (matchInvoiceNameInput) {
-    matchInvoiceNameInput.value = invoiceName;
-    matchInvoiceNameInput.readOnly = true;
-  }
-
-  if (matchSubtotalInput) {
-    matchSubtotalInput.value = formatAmount(invoice.subtotal);
-    matchSubtotalInput.readOnly = true;
-  }
-
-  const taxAmount = invoice.vatAmount ?? invoice.taxAmount ?? null;
-  if (matchTaxInput) {
-    matchTaxInput.value = formatAmount(taxAmount);
-    matchTaxInput.readOnly = true;
-  }
-
-  if (matchTotalInput) {
-    matchTotalInput.value = formatAmount(invoice.totalAmount);
-    matchTotalInput.readOnly = true;
-  }
-
-  if (savedMatch?.companyRealmId && Array.from(matchCompanySelect?.options || []).some((option) => option.value === savedMatch.companyRealmId)) {
-    matchCompanySelect.value = savedMatch.companyRealmId;
-  }
-
-  if (savedMatch) {
+  if (savedMatchRaw) {
     showMatchStatus('Loaded saved QuickBooks match for this invoice.', 'info');
   } else {
     showMatchStatus('Review QuickBooks mappings before export.', 'info');
@@ -478,6 +539,7 @@ function populateMatcherFromInvoice(invoicePayload) {
 function resetMatcherForm() {
   currentInvoiceData = null;
   currentInvoiceMetadata = null;
+  currentMatchRecord = null;
   setMatcherDisabled(true);
 
   matcherEditableInputs.forEach((input) => {
@@ -511,6 +573,41 @@ function setMatcherDisabled(disabled) {
   }
 }
 
+function handleMatchSelectChange(type) {
+  const controls = getMatchControls(type);
+  if (!controls) {
+    return;
+  }
+
+  const { select, manual, metadataKey } = controls;
+  if (!select || !manual) {
+    return;
+  }
+
+  const selectedValue = select.value;
+  const metadata = getActiveMetadata();
+
+  if (selectedValue && selectedValue !== '__manual__' && metadata?.[metadataKey]?.lookup) {
+    const item = metadata[metadataKey].lookup.get(selectedValue);
+    const label = item?.displayName || item?.name || manual.value;
+    if (label && !manual.value) {
+      manual.value = label;
+    } else if (label && selectedValue) {
+      manual.value = label;
+    }
+    manual.disabled = true;
+  } else {
+    manual.disabled = false;
+    if (!manual.value) {
+      if (type === 'vendor') {
+        manual.value = currentInvoiceData?.vendor || '';
+      } else if (type === 'taxRate') {
+        manual.value = currentInvoiceData?.taxCode || '';
+      }
+    }
+  }
+}
+
 function handleMatchSubmit(event) {
   event.preventDefault();
 
@@ -530,15 +627,20 @@ function handleMatchSubmit(event) {
 
   const companyRealmId = matchCompanySelect.value;
   const company = quickBooksCompanies.find((entry) => entry.realmId === companyRealmId);
+  const metadata = companyMetadataCache.get(companyRealmId) || null;
+
+  const vendorField = buildMatchField('vendor', metadata, currentInvoiceData?.vendor || '', currentMatchRecord?.vendor);
+  const accountField = buildMatchField('account', metadata, '', currentMatchRecord?.account);
+  const taxRateField = buildMatchField('taxRate', metadata, currentInvoiceData?.taxCode || '', currentMatchRecord?.taxRate);
 
   const record = {
     checksum,
     updatedAt: new Date().toISOString(),
     companyRealmId,
-    companyName: company?.companyName || company?.realmId || null,
-    vendor: matchVendorInput?.value?.trim() || null,
-    account: matchAccountInput?.value?.trim() || null,
-    taxRate: matchTaxRateInput?.value?.trim() || null,
+    companyName: company?.companyName || company?.legalName || company?.realmId || null,
+    vendor: vendorField,
+    account: accountField,
+    taxRate: taxRateField,
     invoice: {
       invoiceNumber: currentInvoiceData?.invoiceNumber || null,
       invoiceName: matchInvoiceNameInput?.value || null,
@@ -549,6 +651,7 @@ function handleMatchSubmit(event) {
     },
   };
 
+  currentMatchRecord = record;
   saveMatchRecord(record);
 
   if (record.companyName) {
@@ -558,8 +661,46 @@ function handleMatchSubmit(event) {
   }
 }
 
+async function handleMatchCompanyChange() {
+  if (!matchCompanySelect) {
+    return;
+  }
+
+  const realmId = matchCompanySelect.value;
+  if (!realmId) {
+    updateMatchSelectOptions(null);
+    applyMatchFieldState('vendor', currentInvoiceData?.vendor || '', null, null);
+    applyMatchFieldState('account', '', null, null);
+    applyMatchFieldState('taxRate', currentInvoiceData?.taxCode || '', null, null);
+    return;
+  }
+
+  try {
+    const metadata = await ensureCompanyMetadata(realmId);
+    populateMatcherFields(currentInvoiceData || {}, currentMatchRecord, realmId);
+    if (currentMatchRecord) {
+      currentMatchRecord.companyRealmId = realmId;
+    }
+    if (
+      !metadata?.vendors?.items?.length &&
+      !metadata?.accounts?.items?.length &&
+      !metadata?.taxCodes?.items?.length &&
+      !metadata?.taxAgencies?.items?.length &&
+      currentInvoiceData
+    ) {
+      showMatchStatus('QuickBooks lists are incomplete. Refresh metadata from the Companies tab if needed.', 'info');
+    }
+  } catch (error) {
+    console.error(error);
+    showMatchStatus(error.message || 'Failed to load QuickBooks metadata.', 'error');
+  }
+}
+
 function formatQuickBooksMeta(company) {
   const parts = [];
+  if (company.legalName && company.legalName !== company.companyName) {
+    parts.push(company.legalName);
+  }
   if (company.environment) {
     parts.push(company.environment === 'production' ? 'Production' : 'Sandbox');
   }
@@ -577,6 +718,20 @@ function formatQuickBooksMeta(company) {
     const updated = new Date(company.updatedAt);
     if (!Number.isNaN(updated.getTime())) {
       parts.push(`Updated ${updated.toLocaleString()}`);
+    }
+  }
+
+  if (company.vendorsUpdatedAt) {
+    const vendorsDate = new Date(company.vendorsUpdatedAt);
+    if (!Number.isNaN(vendorsDate.getTime())) {
+      parts.push(`Vendors updated ${vendorsDate.toLocaleDateString()}`);
+    }
+  }
+
+  if (company.taxAgenciesUpdatedAt) {
+    const agenciesDate = new Date(company.taxAgenciesUpdatedAt);
+    if (!Number.isNaN(agenciesDate.getTime())) {
+      parts.push(`Tax agencies updated ${agenciesDate.toLocaleDateString()}`);
     }
   }
 
@@ -645,13 +800,25 @@ function loadSavedMatches() {
     }
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === 'object') {
-      return parsed;
+      return migrateSavedMatches(parsed);
     }
   } catch (error) {
     console.warn('Failed to load saved matches', error);
   }
 
   return {};
+}
+
+function migrateSavedMatches(records) {
+  if (!records || typeof records !== 'object') {
+    return {};
+  }
+
+  const migrated = {};
+  Object.entries(records).forEach(([checksum, record]) => {
+    migrated[checksum] = normalizeMatchRecord(record);
+  });
+  return migrated;
 }
 
 function persistSavedMatches() {
@@ -671,8 +838,296 @@ function saveMatchRecord(record) {
     return;
   }
 
-  savedMatches[record.checksum] = record;
+  savedMatches[record.checksum] = normalizeMatchRecord(record);
   persistSavedMatches();
+}
+
+function getMatchControls(type) {
+  switch (type) {
+    case 'vendor':
+      return { select: matchVendorSelect, manual: matchVendorManualInput, metadataKey: 'vendors' };
+    case 'account':
+      return { select: matchAccountSelect, manual: matchAccountManualInput, metadataKey: 'accounts' };
+    case 'taxRate':
+      return { select: matchTaxRateSelect, manual: matchTaxRateManualInput, metadataKey: 'taxCodes' };
+    default:
+      return null;
+  }
+}
+
+function getActiveMetadata() {
+  const realmId = matchCompanySelect?.value;
+  if (!realmId) {
+    return null;
+  }
+  return companyMetadataCache.get(realmId) || null;
+}
+
+function populateMatcherFields(invoice, savedMatch, realmId) {
+  const metadata = realmId ? companyMetadataCache.get(realmId) : null;
+  updateMatchSelectOptions(metadata);
+
+  const invoiceName = deriveInvoiceName({ metadata: currentInvoiceMetadata, data: invoice });
+
+  if (matchInvoiceNumberInput) {
+    matchInvoiceNumberInput.value = invoice.invoiceNumber || '';
+    matchInvoiceNumberInput.readOnly = true;
+  }
+
+  if (matchInvoiceNameInput) {
+    matchInvoiceNameInput.value = invoiceName;
+    matchInvoiceNameInput.readOnly = true;
+  }
+
+  if (matchSubtotalInput) {
+    matchSubtotalInput.value = formatAmount(invoice.subtotal);
+    matchSubtotalInput.readOnly = true;
+  }
+
+  const taxAmount = invoice.vatAmount ?? invoice.taxAmount ?? null;
+  if (matchTaxInput) {
+    matchTaxInput.value = formatAmount(taxAmount);
+    matchTaxInput.readOnly = true;
+  }
+
+  if (matchTotalInput) {
+    matchTotalInput.value = formatAmount(invoice.totalAmount);
+    matchTotalInput.readOnly = true;
+  }
+
+  applyMatchFieldState('vendor', invoice.vendor || '', savedMatch?.vendor, metadata);
+  applyMatchFieldState('account', '', savedMatch?.account, metadata);
+  applyMatchFieldState('taxRate', invoice.taxCode || '', savedMatch?.taxRate, metadata);
+
+  handleMatchSelectChange('vendor');
+  handleMatchSelectChange('account');
+  handleMatchSelectChange('taxRate');
+}
+
+function updateMatchSelectOptions(metadata) {
+  const vendorItems = metadata?.vendors?.items || [];
+  const accountItems = metadata?.accounts?.items || [];
+  const taxCodeItems = metadata?.taxCodes?.items || [];
+
+  populateSelectFromMetadata(matchVendorSelect, 'Select a QuickBooks vendor', 'Use manual value', vendorItems);
+  populateSelectFromMetadata(matchAccountSelect, 'Select a QuickBooks account', 'Use manual value', accountItems);
+  populateSelectFromMetadata(matchTaxRateSelect, 'Select a QuickBooks tax code', 'Use manual value', taxCodeItems);
+}
+
+function populateSelectFromMetadata(select, placeholder, manualLabel, items) {
+  if (!select) {
+    return;
+  }
+
+  const previousValue = select.value;
+  select.innerHTML = '';
+
+  const placeholderOption = document.createElement('option');
+  placeholderOption.value = '';
+  placeholderOption.textContent = placeholder;
+  select.appendChild(placeholderOption);
+
+  const manualOption = document.createElement('option');
+  manualOption.value = '__manual__';
+  manualOption.textContent = manualLabel;
+  select.appendChild(manualOption);
+
+  items.forEach((item) => {
+    const option = document.createElement('option');
+    option.value = item.id;
+    option.textContent = item.displayName || item.name || item.fullyQualifiedName || `ID ${item.id}`;
+    select.appendChild(option);
+  });
+
+  const hasItems = items.length > 0;
+  select.disabled = !hasItems;
+
+  if (!hasItems) {
+    select.value = '__manual__';
+  } else if (previousValue && Array.from(select.options).some((option) => option.value === previousValue)) {
+    select.value = previousValue;
+  } else {
+    select.value = '';
+  }
+}
+
+function applyMatchFieldState(type, invoiceValue, savedField, metadata) {
+  const controls = getMatchControls(type);
+  if (!controls) {
+    return;
+  }
+
+  const { select, manual, metadataKey } = controls;
+  if (!manual) {
+    return;
+  }
+
+  const normalizedField = normalizeMatchField(savedField);
+  const lookup = metadata?.[metadataKey]?.lookup;
+  const hasMetadata = Boolean(metadata?.[metadataKey]?.items?.length);
+
+  if (normalizedField.source === 'quickbooks' && normalizedField.id) {
+    const item = lookup?.get(normalizedField.id);
+    if (select) {
+      ensureSelectOption(select, normalizedField.id, normalizedField.name || item?.displayName || item?.name || `ID ${normalizedField.id}`);
+      select.disabled = false;
+      select.value = normalizedField.id;
+    }
+    manual.value = normalizedField.name || item?.displayName || item?.name || invoiceValue || '';
+    manual.disabled = true;
+  } else {
+    const manualValue = normalizedField.name || invoiceValue || '';
+    manual.value = manualValue;
+    manual.disabled = false;
+    if (select) {
+      if (!hasMetadata) {
+        select.value = '__manual__';
+        select.disabled = true;
+      } else {
+        select.disabled = false;
+        select.value = '__manual__';
+      }
+    }
+  }
+}
+
+function ensureSelectOption(select, value, label) {
+  if (!select || !value) {
+    return;
+  }
+
+  const exists = Array.from(select.options || []).some((option) => option.value === value);
+  if (!exists) {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label || `ID ${value}`;
+    select.appendChild(option);
+  }
+}
+
+function buildMatchField(type, metadata, invoiceValue, existingField) {
+  const controls = getMatchControls(type);
+  if (!controls) {
+    return normalizeMatchField(existingField);
+  }
+
+  const { select, manual, metadataKey } = controls;
+  const manualValue = manual?.value?.trim() || '';
+  const selection = select?.value;
+
+  if (selection && selection !== '__manual__' && metadata?.[metadataKey]?.lookup) {
+    const item = metadata[metadataKey].lookup.get(selection);
+    const snapshot = getMetadataSnapshot(type, item);
+    return {
+      id: selection,
+      name: snapshot?.name || manualValue || invoiceValue || '',
+      source: 'quickbooks',
+      details: snapshot,
+    };
+  }
+
+  if (manualValue) {
+    return {
+      id: null,
+      name: manualValue,
+      source: 'manual',
+    };
+  }
+
+  if (existingField?.source === 'manual' && existingField?.name) {
+    return normalizeMatchField(existingField);
+  }
+
+  return {
+    id: null,
+    name: invoiceValue || null,
+    source: 'manual',
+  };
+}
+
+function getMetadataSnapshot(type, item) {
+  if (!item) {
+    return null;
+  }
+
+  if (type === 'vendor') {
+    return {
+      name: item.displayName || item.name || null,
+      email: item.email || null,
+      phone: item.phone || null,
+    };
+  }
+
+  if (type === 'account') {
+    return {
+      name: item.name || item.fullyQualifiedName || null,
+      type: item.accountType || item.type || null,
+      subType: item.accountSubType || item.subType || null,
+      fullyQualifiedName: item.fullyQualifiedName || null,
+    };
+  }
+
+  if (type === 'taxRate') {
+    return {
+      name: item.name || null,
+      rate: typeof item.rate === 'number' ? item.rate : item.rateValue ?? null,
+      active: item.active ?? null,
+      agency: item.agency || null,
+    };
+  }
+
+  return {
+    name: item.name || item.displayName || null,
+  };
+}
+
+function normalizeMatchRecord(record) {
+  if (!record || typeof record !== 'object') {
+    return null;
+  }
+
+  return {
+    checksum: record.checksum || null,
+    updatedAt: record.updatedAt || new Date().toISOString(),
+    companyRealmId: record.companyRealmId || null,
+    companyName: record.companyName || null,
+    vendor: normalizeMatchField(record.vendor),
+    account: normalizeMatchField(record.account),
+    taxRate: normalizeMatchField(record.taxRate),
+    invoice: record.invoice || {},
+  };
+}
+
+function normalizeMatchField(field) {
+  if (!field) {
+    return { id: null, name: null, source: 'manual' };
+  }
+
+  if (typeof field === 'string') {
+    return { id: null, name: field, source: 'manual' };
+  }
+
+  if (typeof field === 'object') {
+    const source = field.source === 'quickbooks' ? 'quickbooks' : 'manual';
+    const normalized = {
+      id: field.id || null,
+      name: field.name || field.displayName || field.value || null,
+      source,
+    };
+
+    if (source === 'quickbooks') {
+      normalized.details = field.details || {
+        type: field.type || field.accountType || null,
+        subType: field.subType || field.accountSubType || null,
+        rate: field.rate ?? field.rateValue ?? null,
+        agency: field.agency || null,
+      };
+    }
+
+    return normalized;
+  }
+
+  return { id: null, name: null, source: 'manual' };
 }
 
 function updateSavedMatchesWithCompany(company) {
@@ -730,4 +1185,118 @@ function formatAmount(value) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
+}
+
+async function ensureCompanyMetadata(realmId, { force = false } = {}) {
+  if (!realmId) {
+    return null;
+  }
+
+  if (!force && companyMetadataCache.has(realmId)) {
+    return companyMetadataCache.get(realmId);
+  }
+
+  let pending = metadataRequests.get(realmId);
+  if (!pending || force) {
+    pending = fetchCompanyMetadata(realmId);
+    metadataRequests.set(realmId, pending);
+  }
+
+  try {
+    const data = await pending;
+    return storeCompanyMetadata(realmId, data);
+  } catch (error) {
+    companyMetadataCache.delete(realmId);
+    throw error;
+  } finally {
+    metadataRequests.delete(realmId);
+  }
+}
+
+async function fetchCompanyMetadata(realmId) {
+  const response = await fetch(`/api/quickbooks/companies/${encodeURIComponent(realmId)}/metadata`);
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch (error) {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    const message = payload?.error || 'Failed to load QuickBooks metadata.';
+    throw new Error(message);
+  }
+
+  return payload?.metadata || {
+    vendors: { items: [] },
+    accounts: { items: [] },
+    taxCodes: { items: [] },
+    taxAgencies: { items: [] },
+  };
+}
+
+function storeCompanyMetadata(realmId, metadata) {
+  const prepared = prepareMetadata(metadata);
+  companyMetadataCache.set(realmId, prepared);
+  return prepared;
+}
+
+function prepareMetadata(metadata) {
+  return {
+    vendors: prepareMetadataSection(metadata?.vendors),
+    accounts: prepareMetadataSection(metadata?.accounts),
+    taxCodes: prepareMetadataSection(metadata?.taxCodes),
+    taxAgencies: prepareMetadataSection(metadata?.taxAgencies),
+  };
+}
+
+function prepareMetadataSection(section) {
+  const items = Array.isArray(section?.items) ? section.items : [];
+  const lookup = new Map(items.map((item) => [item.id, item]));
+  return {
+    updatedAt: section?.updatedAt || null,
+    items,
+    lookup,
+  };
+}
+
+async function refreshCompanyMetadata(realmId, button) {
+  if (!realmId) {
+    return;
+  }
+
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Refreshing…';
+  }
+
+  try {
+    const response = await fetch(`/api/quickbooks/companies/${encodeURIComponent(realmId)}/metadata/refresh`, {
+      method: 'POST',
+    });
+
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      payload = null;
+    }
+
+    if (!response.ok) {
+      const message = payload?.error || 'Failed to refresh QuickBooks metadata.';
+      throw new Error(message);
+    }
+
+    await ensureCompanyMetadata(realmId, { force: true });
+    await refreshQuickBooksCompanies();
+    showCompaniesStatus('QuickBooks metadata refreshed.');
+  } catch (error) {
+    console.error(error);
+    showCompaniesStatus(error.message || 'Failed to refresh QuickBooks data.', 'error');
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = 'Refresh QuickBooks Data';
+    }
+  }
 }
