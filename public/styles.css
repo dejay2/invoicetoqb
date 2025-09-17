@@ -437,6 +437,111 @@ pre {
   margin-bottom: 1.25rem;
 }
 
+.drop-zone {
+  position: relative;
+  margin-top: 0.5rem;
+  padding: 2.5rem 1.5rem;
+  border: 2px dashed rgba(88, 132, 255, 0.35);
+  border-radius: 18px;
+  background: rgba(12, 19, 31, 0.75);
+  text-align: center;
+  color: rgba(232, 237, 245, 0.75);
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+}
+
+.drop-zone:focus-visible {
+  outline: 2px solid rgba(78, 208, 255, 0.6);
+  outline-offset: 4px;
+}
+
+.drop-zone.dragover,
+.drop-zone:hover {
+  border-color: rgba(78, 208, 255, 0.8);
+  background: rgba(18, 27, 43, 0.95);
+  transform: translateY(-1px);
+}
+
+.drop-zone-content {
+  pointer-events: none;
+}
+
+.drop-zone-title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.drop-zone-subtitle {
+  margin: 0.5rem 0 0;
+  color: rgba(232, 237, 245, 0.6);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+
+.upload-status-list {
+  list-style: none;
+  margin: 1.75rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.upload-status-list .empty {
+  padding: 1rem 1.1rem;
+  border-radius: 12px;
+  background: rgba(12, 19, 31, 0.6);
+  border: 1px dashed rgba(88, 132, 255, 0.25);
+  color: rgba(232, 237, 245, 0.6);
+}
+
+.upload-status-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.9rem 1.1rem;
+  border-radius: 12px;
+  background: rgba(12, 19, 31, 0.9);
+  border: 1px solid rgba(88, 132, 255, 0.18);
+  font-size: 0.95rem;
+}
+
+.upload-status-name {
+  font-weight: 600;
+}
+
+.upload-status-message {
+  font-size: 0.85rem;
+  color: rgba(232, 237, 245, 0.6);
+}
+
+.upload-status-item[data-state="success"] {
+  border-color: rgba(94, 214, 140, 0.35);
+}
+
+.upload-status-item[data-state="success"] .upload-status-message {
+  color: rgba(148, 240, 190, 0.85);
+}
+
+.upload-status-item[data-state="error"] {
+  border-color: rgba(255, 107, 129, 0.45);
+}
+
+.upload-status-item[data-state="error"] .upload-status-message {
+  color: rgba(255, 152, 172, 0.85);
+}
+
 .panel-actions {
   display: flex;
   flex-wrap: wrap;
@@ -484,13 +589,15 @@ pre {
   overflow-x: auto;
 }
 
-.archive-table {
+.archive-table,
+.review-table {
   width: 100%;
   border-collapse: collapse;
   min-width: 640px;
 }
 
-.archive-table thead {
+.archive-table thead,
+.review-table thead {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-size: 0.75rem;
@@ -498,13 +605,16 @@ pre {
 }
 
 .archive-table th,
-.archive-table td {
+.archive-table td,
+.review-table th,
+.review-table td {
   padding: 0.9rem 1rem;
   border-bottom: 1px solid rgba(88, 132, 255, 0.12);
   text-align: left;
 }
 
-.archive-table tbody tr:last-child td {
+.archive-table tbody tr:last-child td,
+.review-table tbody tr:last-child td {
   border-bottom: none;
 }
 

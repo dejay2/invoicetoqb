@@ -28,6 +28,7 @@
     <section id="company-dashboard" class="company-dashboard" hidden>
       <nav class="tabs company-tabs" role="tablist">
         <button class="tab active" data-company-tab="company-settings" role="tab" aria-selected="true" aria-controls="company-settings">Company settings</button>
+        <button class="tab" data-company-tab="add-invoices" role="tab" aria-selected="false" aria-controls="add-invoices">Add invoices / bills</button>
         <button class="tab" data-company-tab="vendor-settings" role="tab" aria-selected="false" aria-controls="vendor-settings">Vendor settings</button>
         <button class="tab" data-company-tab="account-settings" role="tab" aria-selected="false" aria-controls="account-settings">Account / category settings</button>
         <button class="tab" data-company-tab="to-review" role="tab" aria-selected="false" aria-controls="to-review">To review</button>
@@ -42,6 +43,23 @@
             <button id="connect-company" type="button" class="primary-button">Connect / Reconnect to QuickBooks</button>
             <button id="refresh-metadata" type="button" class="secondary-button">Refresh QuickBooks Data</button>
           </div>
+        </div>
+      </section>
+
+      <section id="add-invoices" class="company-panel" role="tabpanel" hidden>
+        <div class="panel-card">
+          <h2>Add invoices or bills</h2>
+          <p class="panel-summary">Drag and drop files or click the surface below to select multiple invoices at once. Parsed results are routed to the To Review tab.</p>
+          <div id="invoice-drop-zone" class="drop-zone" role="button" tabindex="0">
+            <input id="invoice-upload-input" class="visually-hidden" type="file" accept=".pdf,.png,.jpg,.jpeg,.heic,.tif,.tiff,.txt,.doc,.docx,.json,.xml" multiple />
+            <div class="drop-zone-content">
+              <p class="drop-zone-title">Drag and drop files here</p>
+              <p class="drop-zone-subtitle">or click to add file(s)</p>
+            </div>
+          </div>
+          <ul id="upload-status-list" class="upload-status-list">
+            <li class="empty">No uploads yet.</li>
+          </ul>
         </div>
       </section>
 
@@ -66,7 +84,25 @@
       <section id="to-review" class="company-panel" role="tabpanel" hidden>
         <div class="panel-card">
           <h2>To Review</h2>
-          <p class="panel-summary">Invoices routed for manual review will appear here soon.</p>
+          <p class="panel-summary">Invoices awaiting manual checks before export are listed below.</p>
+          <div class="table-wrapper">
+            <table class="review-table">
+              <thead>
+                <tr>
+                  <th scope="col">Invoice</th>
+                  <th scope="col">Vendor</th>
+                  <th scope="col">Invoice date</th>
+                  <th scope="col">Total</th>
+                  <th scope="col">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="review-table-body">
+                <tr class="empty-row">
+                  <td colspan="5">No invoices pending review.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </section>
 

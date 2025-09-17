@@ -5,6 +5,8 @@ const path = require('path');
 const fs = require('fs').promises;
 const crypto = require('crypto');
 
+const { createWorker } = require('tesseract.js');
+
 let fetchFn = globalThis.fetch;
 if (!fetchFn) {
   fetchFn = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
@@ -39,6 +41,21 @@ const QUICKBOOKS_STATE_TTL_MS = 10 * 60 * 1000;
 
 const quickBooksStates = new Map();
 const quickBooksCallbackPaths = getQuickBooksCallbackPaths();
+
+const OCR_IMAGE_MIME_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/jpg',
+  'image/heic',
+  'image/heif',
+  'image/tiff',
+  'image/webp',
+]);
+
+const GEMINI_TEXT_LIMIT = 60000;
+
+let tesseractWorkerPromise = null;
+let pdfjsLibPromise = null;
 
 
 function buildGeminiUrl() {
@@ -91,11 +108,24 @@ app.post('/api/parse-invoice', upload.single('invoice'), async (req, res) => {
     const existingInvoices = await readStoredInvoices();
     const duplicateByChecksum = existingInvoices.find((entry) => entry.metadata?.checksum === invoiceMetadata.checksum);
 
-    const parsedInvoice = await extractWithGemini(invoiceBuffer, req.file.mimetype);
+    const preprocessing = await preprocessInvoice(invoiceBuffer, req.file.mimetype);
+    const parsedInvoice = await extractWithGemini(invoiceBuffer, req.file.mimetype, {
+      extractedText: preprocessing.text,
+    });
 
     const enrichedInvoice = {
       parsedAt: new Date().toISOString(),
-      metadata: invoiceMetadata,
+      metadata: {
+        ...invoiceMetadata,
+        extraction: {
+          method: preprocessing.method,
+          textLength: preprocessing.text ? preprocessing.text.length : 0,
+          truncated: Boolean(preprocessing.truncated),
+          totalPages: preprocessing.totalPages ?? null,
+          processedPages: preprocessing.processedPages ?? null,
+          error: preprocessing.error || null,
+        },
+      },
       data: parsedInvoice,
     };
 
@@ -869,7 +899,150 @@ function sanitizeQuickBooksCompany(company) {
   return rest;
 }
 
-async function extractWithGemini(buffer, mimeType) {
+async function preprocessInvoice(buffer, mimeType) {
+  if (!buffer || !mimeType) {
+    return { text: null, method: 'unknown' };
+  }
+
+  try {
+    if (mimeType === 'application/pdf') {
+      const pdfResult = await extractTextFromPdf(buffer);
+      if (pdfResult.text) {
+        return {
+          text: pdfResult.text,
+          method: 'pdf-text',
+          truncated: pdfResult.truncated,
+          totalPages: pdfResult.totalPages,
+          processedPages: pdfResult.processedPages,
+        };
+      }
+      return {
+        text: null,
+        method: 'pdf-text-empty',
+        totalPages: pdfResult.totalPages,
+        processedPages: pdfResult.processedPages,
+      };
+    }
+
+    if (OCR_IMAGE_MIME_TYPES.has(mimeType)) {
+      const ocrText = await extractTextWithTesseract(buffer);
+      if (ocrText) {
+        const { text, truncated } = truncateText(ocrText, GEMINI_TEXT_LIMIT);
+        return { text, method: 'image-ocr', truncated };
+      }
+      return { text: null, method: 'image-ocr-empty' };
+    }
+  } catch (error) {
+    console.warn('Preprocessing failed', error);
+    return { text: null, method: 'error', error: error.message };
+  }
+
+  return { text: null, method: 'unsupported' };
+}
+
+async function extractTextFromPdf(buffer) {
+  const pdfData = buffer instanceof Uint8Array
+    ? new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength)
+    : new Uint8Array(buffer);
+  const pdfjsLib = await getPdfJs();
+  const loadingTask = pdfjsLib.getDocument({
+    data: pdfData,
+    useSystemFonts: true,
+    isEvalSupported: false,
+    useWorker: false,
+  });
+
+  const pdf = await loadingTask.promise;
+  const totalPages = pdf.numPages;
+  const processedPages = Math.min(totalPages, 10);
+
+  let collectedText = [];
+
+  for (let pageNumber = 1; pageNumber <= processedPages; pageNumber += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    const page = await pdf.getPage(pageNumber);
+    // eslint-disable-next-line no-await-in-loop
+    const textContent = await page.getTextContent();
+    const pageText = normalizeTextFromItems(textContent.items);
+    if (pageText) {
+      collectedText.push(`Page ${pageNumber}: ${pageText}`);
+    }
+  }
+
+  await pdf.cleanup();
+
+  const merged = collectedText.join('\n\n').trim();
+  if (!merged || merged.length < 50) {
+    return { text: null, totalPages, processedPages, truncated: false };
+  }
+
+  const { text, truncated } = truncateText(merged, GEMINI_TEXT_LIMIT);
+  return { text, totalPages, processedPages, truncated };
+}
+
+async function extractTextWithTesseract(buffer) {
+  const worker = await getTesseractWorker();
+  const result = await worker.recognize(buffer);
+  const rawText = result?.data?.text || '';
+  const cleaned = normalizeWhitespace(rawText);
+  return cleaned || null;
+}
+
+async function getTesseractWorker() {
+  if (!tesseractWorkerPromise) {
+    tesseractWorkerPromise = createWorker('eng', 1, {
+      logger: process.env.TESSERACT_LOG ? (message) => console.log('[tesseract]', message) : undefined,
+    });
+  }
+
+  return tesseractWorkerPromise;
+}
+
+async function getPdfJs() {
+  if (!pdfjsLibPromise) {
+    pdfjsLibPromise = import('pdfjs-dist/legacy/build/pdf.mjs');
+  }
+
+  return pdfjsLibPromise;
+}
+
+function normalizeTextFromItems(items) {
+  if (!Array.isArray(items) || !items.length) {
+    return '';
+  }
+
+  const raw = items
+    .map((item) => (typeof item.str === 'string' ? item.str : ''))
+    .join(' ');
+
+  return normalizeWhitespace(raw);
+}
+
+function normalizeWhitespace(value) {
+  if (!value) {
+    return '';
+  }
+
+  return value
+    .replace(/\u0000/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function truncateText(text, limit) {
+  if (!text) {
+    return { text: '', truncated: false };
+  }
+
+  if (text.length <= limit) {
+    return { text, truncated: false };
+  }
+
+  return { text: `${text.slice(0, limit)}…`, truncated: true };
+}
+
+
+async function extractWithGemini(buffer, mimeType, { extractedText } = {}) {
   const url = buildGeminiUrl();
   const prompt = `You are an expert system for reading invoices. Extract the following fields and respond with **only** valid JSON matching this schema:
 {
@@ -893,14 +1066,27 @@ async function extractWithGemini(buffer, mimeType) {
   "currency": string | null // 3-letter ISO code when available
 }
 Rules:
+- If the document text is provided below, rely exclusively on that text.
+- Otherwise, analyze the attached file contents.
 - Use numbers for monetary values without currency symbols.
 - If a field is missing, set it to null.
 - Combine multiple bill recipients into a single string if necessary.
 - For products, include at least a description. Omit other product fields if not present by setting them to null.
 - Do not add commentary. Return only minified JSON with the exact fields above.`;
 
-  const payload = {
-    contents: [
+  let contents;
+  if (extractedText && extractedText.trim()) {
+    const documentText = extractedText.trim();
+    contents = [
+      {
+        role: 'user',
+        parts: [
+          { text: `${prompt}\n\nDocument text:\n${documentText}` },
+        ],
+      },
+    ];
+  } else {
+    contents = [
       {
         role: 'user',
         parts: [
@@ -913,8 +1099,10 @@ Rules:
           },
         ],
       },
-    ],
-  };
+    ];
+  }
+
+  const payload = { contents };
 
   const response = await fetch(url, {
     method: 'POST',

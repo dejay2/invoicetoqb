@@ -9,7 +9,11 @@ const connectCompanyButton = document.getElementById('connect-company');
 const refreshMetadataButton = document.getElementById('refresh-metadata');
 const vendorList = document.getElementById('vendor-list');
 const accountList = document.getElementById('account-list');
+const reviewTableBody = document.getElementById('review-table-body');
 const archiveTableBody = document.getElementById('archive-table-body');
+const dropZone = document.getElementById('invoice-drop-zone');
+const uploadInput = document.getElementById('invoice-upload-input');
+const uploadStatusList = document.getElementById('upload-status-list');
 
 let quickBooksCompanies = [];
 let selectedRealmId = '';
@@ -57,8 +61,37 @@ function attachEventListeners() {
     });
   }
 
+  if (dropZone) {
+    dropZone.addEventListener('click', () =>
+      uploadInput?.click()
+    );
+    dropZone.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        uploadInput?.click();
+      }
+    });
+    ['dragenter', 'dragover'].forEach((eventName) => {
+      dropZone.addEventListener(eventName, handleDropZoneDragOver);
+    });
+    ['dragleave', 'dragend'].forEach((eventName) => {
+      dropZone.addEventListener(eventName, handleDropZoneDragLeave);
+    });
+    dropZone.addEventListener('drop', handleDropZoneDrop);
+  }
+
+  if (uploadInput) {
+    uploadInput.addEventListener('change', (event) => {
+      processSelectedFiles(event.target.files);
+    });
+  }
+
   if (archiveTableBody) {
     archiveTableBody.addEventListener('click', handleArchiveAction);
+  }
+
+  if (reviewTableBody) {
+    reviewTableBody.addEventListener('click', handleReviewAction);
   }
 
   tabButtons.forEach((button) => {
@@ -87,6 +120,158 @@ function handleQuickBooksCallback() {
   window.history.replaceState({}, document.title, window.location.pathname);
 }
 
+function handleDropZoneDragOver(event) {
+  event.preventDefault();
+  if (dropZone) {
+    dropZone.classList.add('dragover');
+  }
+}
+
+function handleDropZoneDragLeave(event) {
+  event.preventDefault();
+  if (dropZone) {
+    dropZone.classList.remove('dragover');
+  }
+}
+
+function handleDropZoneDrop(event) {
+  event.preventDefault();
+  if (dropZone) {
+    dropZone.classList.remove('dragover');
+  }
+  if (event.dataTransfer?.files?.length) {
+    processSelectedFiles(event.dataTransfer.files);
+  }
+}
+
+async function processSelectedFiles(fileList) {
+  const files = Array.from(fileList || []).filter((file) => file && file.size > 0);
+  if (!files.length) {
+    return;
+  }
+
+  clearUploadStatusEmptyState();
+
+  let movedToReview = false;
+  for (const file of files) {
+    const statusEntry = createUploadStatusEntry(file.name);
+    // eslint-disable-next-line no-await-in-loop
+    const success = await uploadAndProcessFile(file, statusEntry);
+    if (success) {
+      movedToReview = true;
+    }
+  }
+
+  if (uploadInput) {
+    uploadInput.value = '';
+  }
+
+  if (movedToReview) {
+    activateCompanyTab('to-review');
+  }
+}
+
+function clearUploadStatusEmptyState() {
+  if (uploadStatusList) {
+    const emptyItem = uploadStatusList.querySelector('.empty');
+    if (emptyItem) {
+      emptyItem.remove();
+    }
+  }
+}
+
+function createUploadStatusEntry(fileName) {
+  if (!uploadStatusList) {
+    return null;
+  }
+
+  const item = document.createElement('li');
+  item.className = 'upload-status-item';
+
+  const name = document.createElement('span');
+  name.className = 'upload-status-name';
+  name.textContent = fileName;
+
+  const message = document.createElement('span');
+  message.className = 'upload-status-message';
+  message.textContent = 'Queued…';
+
+  item.append(name, message);
+  uploadStatusList.prepend(item);
+
+  const entry = { element: item, messageElement: message };
+  return entry;
+}
+
+function setUploadStatus(entry, message, state = 'info') {
+  if (!entry || !entry.element) {
+    return;
+  }
+  entry.element.dataset.state = state;
+  if (entry.messageElement) {
+    entry.messageElement.textContent = message;
+  }
+}
+
+async function uploadAndProcessFile(file, statusEntry) {
+  if (!file) {
+    return false;
+  }
+
+  setUploadStatus(statusEntry, 'Uploading to Gemini…');
+
+  const formData = new FormData();
+  formData.append('invoice', file);
+
+  try {
+    const response = await fetch('/api/parse-invoice', {
+      method: 'POST',
+      body: formData,
+    });
+
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      payload = null;
+    }
+
+    if (!response.ok) {
+      const message = payload?.error || 'Failed to parse invoice.';
+      throw new Error(message);
+    }
+
+    const checksum = payload?.invoice?.metadata?.checksum;
+    if (checksum) {
+      try {
+        const statusResponse = await fetch(`/api/invoices/${encodeURIComponent(checksum)}/status`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ status: 'review' }),
+        });
+
+        if (!statusResponse.ok) {
+          const statusPayload = await statusResponse.json().catch(() => null);
+          const message = statusPayload?.error || 'Failed to route invoice to review.';
+          throw new Error(message);
+        }
+      } catch (error) {
+        throw new Error(error.message || 'Failed to route invoice to review.');
+      }
+    }
+
+    await loadStoredInvoices();
+    setUploadStatus(statusEntry, 'Parsed and routed to review.', 'success');
+    return true;
+  } catch (error) {
+    console.error(error);
+    setUploadStatus(statusEntry, error.message || 'Upload failed.', 'error');
+    return false;
+  }
+}
+
 async function refreshQuickBooksCompanies(preferredRealmId = selectedRealmId) {
   const previousSelection = preferredRealmId || selectedRealmId || '';
 
@@ -106,11 +291,11 @@ async function refreshQuickBooksCompanies(preferredRealmId = selectedRealmId) {
       }
     });
 
-    populateCompanySelect(previousSelection);
+    populateCompanySelect(previousSelection, { triggerMetadataWhenSame: true });
   } catch (error) {
     console.error(error);
     quickBooksCompanies = [];
-    populateCompanySelect('');
+    populateCompanySelect('', { triggerMetadataWhenSame: false });
     showStatus(globalStatus, error.message || 'Failed to load QuickBooks companies.', 'error');
   }
 }
@@ -502,10 +687,12 @@ async function loadStoredInvoices() {
     const payload = await response.json();
     storedInvoices = Array.isArray(payload?.invoices) ? payload.invoices : [];
     renderArchiveTable();
+    renderReviewTable();
   } catch (error) {
     console.error(error);
     storedInvoices = [];
     renderArchiveTable();
+    renderReviewTable();
     showStatus(globalStatus, error.message || 'Failed to load archived invoices.', 'error');
   }
 }
@@ -588,6 +775,84 @@ function renderArchiveTable() {
   });
 }
 
+function renderReviewTable() {
+  if (!reviewTableBody) {
+    return;
+  }
+
+  reviewTableBody.innerHTML = '';
+
+  const reviewItems = storedInvoices.filter((invoice) => invoice?.status === 'review');
+  if (!reviewItems.length) {
+    const row = document.createElement('tr');
+    row.className = 'empty-row';
+    const cell = document.createElement('td');
+    cell.colSpan = 5;
+    cell.textContent = 'No invoices pending review.';
+    row.appendChild(cell);
+    reviewTableBody.appendChild(row);
+    return;
+  }
+
+  const sorted = [...reviewItems].sort((a, b) => {
+    const aTime = new Date(a.parsedAt || 0).getTime();
+    const bTime = new Date(b.parsedAt || 0).getTime();
+    return bTime - aTime;
+  });
+
+  sorted.forEach((invoice) => {
+    const row = document.createElement('tr');
+
+    const invoiceCell = document.createElement('td');
+    invoiceCell.appendChild(createCellTitle(invoice.data?.invoiceNumber || '—'));
+    const subtitleParts = [];
+    if (invoice.metadata?.originalName) {
+      subtitleParts.push(invoice.metadata.originalName);
+    }
+    if (invoice.parsedAt) {
+      subtitleParts.push(`Parsed ${formatTimestamp(invoice.parsedAt)}`);
+    }
+    if (subtitleParts.length) {
+      invoiceCell.appendChild(createCellSubtitle(subtitleParts.join(' • ')));
+    }
+    row.appendChild(invoiceCell);
+
+    const vendorCell = document.createElement('td');
+    vendorCell.appendChild(createCellTitle(invoice.data?.vendor || '—'));
+    row.appendChild(vendorCell);
+
+    const dateCell = document.createElement('td');
+    dateCell.appendChild(createCellTitle(formatDate(invoice.data?.invoiceDate)));
+    row.appendChild(dateCell);
+
+    const totalCell = document.createElement('td');
+    totalCell.appendChild(createCellTitle(formatAmount(invoice.data?.totalAmount)));
+    row.appendChild(totalCell);
+
+    const actionsCell = document.createElement('td');
+    actionsCell.className = 'table-actions';
+
+    const moveButton = document.createElement('button');
+    moveButton.type = 'button';
+    moveButton.className = 'table-action';
+    moveButton.dataset.action = 'archive';
+    moveButton.dataset.checksum = invoice.metadata?.checksum || '';
+    moveButton.textContent = 'Move to archive';
+    actionsCell.appendChild(moveButton);
+
+    const deleteButton = document.createElement('button');
+    deleteButton.type = 'button';
+    deleteButton.className = 'table-action destructive';
+    deleteButton.dataset.action = 'delete';
+    deleteButton.dataset.checksum = invoice.metadata?.checksum || '';
+    deleteButton.textContent = 'Delete';
+    actionsCell.appendChild(deleteButton);
+
+    row.appendChild(actionsCell);
+    reviewTableBody.appendChild(row);
+  });
+}
+
 function createCellTitle(text) {
   const element = document.createElement('div');
   element.className = 'cell-primary';
@@ -600,6 +865,25 @@ function createCellSubtitle(text) {
   element.className = 'cell-secondary';
   element.textContent = text;
   return element;
+}
+
+async function handleReviewAction(event) {
+  const button = event.target.closest('button[data-action]');
+  if (!button) {
+    return;
+  }
+
+  const action = button.dataset.action;
+  const checksum = button.dataset.checksum;
+  if (!checksum) {
+    return;
+  }
+
+  if (action === 'archive') {
+    await moveInvoiceToArchive(checksum, button);
+  } else if (action === 'delete') {
+    await deleteInvoice(checksum, button);
+  }
 }
 
 async function handleArchiveAction(event) {
@@ -652,6 +936,43 @@ async function moveInvoiceToReview(checksum, button) {
   } catch (error) {
     console.error(error);
     showStatus(globalStatus, error.message || 'Failed to move invoice to review.', 'error');
+  } finally {
+    button.textContent = originalLabel;
+    button.disabled = false;
+  }
+}
+
+async function moveInvoiceToArchive(checksum, button) {
+  const originalLabel = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Moving…';
+
+  try {
+    const response = await fetch(`/api/invoices/${encodeURIComponent(checksum)}/status`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ status: 'archive' }),
+    });
+
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      payload = null;
+    }
+
+    if (!response.ok) {
+      const message = payload?.error || 'Failed to move invoice to archive.';
+      throw new Error(message);
+    }
+
+    showStatus(globalStatus, 'Invoice moved to archive.', 'success');
+    await loadStoredInvoices();
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, error.message || 'Failed to move invoice to archive.', 'error');
   } finally {
     button.textContent = originalLabel;
     button.disabled = false;
