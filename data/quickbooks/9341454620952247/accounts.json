@@ -1,0 +1,698 @@
+{
+  "updatedAt": "2025-09-17T19:09:55.785Z",
+  "items": [
+    {
+      "id": "53",
+      "name": "Accruals",
+      "fullyQualifiedName": "Accruals",
+      "accountType": "Other Current Liability",
+      "accountSubType": "CurrentLiabilities"
+    },
+    {
+      "id": "21",
+      "name": "Advertising",
+      "fullyQualifiedName": "Advertising",
+      "accountType": "Expense",
+      "accountSubType": "AdvertisingPromotional"
+    },
+    {
+      "id": "45",
+      "name": "Bad debt provision",
+      "fullyQualifiedName": "Bad debt provision",
+      "accountType": "Other Current Asset",
+      "accountSubType": "AllowanceForBadDebts"
+    },
+    {
+      "id": "73",
+      "name": "Bakery",
+      "fullyQualifiedName": "Bakery",
+      "accountType": "Cost of Goods Sold",
+      "accountSubType": "CostOfSales"
+    },
+    {
+      "id": "8",
+      "name": "Bank Account",
+      "fullyQualifiedName": "Bank Account",
+      "accountType": "Bank",
+      "accountSubType": "Checking"
+    },
+    {
+      "id": "1150040004",
+      "name": "Bank Charges",
+      "fullyQualifiedName": "Bank Charges",
+      "accountType": "Expense",
+      "accountSubType": "BankCharges"
+    },
+    {
+      "id": "30",
+      "name": "Bank charges-1",
+      "fullyQualifiedName": "Bank charges-1",
+      "accountType": "Expense",
+      "accountSubType": "FinanceCosts"
+    },
+    {
+      "id": "37",
+      "name": "Bank interest - received",
+      "fullyQualifiedName": "Bank interest - received",
+      "accountType": "Other Income",
+      "accountSubType": "InterestEarned"
+    },
+    {
+      "id": "69",
+      "name": "Beverages",
+      "fullyQualifiedName": "Beverages",
+      "accountType": "Cost of Goods Sold",
+      "accountSubType": "CostOfSales"
+    },
+    {
+      "id": "5",
+      "name": "Billable Expense Income",
+      "fullyQualifiedName": "Billable Expense Income",
+      "accountType": "Income",
+      "accountSubType": "ServiceFeeIncome"
+    },
+    {
+      "id": "1150040012",
+      "name": "Building Improvements",
+      "fullyQualifiedName": "Building Improvements",
+      "accountType": "Fixed Asset",
+      "accountSubType": "LeaseholdImprovements"
+    },
+    {
+      "id": "57",
+      "name": "Capital redemption reserve",
+      "fullyQualifiedName": "Capital redemption reserve",
+      "accountType": "Equity",
+      "accountSubType": "PaidInCapitalOrSurplus"
+    },
+    {
+      "id": "75",
+      "name": "Cash & Carry",
+      "fullyQualifiedName": "Cash & Carry",
+      "accountType": "Cost of Goods Sold",
+      "accountSubType": "CostOfSales"
+    },
+    {
+      "id": "1150040005",
+      "name": "Cash On Hand",
+      "fullyQualifiedName": "Cash On Hand",
+      "accountType": "Bank",
+      "accountSubType": "CashOnHand"
+    },
+    {
+      "id": "1150040016",
+      "name": "Cleaning",
+      "fullyQualifiedName": "Cleaning",
+      "accountType": "Expense",
+      "accountSubType": "SuppliesMaterials"
+    },
+    {
+      "id": "1150040009",
+      "name": "Cleaning Materials",
+      "fullyQualifiedName": "Cleaning Materials",
+      "accountType": "Expense",
+      "accountSubType": "SuppliesMaterials"
+    },
+    {
+      "id": "42",
+      "name": "Computer equipment accumulated depreciation brought forward",
+      "fullyQualifiedName": "Computer equipment accumulated depreciation brought forward",
+      "accountType": "Fixed Asset",
+      "accountSubType": "AccumulatedDepreciation"
+    },
+    {
+      "id": "41",
+      "name": "Computer equipment additions at cost",
+      "fullyQualifiedName": "Computer equipment additions at cost",
+      "accountType": "Fixed Asset",
+      "accountSubType": "MachineryAndEquipment"
+    },
+    {
+      "id": "40",
+      "name": "Computer equipment cost brought forward",
+      "fullyQualifiedName": "Computer equipment cost brought forward",
+      "accountType": "Fixed Asset",
+      "accountSubType": "MachineryAndEquipment"
+    },
+    {
+      "id": "43",
+      "name": "Computer equipment depreciation charge for year",
+      "fullyQualifiedName": "Computer equipment depreciation charge for year",
+      "accountType": "Fixed Asset",
+      "accountSubType": "AccumulatedDepreciation"
+    },
+    {
+      "id": "44",
+      "name": "Computer equipment depreciation eliminatated on disposals",
+      "fullyQualifiedName": "Computer equipment depreciation eliminatated on disposals",
+      "accountType": "Fixed Asset",
+      "accountSubType": "AccumulatedDepreciation"
+    },
+    {
+      "id": "23",
+      "name": "Computer running costs",
+      "fullyQualifiedName": "Computer running costs",
+      "accountType": "Expense",
+      "accountSubType": "OfficeGeneralAdministrativeExpenses"
+    },
+    {
+      "id": "48",
+      "name": "Corporation tax payable",
+      "fullyQualifiedName": "Corporation tax payable",
+      "accountType": "Other Current Liability",
+      "accountSubType": "CurrentTaxLiability"
+    },
+    {
+      "id": "66",
+      "name": "Cost of sales",
+      "fullyQualifiedName": "Cost of sales",
+      "accountType": "Cost of Goods Sold",
+      "accountSubType": "SuppliesMaterialsCogs"
+    },
+    {
+      "id": "22",
+      "name": "Courier and delivery charges",
+      "fullyQualifiedName": "Courier and delivery charges",
+      "accountType": "Expense",
+      "accountSubType": "ShippingFreightDelivery"
+    },
+    {
+      "id": "31",
+      "name": "Credit card charges",
+      "fullyQualifiedName": "Credit card charges",
+      "accountType": "Expense",
+      "accountSubType": "FinanceCosts"
+    },
+    {
+      "id": "78",
+      "name": "Creditors",
+      "fullyQualifiedName": "Creditors",
+      "accountType": "Accounts Payable",
+      "accountSubType": "AccountsPayable"
+    },
+    {
+      "id": "70",
+      "name": "Dairy",
+      "fullyQualifiedName": "Dairy",
+      "accountType": "Cost of Goods Sold",
+      "accountSubType": "CostOfSales"
+    },
+    {
+      "id": "81",
+      "name": "Debtors",
+      "fullyQualifiedName": "Debtors",
+      "accountType": "Accounts Receivable",
+      "accountSubType": "AccountsReceivable"
+    },
+    {
+      "id": "34",
+      "name": "Depreciation",
+      "fullyQualifiedName": "Depreciation",
+      "accountType": "Other Expense",
+      "accountSubType": "Depreciation"
+    },
+    {
+      "id": "50",
+      "name": "Director's current account",
+      "fullyQualifiedName": "Director's current account",
+      "accountType": "Other Current Liability",
+      "accountSubType": "ShortTermBorrowings"
+    },
+    {
+      "id": "1150040006",
+      "name": "Directors Loan Account P Gill",
+      "fullyQualifiedName": "Directors Loan Account P Gill",
+      "accountType": "Other Current Liability",
+      "accountSubType": "OtherCurrentLiabilities"
+    },
+    {
+      "id": "14",
+      "name": "Directors' pension costs",
+      "fullyQualifiedName": "Directors' pension costs",
+      "accountType": "Expense",
+      "accountSubType": "CostOfLabor"
+    },
+    {
+      "id": "12",
+      "name": "Directors' remuneration",
+      "fullyQualifiedName": "Directors' remuneration",
+      "accountType": "Expense",
+      "accountSubType": "CostOfLabor"
+    },
+    {
+      "id": "39",
+      "name": "Dividend",
+      "fullyQualifiedName": "Dividend",
+      "accountType": "Other Expense",
+      "accountSubType": "OtherMiscellaneousExpense"
+    },
+    {
+      "id": "49",
+      "name": "Dividends payable",
+      "fullyQualifiedName": "Dividends payable",
+      "accountType": "Other Current Liability",
+      "accountSubType": "CurrentLiabilities"
+    },
+    {
+      "id": "76",
+      "name": "Electricity",
+      "fullyQualifiedName": "Electricity",
+      "accountType": "Expense",
+      "accountSubType": "Utilities"
+    },
+    {
+      "id": "13",
+      "name": "Employer's NI contributions",
+      "fullyQualifiedName": "Employer's NI contributions",
+      "accountType": "Expense",
+      "accountSubType": "CostOfLabor"
+    },
+    {
+      "id": "60",
+      "name": "Employer's NIC",
+      "fullyQualifiedName": "Employer's NIC",
+      "accountType": "Expense",
+      "accountSubType": "CostOfLabor"
+    },
+    {
+      "id": "1150040007",
+      "name": "Employers Pension",
+      "fullyQualifiedName": "Employers Pension",
+      "accountType": "Expense",
+      "accountSubType": "CostOfLabor"
+    },
+    {
+      "id": "28",
+      "name": "Entertaining",
+      "fullyQualifiedName": "Entertaining",
+      "accountType": "Expense",
+      "accountSubType": "EntertainmentMeals"
+    },
+    {
+      "id": "25",
+      "name": "Equipment leasing",
+      "fullyQualifiedName": "Equipment leasing",
+      "accountType": "Expense",
+      "accountSubType": "EquipmentRental"
+    },
+    {
+      "id": "71",
+      "name": "Farm Produce",
+      "fullyQualifiedName": "Farm Produce",
+      "accountType": "Cost of Goods Sold",
+      "accountSubType": "CostOfSales"
+    },
+    {
+      "id": "68",
+      "name": "Food",
+      "fullyQualifiedName": "Food",
+      "accountType": "Cost of Goods Sold",
+      "accountSubType": "CostOfSales"
+    },
+    {
+      "id": "1150040011",
+      "name": "Furniture & Fixtures",
+      "fullyQualifiedName": "Furniture & Fixtures",
+      "accountType": "Fixed Asset",
+      "accountSubType": "FurnitureAndFixtures"
+    },
+    {
+      "id": "59",
+      "name": "Gross Wages & Salaries",
+      "fullyQualifiedName": "Gross Wages & Salaries",
+      "accountType": "Expense",
+      "accountSubType": "CostOfLabor"
+    },
+    {
+      "id": "17",
+      "name": "Insurance",
+      "fullyQualifiedName": "Insurance",
+      "accountType": "Expense",
+      "accountSubType": "Insurance"
+    },
+    {
+      "id": "1150040017",
+      "name": "Jamies Credit Card",
+      "fullyQualifiedName": "Jamies Credit Card",
+      "accountType": "Credit Card",
+      "accountSubType": "CreditCard"
+    },
+    {
+      "id": "1150040010",
+      "name": "Kitchen Equipment",
+      "fullyQualifiedName": "Kitchen Equipment",
+      "accountType": "Fixed Asset",
+      "accountSubType": "MachineryAndEquipment"
+    },
+    {
+      "id": "1150040008",
+      "name": "Kitchen Supplies (Smallwares)",
+      "fullyQualifiedName": "Kitchen Supplies (Smallwares)",
+      "accountType": "Expense",
+      "accountSubType": "SuppliesMaterials"
+    },
+    {
+      "id": "29",
+      "name": "Legal and professional fees",
+      "fullyQualifiedName": "Legal and professional fees",
+      "accountType": "Expense",
+      "accountSubType": "LegalProfessionalFees"
+    },
+    {
+      "id": "18",
+      "name": "Light and heat",
+      "fullyQualifiedName": "Light and heat",
+      "accountType": "Expense",
+      "accountSubType": "Utilities"
+    },
+    {
+      "id": "72",
+      "name": "Meat & Poultry",
+      "fullyQualifiedName": "Meat & Poultry",
+      "accountType": "Cost of Goods Sold",
+      "accountSubType": "CostOfSales"
+    },
+    {
+      "id": "26",
+      "name": "Motor running expenses",
+      "fullyQualifiedName": "Motor running expenses",
+      "accountType": "Expense",
+      "accountSubType": "EquipmentRental"
+    },
+    {
+      "id": "61",
+      "name": "Net Wages Payable",
+      "fullyQualifiedName": "Net Wages Payable",
+      "accountType": "Other Current Liability",
+      "accountSubType": "PayrollClearing"
+    },
+    {
+      "id": "58",
+      "name": "Office expenses, repairs & maintenance",
+      "fullyQualifiedName": "Office expenses, repairs & maintenance",
+      "accountType": "Expense",
+      "accountSubType": "RepairMaintenance"
+    },
+    {
+      "id": "9",
+      "name": "Opening Balance Equity",
+      "fullyQualifiedName": "Opening Balance Equity",
+      "accountType": "Equity",
+      "accountSubType": "OpeningBalanceEquity"
+    },
+    {
+      "id": "54",
+      "name": "Ordinary share capital",
+      "fullyQualifiedName": "Ordinary share capital",
+      "accountType": "Equity",
+      "accountSubType": "ShareCapital"
+    },
+    {
+      "id": "46",
+      "name": "Other debtors",
+      "fullyQualifiedName": "Other debtors",
+      "accountType": "Other Current Asset",
+      "accountSubType": "OtherCurrentAssets"
+    },
+    {
+      "id": "36",
+      "name": "Other finance income",
+      "fullyQualifiedName": "Other finance income",
+      "accountType": "Other Income",
+      "accountSubType": "OtherInvestmentIncome"
+    },
+    {
+      "id": "52",
+      "name": "Other loans",
+      "fullyQualifiedName": "Other loans",
+      "accountType": "Other Current Liability",
+      "accountSubType": "LoanPayable"
+    },
+    {
+      "id": "74",
+      "name": "Packaging",
+      "fullyQualifiedName": "Packaging",
+      "accountType": "Cost of Goods Sold",
+      "accountSubType": "CostOfSales"
+    },
+    {
+      "id": "1150040013",
+      "name": "Pauls Credit Card",
+      "fullyQualifiedName": "Pauls Credit Card",
+      "accountType": "Credit Card",
+      "accountSubType": "CreditCard"
+    },
+    {
+      "id": "62",
+      "name": "PAYE/NIC Payable",
+      "fullyQualifiedName": "PAYE/NIC Payable",
+      "accountType": "Other Current Liability",
+      "accountSubType": "PayrollClearing"
+    },
+    {
+      "id": "64",
+      "name": "Payroll Clearing",
+      "fullyQualifiedName": "Payroll Clearing",
+      "accountType": "Other Current Liability",
+      "accountSubType": "PayrollClearing"
+    },
+    {
+      "id": "63",
+      "name": "Pension Payable",
+      "fullyQualifiedName": "Pension Payable",
+      "accountType": "Other Current Liability",
+      "accountSubType": "PayrollClearing"
+    },
+    {
+      "id": "47",
+      "name": "Prepayments",
+      "fullyQualifiedName": "Prepayments",
+      "accountType": "Other Current Asset",
+      "accountSubType": "PrepaidExpenses"
+    },
+    {
+      "id": "20",
+      "name": "Printing, postage and stationery",
+      "fullyQualifiedName": "Printing, postage and stationery",
+      "accountType": "Expense",
+      "accountSubType": "OfficeGeneralAdministrativeExpenses"
+    },
+    {
+      "id": "11",
+      "name": "Purchases",
+      "fullyQualifiedName": "Purchases",
+      "accountType": "Cost of Goods Sold",
+      "accountSubType": "CostOfSales"
+    },
+    {
+      "id": "16",
+      "name": "Rates",
+      "fullyQualifiedName": "Rates",
+      "accountType": "Expense",
+      "accountSubType": "RentOrLeaseOfBuildings"
+    },
+    {
+      "id": "87",
+      "name": "Reconciliation Discrepancies",
+      "fullyQualifiedName": "Reconciliation Discrepancies",
+      "accountType": "Other Expense",
+      "accountSubType": "OtherMiscellaneousExpense"
+    },
+    {
+      "id": "15",
+      "name": "Rent",
+      "fullyQualifiedName": "Rent",
+      "accountType": "Expense",
+      "accountSubType": "RentOrLeaseOfBuildings"
+    },
+    {
+      "id": "19",
+      "name": "Repairs and maintenance",
+      "fullyQualifiedName": "Repairs and maintenance",
+      "accountType": "Expense",
+      "accountSubType": "RepairMaintenance"
+    },
+    {
+      "id": "4",
+      "name": "Retained Earnings",
+      "fullyQualifiedName": "Retained Earnings",
+      "accountType": "Equity",
+      "accountSubType": "RetainedEarnings"
+    },
+    {
+      "id": "56",
+      "name": "Revaluation reserve",
+      "fullyQualifiedName": "Revaluation reserve",
+      "accountType": "Equity",
+      "accountSubType": "AccumulatedAdjustment"
+    },
+    {
+      "id": "1150040015",
+      "name": "Revolut Savings",
+      "fullyQualifiedName": "Revolut Savings",
+      "accountType": "Bank",
+      "accountSubType": "Savings"
+    },
+    {
+      "id": "10",
+      "name": "Sales",
+      "fullyQualifiedName": "Sales",
+      "accountType": "Income",
+      "accountSubType": "SalesOfProductIncome"
+    },
+    {
+      "id": "65",
+      "name": "Sales of Product Income",
+      "fullyQualifiedName": "Sales of Product Income",
+      "accountType": "Income",
+      "accountSubType": "SalesOfProductIncome"
+    },
+    {
+      "id": "6",
+      "name": "Services",
+      "fullyQualifiedName": "Services",
+      "accountType": "Income",
+      "accountSubType": "ServiceFeeIncome"
+    },
+    {
+      "id": "7",
+      "name": "Services-1",
+      "fullyQualifiedName": "Services-1",
+      "accountType": "Income",
+      "accountSubType": "ServiceFeeIncome"
+    },
+    {
+      "id": "55",
+      "name": "Share premium",
+      "fullyQualifiedName": "Share premium",
+      "accountType": "Equity",
+      "accountSubType": "PaidInCapitalOrSurplus"
+    },
+    {
+      "id": "1150040014",
+      "name": "Staff Uniform",
+      "fullyQualifiedName": "Staff Uniform",
+      "accountType": "Expense",
+      "accountSubType": "SuppliesMaterials"
+    },
+    {
+      "id": "67",
+      "name": "Stock Asset",
+      "fullyQualifiedName": "Stock Asset",
+      "accountType": "Other Current Asset",
+      "accountSubType": "Inventory"
+    },
+    {
+      "id": "33",
+      "name": "Subscriptions",
+      "fullyQualifiedName": "Subscriptions",
+      "accountType": "Expense",
+      "accountSubType": "DuesSubscriptions"
+    },
+    {
+      "id": "32",
+      "name": "Sundry expenses",
+      "fullyQualifiedName": "Sundry expenses",
+      "accountType": "Expense",
+      "accountSubType": "OfficeGeneralAdministrativeExpenses"
+    },
+    {
+      "id": "35",
+      "name": "Sundry income",
+      "fullyQualifiedName": "Sundry income",
+      "accountType": "Other Income",
+      "accountSubType": "OtherMiscellaneousIncome"
+    },
+    {
+      "id": "24",
+      "name": "Telephone",
+      "fullyQualifiedName": "Telephone",
+      "accountType": "Expense",
+      "accountSubType": "OfficeGeneralAdministrativeExpenses"
+    },
+    {
+      "id": "27",
+      "name": "Travelling expenses",
+      "fullyQualifiedName": "Travelling expenses",
+      "accountType": "Expense",
+      "accountSubType": "Travel"
+    },
+    {
+      "id": "38",
+      "name": "UK Corporation Tax",
+      "fullyQualifiedName": "UK Corporation Tax",
+      "accountType": "Expense",
+      "accountSubType": "TaxesPaid"
+    },
+    {
+      "id": "79",
+      "name": "Unapplied Cash Bill Payment Expense",
+      "fullyQualifiedName": "Unapplied Cash Bill Payment Expense",
+      "accountType": "Expense",
+      "accountSubType": "UnappliedCashBillPaymentExpense"
+    },
+    {
+      "id": "86",
+      "name": "Unapplied Cash Payment Income",
+      "fullyQualifiedName": "Unapplied Cash Payment Income",
+      "accountType": "Income",
+      "accountSubType": "UnappliedCashPaymentIncome"
+    },
+    {
+      "id": "3",
+      "name": "Uncategorised Asset",
+      "fullyQualifiedName": "Uncategorised Asset",
+      "accountType": "Other Current Asset",
+      "accountSubType": "OtherCurrentAssets"
+    },
+    {
+      "id": "2",
+      "name": "Uncategorised Expense",
+      "fullyQualifiedName": "Uncategorised Expense",
+      "accountType": "Expense",
+      "accountSubType": "OtherMiscellaneousServiceCost"
+    },
+    {
+      "id": "1",
+      "name": "Uncategorised Income",
+      "fullyQualifiedName": "Uncategorised Income",
+      "accountType": "Income",
+      "accountSubType": "ServiceFeeIncome"
+    },
+    {
+      "id": "80",
+      "name": "Undeposited Funds",
+      "fullyQualifiedName": "Undeposited Funds",
+      "accountType": "Other Current Asset",
+      "accountSubType": "UndepositedFunds"
+    },
+    {
+      "id": "82",
+      "name": "VAT Control",
+      "fullyQualifiedName": "VAT Control",
+      "accountType": "Other Current Liability",
+      "accountSubType": "GlobalTaxPayable"
+    },
+    {
+      "id": "83",
+      "name": "VAT Suspense",
+      "fullyQualifiedName": "VAT Suspense",
+      "accountType": "Other Current Liability",
+      "accountSubType": "GlobalTaxSuspense"
+    },
+    {
+      "id": "51",
+      "name": "Wages and salaries control",
+      "fullyQualifiedName": "Wages and salaries control",
+      "accountType": "Other Current Liability",
+      "accountSubType": "PayrollClearing"
+    },
+    {
+      "id": "77",
+      "name": "Water",
+      "fullyQualifiedName": "Water",
+      "accountType": "Expense",
+      "accountSubType": "Utilities"
+    }
+  ]
+}

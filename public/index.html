@@ -62,10 +62,10 @@
 
     <section id="companies-tab" class="tab-panel" role="tabpanel" hidden aria-labelledby="companies-tab-button">
       <section class="companies-section">
-        <p>Review connected companies and update the display name shown across the toolkit.</p>
+        <p>Review connected companies, set display information, and refresh QuickBooks metadata.</p>
         <section id="companies-status" class="status" hidden></section>
         <ul id="company-management-list" class="company-list company-edit-list">
-          <li class="empty">Connect a QuickBooks company to edit its name.</li>
+          <li class="empty">Connect a QuickBooks company to edit its details.</li>
         </ul>
       </section>
     </section>
@@ -83,17 +83,35 @@
                 <option value="">Connect a QuickBooks company to select it</option>
               </select>
             </label>
-            <label class="input-group">
+            <label class="input-group matcher-composite">
               <span>Vendor</span>
-              <input id="match-vendor" name="vendor" type="text" placeholder="Vendor" />
+              <div class="matcher-composite-input">
+                <select id="match-vendor" name="vendor">
+                  <option value="">Select a QuickBooks vendor</option>
+                  <option value="__manual__">Use manual value</option>
+                </select>
+                <input id="match-vendor-manual" name="vendorManual" type="text" placeholder="Invoice vendor" />
+              </div>
             </label>
-            <label class="input-group">
+            <label class="input-group matcher-composite">
               <span>Account / Category</span>
-              <input id="match-account" name="account" type="text" placeholder="e.g. Cost of Goods Sold" />
+              <div class="matcher-composite-input">
+                <select id="match-account" name="account">
+                  <option value="">Select a QuickBooks account</option>
+                  <option value="__manual__">Use manual value</option>
+                </select>
+                <input id="match-account-manual" name="accountManual" type="text" placeholder="Invoice category" />
+              </div>
             </label>
-            <label class="input-group">
+            <label class="input-group matcher-composite">
               <span>Tax Rate</span>
-              <input id="match-tax-rate" name="taxRate" type="text" placeholder="e.g. Standard 20%" />
+              <div class="matcher-composite-input">
+                <select id="match-tax-rate" name="taxRate">
+                  <option value="">Select a QuickBooks tax code</option>
+                  <option value="__manual__">Use manual value</option>
+                </select>
+                <input id="match-tax-rate-manual" name="taxRateManual" type="text" placeholder="Invoice tax code" />
+              </div>
             </label>
           </fieldset>
 
