@@ -497,7 +497,7 @@ async function fetchAndStoreQuickBooksMetadata(realmId, { force = false } = {}) 
   }
 
   const result = await performQuickBooksFetch(realmId, async (accessToken) => {
-    const [vendors, accounts, taxCodes, taxAgencies] = await Promise.all([
+    const [vendors, accounts, taxCodes] = await Promise.all([
       fetchQuickBooksVendors(realmId, accessToken).catch((error) =>
         handleMetadataFetchError(error, 'Vendor', realmId)
       ),
@@ -507,9 +507,6 @@ async function fetchAndStoreQuickBooksMetadata(realmId, { force = false } = {}) 
       fetchQuickBooksTaxCodes(realmId, accessToken).catch((error) =>
         handleMetadataFetchError(error, 'TaxCode', realmId)
       ),
-      fetchQuickBooksTaxAgencies(realmId, accessToken).catch((error) =>
-        handleMetadataFetchError(error, 'TaxAgency', realmId)
-      ),
     ]);
 
     const timestamp = new Date().toISOString();
@@ -518,7 +515,6 @@ async function fetchAndStoreQuickBooksMetadata(realmId, { force = false } = {}) 
       writeQuickBooksMetadataFile(realmId, 'vendors', { updatedAt: timestamp, items: vendors }),
       writeQuickBooksMetadataFile(realmId, 'accounts', { updatedAt: timestamp, items: accounts }),
       writeQuickBooksMetadataFile(realmId, 'taxCodes', { updatedAt: timestamp, items: taxCodes }),
-      writeQuickBooksMetadataFile(realmId, 'taxAgencies', { updatedAt: timestamp, items: taxAgencies }),
     ]);
 
     await updateQuickBooksCompanyFields(realmId, {
@@ -528,15 +524,12 @@ async function fetchAndStoreQuickBooksMetadata(realmId, { force = false } = {}) 
       accountsCount: accounts.length,
       taxCodesUpdatedAt: taxCodes.length ? timestamp : null,
       taxCodesCount: taxCodes.length,
-      taxAgenciesUpdatedAt: taxAgencies.length ? timestamp : null,
-      taxAgenciesCount: taxAgencies.length,
     });
 
     return {
       vendors: { updatedAt: timestamp, items: vendors },
       accounts: { updatedAt: timestamp, items: accounts },
       taxCodes: { updatedAt: timestamp, items: taxCodes },
-      taxAgencies: { updatedAt: timestamp, items: taxAgencies },
     };
   });
 
@@ -551,18 +544,16 @@ async function readQuickBooksCompanyMetadata(realmId) {
     throw error;
   }
 
-  const [vendors, accounts, taxCodes, taxAgencies] = await Promise.all([
+  const [vendors, accounts, taxCodes] = await Promise.all([
     readQuickBooksMetadataFile(realmId, 'vendors'),
     readQuickBooksMetadataFile(realmId, 'accounts'),
     readQuickBooksMetadataFile(realmId, 'taxCodes'),
-    readQuickBooksMetadataFile(realmId, 'taxAgencies'),
   ]);
 
   return {
     vendors,
     accounts,
     taxCodes,
-    taxAgencies,
   };
 }
 
@@ -724,23 +715,6 @@ async function fetchQuickBooksTaxCodes(realmId, accessToken) {
       rate: deriveTaxCodeRate(code),
       agency: code.SalesTaxRateList?.TaxAgencyRef?.name || null,
       active: code.Active !== false,
-    }));
-}
-
-async function fetchQuickBooksTaxAgencies(realmId, accessToken) {
-  const agencies = await fetchQuickBooksQueryList(realmId, accessToken, 'TaxAgency');
-  return agencies
-    .filter((agency) => agency.Active !== false)
-    .map((agency) => ({
-      id: agency.Id,
-      name: agency.DisplayName || agency.Name || `Tax Agency ${agency.Id}`,
-      displayName: agency.DisplayName || null,
-      agencyType: agency.AgencyType || null,
-      taxTrackedOnSales: agency.TaxTrackedOnSales ?? null,
-      taxTrackedOnPurchases: agency.TaxTrackedOnPurchases ?? null,
-      taxRegistrationNumber: agency.TaxRegistrationNumber || null,
-      vendorId: agency.VendorRef?.value || null,
-      active: agency.Active !== false,
     }));
 }
 

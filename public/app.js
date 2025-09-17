@@ -26,7 +26,7 @@ const matchAccountManualInput = document.getElementById('match-account-manual');
 const matchTaxRateSelect = document.getElementById('match-tax-rate');
 const matchTaxRateManualInput = document.getElementById('match-tax-rate-manual');
 const matchInvoiceNumberInput = document.getElementById('match-invoice-number');
-const matchInvoiceNameInput = document.getElementById('match-invoice-name');
+const matchInvoiceDateInput = document.getElementById('match-invoice-date');
 const matchSubtotalInput = document.getElementById('match-subtotal');
 const matchTaxInput = document.getElementById('match-tax');
 const matchTotalInput = document.getElementById('match-total');
@@ -48,7 +48,7 @@ const matcherEditableInputs = [
   matchTaxRateSelect,
   matchTaxRateManualInput,
 ];
-const matcherReadonlyInputs = [matchInvoiceNumberInput, matchInvoiceNameInput, matchSubtotalInput, matchTaxInput, matchTotalInput];
+const matcherReadonlyInputs = [matchInvoiceNumberInput, matchInvoiceDateInput, matchSubtotalInput, matchTaxInput, matchTotalInput];
 const matchSubmitButton = matchForm ? matchForm.querySelector('button[type="submit"]') : null;
 
 tabs.forEach((tab) => {
@@ -273,7 +273,7 @@ function renderCompanyManagementList(companies) {
     const meta = document.createElement('div');
     meta.className = 'company-edit-meta';
     const detailLines = [formatQuickBooksMeta(company)];
-    if (company.vendorsCount || company.accountsCount || company.taxCodesCount || company.taxAgenciesCount) {
+    if (company.vendorsCount || company.accountsCount || company.taxCodesCount) {
       const counts = [];
       if (company.vendorsCount) {
         counts.push(`${company.vendorsCount} vendors`);
@@ -283,9 +283,6 @@ function renderCompanyManagementList(companies) {
       }
       if (company.taxCodesCount) {
         counts.push(`${company.taxCodesCount} tax codes`);
-      }
-      if (company.taxAgenciesCount) {
-        counts.push(`${company.taxAgenciesCount} tax agencies`);
       }
       detailLines.push(counts.join(' • '));
     }
@@ -643,7 +640,7 @@ function handleMatchSubmit(event) {
     taxRate: taxRateField,
     invoice: {
       invoiceNumber: currentInvoiceData?.invoiceNumber || null,
-      invoiceName: matchInvoiceNameInput?.value || null,
+      invoiceDate: matchInvoiceDateInput?.value || null,
       subtotal: currentInvoiceData?.subtotal ?? null,
       tax: currentInvoiceData?.vatAmount ?? currentInvoiceData?.taxAmount ?? null,
       total: currentInvoiceData?.totalAmount ?? null,
@@ -681,13 +678,7 @@ async function handleMatchCompanyChange() {
     if (currentMatchRecord) {
       currentMatchRecord.companyRealmId = realmId;
     }
-    if (
-      !metadata?.vendors?.items?.length &&
-      !metadata?.accounts?.items?.length &&
-      !metadata?.taxCodes?.items?.length &&
-      !metadata?.taxAgencies?.items?.length &&
-      currentInvoiceData
-    ) {
+    if (!metadata?.vendors?.items?.length && !metadata?.accounts?.items?.length && !metadata?.taxCodes?.items?.length && currentInvoiceData) {
       showMatchStatus('QuickBooks lists are incomplete. Refresh metadata from the Companies tab if needed.', 'info');
     }
   } catch (error) {
@@ -725,13 +716,6 @@ function formatQuickBooksMeta(company) {
     const vendorsDate = new Date(company.vendorsUpdatedAt);
     if (!Number.isNaN(vendorsDate.getTime())) {
       parts.push(`Vendors updated ${vendorsDate.toLocaleDateString()}`);
-    }
-  }
-
-  if (company.taxAgenciesUpdatedAt) {
-    const agenciesDate = new Date(company.taxAgenciesUpdatedAt);
-    if (!Number.isNaN(agenciesDate.getTime())) {
-      parts.push(`Tax agencies updated ${agenciesDate.toLocaleDateString()}`);
     }
   }
 
@@ -867,16 +851,16 @@ function populateMatcherFields(invoice, savedMatch, realmId) {
   const metadata = realmId ? companyMetadataCache.get(realmId) : null;
   updateMatchSelectOptions(metadata);
 
-  const invoiceName = deriveInvoiceName({ metadata: currentInvoiceMetadata, data: invoice });
+  const invoiceDate = deriveInvoiceDate({ metadata: currentInvoiceMetadata, data: invoice });
 
   if (matchInvoiceNumberInput) {
     matchInvoiceNumberInput.value = invoice.invoiceNumber || '';
     matchInvoiceNumberInput.readOnly = true;
   }
 
-  if (matchInvoiceNameInput) {
-    matchInvoiceNameInput.value = invoiceName;
-    matchInvoiceNameInput.readOnly = true;
+  if (matchInvoiceDateInput) {
+    matchInvoiceDateInput.value = invoiceDate;
+    matchInvoiceDateInput.readOnly = true;
   }
 
   if (matchSubtotalInput) {
@@ -1148,27 +1132,31 @@ function updateSavedMatchesWithCompany(company) {
   }
 }
 
-function deriveInvoiceName(payload) {
+function deriveInvoiceDate(payload) {
   if (!payload) {
     return '';
   }
 
-  const metadataName = payload.metadata?.originalName;
-  if (metadataName) {
-    return metadataName;
+  const rawDate = payload.data?.invoiceDate;
+  if (!rawDate) {
+    return '';
   }
 
-  const vendor = payload.data?.vendor;
-  if (vendor) {
-    return vendor;
+  const trimmed = String(rawDate).trim();
+  if (!trimmed) {
+    return '';
   }
 
-  const billTo = payload.data?.billTo;
-  if (billTo) {
-    return billTo;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return trimmed;
   }
 
-  return 'Invoice';
+  const parsed = new Date(trimmed);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toLocaleDateString();
+  }
+
+  return trimmed;
 }
 
 function formatAmount(value) {
@@ -1231,7 +1219,6 @@ async function fetchCompanyMetadata(realmId) {
     vendors: { items: [] },
     accounts: { items: [] },
     taxCodes: { items: [] },
-    taxAgencies: { items: [] },
   };
 }
 
@@ -1246,7 +1233,6 @@ function prepareMetadata(metadata) {
     vendors: prepareMetadataSection(metadata?.vendors),
     accounts: prepareMetadataSection(metadata?.accounts),
     taxCodes: prepareMetadataSection(metadata?.taxCodes),
-    taxAgencies: prepareMetadataSection(metadata?.taxAgencies),
   };
 }
 
