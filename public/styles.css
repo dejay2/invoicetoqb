@@ -593,7 +593,7 @@ pre {
 .review-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 640px;
+  min-width: 900px;
 }
 
 .archive-table thead,
@@ -616,6 +616,67 @@ pre {
 .archive-table tbody tr:last-child td,
 .review-table tbody tr:last-child td {
   border-bottom: none;
+}
+
+.review-table tbody tr {
+  border-left: 4px solid transparent;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.review-table tbody tr.match-exact {
+  background: rgba(76, 217, 100, 0.08);
+  border-color: rgba(76, 217, 100, 0.55);
+}
+
+.review-table tbody tr.match-uncertain {
+  background: rgba(255, 204, 0, 0.08);
+  border-color: rgba(255, 204, 0, 0.5);
+}
+
+.review-table tbody tr.match-unknown {
+  background: rgba(255, 105, 97, 0.08);
+  border-color: rgba(255, 105, 97, 0.55);
+}
+
+.cell-invoice,
+.cell-vendor,
+.cell-account {
+  vertical-align: top;
+}
+
+.cell-amount {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.cell-amount .cell-primary {
+  text-align: right;
+}
+
+.match-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.15rem 0.65rem;
+  border-radius: 999px;
+  margin-top: 0.45rem;
+}
+
+.match-badge.match-exact {
+  background: rgba(76, 217, 100, 0.18);
+  color: #4cd964;
+}
+
+.match-badge.match-uncertain {
+  background: rgba(255, 204, 0, 0.2);
+  color: #ffcc00;
+}
+
+.match-badge.match-unknown {
+  background: rgba(255, 105, 97, 0.2);
+  color: #ff6b61;
 }
 
 .cell-primary {

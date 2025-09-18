@@ -21,6 +21,39 @@ const companyMetadataCache = new Map();
 const metadataRequests = new Map();
 let storedInvoices = [];
 
+const MATCH_BADGE_LABELS = {
+  exact: 'Exact match',
+  uncertain: 'Needs review',
+  unknown: 'No match',
+};
+
+const KEYWORD_STOPWORDS = new Set([
+  'the',
+  'and',
+  'for',
+  'with',
+  'from',
+  'into',
+  'llc',
+  'ltd',
+  'limited',
+  'inc',
+  'co',
+  'company',
+  'corp',
+  'corporation',
+  'group',
+  'services',
+  'service',
+  'solutions',
+  'holdings',
+  'global',
+  'international',
+  'invoice',
+  'number',
+  'account',
+]);
+
 bootstrap();
 
 function bootstrap() {
@@ -464,11 +497,13 @@ async function loadCompanyMetadata(realmId) {
     const metadata = await ensureCompanyMetadata(realmId);
     renderVendorList(metadata, 'No vendors available for this company.');
     renderAccountList(metadata, 'No accounts available for this company.');
+    renderReviewTable();
   } catch (error) {
     console.error(error);
     renderVendorList(null, 'Unable to load vendor list.');
     renderAccountList(null, 'Unable to load account list.');
     showStatus(globalStatus, error.message || 'Failed to load QuickBooks metadata.', 'error');
+    renderReviewTable();
   }
 }
 
@@ -667,10 +702,12 @@ async function refreshCompanyMetadata(realmId) {
     await ensureCompanyMetadata(realmId, { force: true });
     renderVendorList(companyMetadataCache.get(realmId), 'No vendors available for this company.');
     renderAccountList(companyMetadataCache.get(realmId), 'No accounts available for this company.');
+    renderReviewTable();
     await refreshQuickBooksCompanies(realmId);
   } catch (error) {
     console.error(error);
     showStatus(globalStatus, error.message || 'Failed to refresh QuickBooks metadata.', 'error');
+    renderReviewTable();
   } finally {
     refreshMetadataButton.textContent = originalLabel;
     refreshMetadataButton.disabled = !selectedRealmId;
@@ -787,7 +824,7 @@ function renderReviewTable() {
     const row = document.createElement('tr');
     row.className = 'empty-row';
     const cell = document.createElement('td');
-    cell.colSpan = 5;
+    cell.colSpan = 8;
     cell.textContent = 'No invoices pending review.';
     row.appendChild(cell);
     reviewTableBody.appendChild(row);
@@ -800,57 +837,501 @@ function renderReviewTable() {
     return bTime - aTime;
   });
 
+  const metadata = selectedRealmId ? companyMetadataCache.get(selectedRealmId) : null;
+  const historical = buildReviewMatchHistory(storedInvoices, metadata);
+
   sorted.forEach((invoice) => {
-    const row = document.createElement('tr');
-
-    const invoiceCell = document.createElement('td');
-    invoiceCell.appendChild(createCellTitle(invoice.data?.invoiceNumber || '—'));
-    const subtitleParts = [];
-    if (invoice.metadata?.originalName) {
-      subtitleParts.push(invoice.metadata.originalName);
-    }
-    if (invoice.parsedAt) {
-      subtitleParts.push(`Parsed ${formatTimestamp(invoice.parsedAt)}`);
-    }
-    if (subtitleParts.length) {
-      invoiceCell.appendChild(createCellSubtitle(subtitleParts.join(' • ')));
-    }
-    row.appendChild(invoiceCell);
-
-    const vendorCell = document.createElement('td');
-    vendorCell.appendChild(createCellTitle(invoice.data?.vendor || '—'));
-    row.appendChild(vendorCell);
-
-    const dateCell = document.createElement('td');
-    dateCell.appendChild(createCellTitle(formatDate(invoice.data?.invoiceDate)));
-    row.appendChild(dateCell);
-
-    const totalCell = document.createElement('td');
-    totalCell.appendChild(createCellTitle(formatAmount(invoice.data?.totalAmount)));
-    row.appendChild(totalCell);
-
-    const actionsCell = document.createElement('td');
-    actionsCell.className = 'table-actions';
-
-    const moveButton = document.createElement('button');
-    moveButton.type = 'button';
-    moveButton.className = 'table-action';
-    moveButton.dataset.action = 'archive';
-    moveButton.dataset.checksum = invoice.metadata?.checksum || '';
-    moveButton.textContent = 'Move to archive';
-    actionsCell.appendChild(moveButton);
-
-    const deleteButton = document.createElement('button');
-    deleteButton.type = 'button';
-    deleteButton.className = 'table-action destructive';
-    deleteButton.dataset.action = 'delete';
-    deleteButton.dataset.checksum = invoice.metadata?.checksum || '';
-    deleteButton.textContent = 'Delete';
-    actionsCell.appendChild(deleteButton);
-
-    row.appendChild(actionsCell);
+    const row = createReviewTableRow(invoice, metadata, historical);
     reviewTableBody.appendChild(row);
   });
+}
+
+function createReviewTableRow(invoice, metadata, historical) {
+  try {
+    return createEnhancedReviewRow(invoice, metadata, historical);
+  } catch (error) {
+    console.error('Failed to render enhanced review row', error, invoice);
+    return createFallbackReviewRow(invoice);
+  }
+}
+
+function createEnhancedReviewRow(invoice, metadata, historical) {
+  const insights = buildInvoiceReviewInsights(invoice, metadata, historical);
+  const row = document.createElement('tr');
+  row.dataset.matchConfidence = insights.overallConfidence;
+  row.classList.add(`match-${insights.overallConfidence}`);
+
+  const invoiceCell = document.createElement('td');
+  invoiceCell.className = 'cell-invoice';
+  invoiceCell.appendChild(createCellTitle(invoice.data?.invoiceNumber || '—'));
+  const invoiceSubtitleParts = [];
+  if (invoice.metadata?.originalName) {
+    invoiceSubtitleParts.push(invoice.metadata.originalName);
+  }
+  if (invoice.parsedAt) {
+    invoiceSubtitleParts.push(`Parsed ${formatTimestamp(invoice.parsedAt)}`);
+  }
+  if (invoiceSubtitleParts.length) {
+    invoiceCell.appendChild(createCellSubtitle(invoiceSubtitleParts.join(' • ')));
+  }
+  row.appendChild(invoiceCell);
+
+  const dateCell = document.createElement('td');
+  dateCell.appendChild(createCellTitle(formatDate(invoice.data?.invoiceDate)));
+  row.appendChild(dateCell);
+
+  const vendorCell = document.createElement('td');
+  vendorCell.className = 'cell-vendor';
+  vendorCell.appendChild(createCellTitle(insights.vendor.displayName || '—'));
+  if (insights.vendor.original && insights.vendor.displayName && insights.vendor.displayName !== insights.vendor.original) {
+    vendorCell.appendChild(createCellSubtitle(`Extracted as ${insights.vendor.original}`));
+  }
+  vendorCell.appendChild(createMatchBadge(insights.vendor.confidence));
+  row.appendChild(vendorCell);
+
+  const accountCell = document.createElement('td');
+  accountCell.className = 'cell-account';
+  accountCell.appendChild(createCellTitle(insights.account.name || '—'));
+  const accountMetaParts = [];
+  if (insights.account.accountType) {
+    accountMetaParts.push(insights.account.accountType);
+  }
+  if (insights.account.accountSubType && insights.account.accountSubType !== insights.account.accountType) {
+    accountMetaParts.push(insights.account.accountSubType);
+  }
+  if (accountMetaParts.length) {
+    accountCell.appendChild(createCellSubtitle(accountMetaParts.join(' • ')));
+  }
+  accountCell.appendChild(createMatchBadge(insights.account.confidence));
+  row.appendChild(accountCell);
+
+  const subtotalCell = document.createElement('td');
+  subtotalCell.className = 'cell-amount';
+  subtotalCell.appendChild(createCellTitle(formatAmount(insights.totals.net)));
+  row.appendChild(subtotalCell);
+
+  const vatCell = document.createElement('td');
+  vatCell.className = 'cell-amount';
+  vatCell.appendChild(createCellTitle(formatAmount(insights.totals.vat)));
+  row.appendChild(vatCell);
+
+  const totalCell = document.createElement('td');
+  totalCell.className = 'cell-amount';
+  totalCell.appendChild(createCellTitle(formatAmount(insights.totals.gross)));
+  row.appendChild(totalCell);
+
+  row.appendChild(createReviewActionsCell(invoice));
+  return row;
+}
+
+function createFallbackReviewRow(invoice) {
+  const row = document.createElement('tr');
+  row.dataset.matchConfidence = 'unknown';
+  row.classList.add('match-unknown');
+
+  const invoiceCell = document.createElement('td');
+  invoiceCell.className = 'cell-invoice';
+  invoiceCell.appendChild(createCellTitle(invoice?.data?.invoiceNumber || '—'));
+  row.appendChild(invoiceCell);
+
+  const dateCell = document.createElement('td');
+  dateCell.appendChild(createCellTitle(formatDate(invoice?.data?.invoiceDate)));
+  row.appendChild(dateCell);
+
+  const vendorCell = document.createElement('td');
+  vendorCell.className = 'cell-vendor';
+  vendorCell.appendChild(createCellTitle(invoice?.data?.vendor || '—'));
+  row.appendChild(vendorCell);
+
+  const accountCell = document.createElement('td');
+  accountCell.className = 'cell-account';
+  accountCell.appendChild(createCellTitle('—'));
+  row.appendChild(accountCell);
+
+  const subtotalCell = document.createElement('td');
+  subtotalCell.className = 'cell-amount';
+  subtotalCell.appendChild(createCellTitle(formatAmount(invoice?.data?.subtotal ?? null)));
+  row.appendChild(subtotalCell);
+
+  const vatCell = document.createElement('td');
+  vatCell.className = 'cell-amount';
+  vatCell.appendChild(createCellTitle(formatAmount(invoice?.data?.vatAmount ?? null)));
+  row.appendChild(vatCell);
+
+  const totalCell = document.createElement('td');
+  totalCell.className = 'cell-amount';
+  totalCell.appendChild(createCellTitle(formatAmount(invoice?.data?.totalAmount ?? null)));
+  row.appendChild(totalCell);
+
+  row.appendChild(createReviewActionsCell(invoice));
+  return row;
+}
+
+function createReviewActionsCell(invoice) {
+  const actionsCell = document.createElement('td');
+  actionsCell.className = 'table-actions';
+
+  const moveButton = document.createElement('button');
+  moveButton.type = 'button';
+  moveButton.className = 'table-action';
+  moveButton.dataset.action = 'archive';
+  moveButton.dataset.checksum = invoice?.metadata?.checksum || '';
+  moveButton.textContent = 'Move to archive';
+  actionsCell.appendChild(moveButton);
+
+  const deleteButton = document.createElement('button');
+  deleteButton.type = 'button';
+  deleteButton.className = 'table-action destructive';
+  deleteButton.dataset.action = 'delete';
+  deleteButton.dataset.checksum = invoice?.metadata?.checksum || '';
+  deleteButton.textContent = 'Delete';
+  actionsCell.appendChild(deleteButton);
+
+  return actionsCell;
+}
+
+function buildInvoiceReviewInsights(invoice, metadata, historical) {
+  const normalizedVendor = normaliseComparableText(invoice?.data?.vendor);
+  const vendorHistoryCount = normalizedVendor ? historical.vendorCounts.get(normalizedVendor) || 0 : 0;
+
+  const vendor = suggestVendorForInvoice(invoice, metadata, vendorHistoryCount);
+  const account = suggestAccountForInvoice(invoice, metadata, {
+    vendorKey: normalizedVendor,
+    historicalVendorAccounts: historical.vendorAccountCounts,
+  });
+
+  const overallConfidence = deriveOverallConfidence(vendor.confidence, account.confidence);
+
+  return {
+    vendor,
+    account,
+    overallConfidence,
+    totals: {
+      net: invoice?.data?.subtotal ?? null,
+      vat: invoice?.data?.vatAmount ?? null,
+      gross: invoice?.data?.totalAmount ?? null,
+    },
+  };
+}
+
+function buildReviewMatchHistory(invoices, metadata) {
+  const vendorCounts = new Map();
+  const vendorAccountCounts = new Map();
+
+  if (!Array.isArray(invoices)) {
+    return { vendorCounts, vendorAccountCounts };
+  }
+
+  invoices.forEach((invoice) => {
+    if (!invoice || invoice.status !== 'archive') {
+      return;
+    }
+
+    const vendorKey = normaliseComparableText(invoice?.data?.vendor);
+    if (!vendorKey) {
+      return;
+    }
+
+    vendorCounts.set(vendorKey, (vendorCounts.get(vendorKey) || 0) + 1);
+
+    if (!metadata?.accounts?.items?.length) {
+      return;
+    }
+
+    const keywords = extractInvoiceKeywords(invoice);
+    if (!keywords.length) {
+      return;
+    }
+
+    const candidate = scoreAccountCandidates(metadata.accounts.items, keywords);
+    const accountId = candidate?.account?.id;
+    if (!accountId) {
+      return;
+    }
+
+    const accountMap = vendorAccountCounts.get(vendorKey) || new Map();
+    accountMap.set(accountId, (accountMap.get(accountId) || 0) + 1);
+    vendorAccountCounts.set(vendorKey, accountMap);
+  });
+
+  return { vendorCounts, vendorAccountCounts };
+}
+
+function suggestVendorForInvoice(invoice, metadata, historyCount = 0) {
+  const originalVendor = invoice?.data?.vendor || '';
+  const normalizedVendor = normaliseComparableText(originalVendor);
+  const quickBooksVendors = metadata?.vendors?.items || [];
+
+  let bestMatch = null;
+
+  if (normalizedVendor && quickBooksVendors.length) {
+    quickBooksVendors.forEach((vendor) => {
+      const candidateNames = [vendor.displayName, vendor.name].filter(Boolean);
+      candidateNames.forEach((name) => {
+        const normalizedCandidate = normaliseComparableText(name);
+        if (!normalizedCandidate) {
+          return;
+        }
+
+        const similarity = computeNormalisedSimilarity(normalizedVendor, normalizedCandidate);
+        if (!bestMatch || similarity > bestMatch.similarity) {
+          bestMatch = {
+            vendor,
+            similarity,
+            normalizedName: normalizedCandidate,
+          };
+        }
+      });
+    });
+  }
+
+  let confidence = 'unknown';
+  let displayName = originalVendor || null;
+  let quickBooksVendor = null;
+
+  if (bestMatch) {
+    quickBooksVendor = bestMatch.vendor;
+    displayName = quickBooksVendor.displayName || quickBooksVendor.name || displayName;
+    if (bestMatch.normalizedName === normalizedVendor || bestMatch.similarity >= 0.92) {
+      confidence = 'exact';
+    } else if (bestMatch.similarity >= 0.68) {
+      confidence = 'uncertain';
+    }
+  }
+
+  if (historyCount >= 2) {
+    confidence = 'exact';
+  } else if (historyCount === 1 && confidence === 'unknown') {
+    confidence = 'uncertain';
+  }
+
+  return {
+    original: originalVendor || null,
+    displayName,
+    confidence,
+    quickBooksVendor,
+    historyCount,
+    normalized: normalizedVendor,
+  };
+}
+
+function suggestAccountForInvoice(invoice, metadata, { vendorKey, historicalVendorAccounts } = {}) {
+  const empty = {
+    id: null,
+    name: null,
+    accountType: null,
+    accountSubType: null,
+    confidence: 'unknown',
+  };
+
+  if (!metadata?.accounts?.items?.length) {
+    return empty;
+  }
+
+  const lookup = metadata.accounts.lookup || new Map();
+  const keywords = extractInvoiceKeywords(invoice);
+  let chosenAccount = null;
+  let chosenScore = 0;
+  let confidence = 'unknown';
+
+  if (vendorKey && historicalVendorAccounts?.has(vendorKey)) {
+    const historyEntries = [...historicalVendorAccounts.get(vendorKey).entries()].sort((a, b) => b[1] - a[1]);
+    if (historyEntries.length) {
+      const [historyAccountId, occurrences] = historyEntries[0];
+      const historyAccount = lookup.get(historyAccountId);
+      if (historyAccount) {
+        chosenAccount = historyAccount;
+        chosenScore = occurrences;
+        confidence = occurrences >= 2 ? 'exact' : 'uncertain';
+      }
+    }
+  }
+
+  const candidate = scoreAccountCandidates(metadata.accounts.items, keywords);
+  if (candidate && (!chosenAccount || candidate.score > chosenScore)) {
+    chosenAccount = candidate.account;
+    chosenScore = candidate.score;
+  }
+
+  if (chosenAccount && confidence === 'unknown') {
+    if (chosenScore >= 4) {
+      confidence = 'exact';
+    } else if (chosenScore >= 2) {
+      confidence = 'uncertain';
+    }
+  }
+
+  return {
+    id: chosenAccount?.id || null,
+    name: chosenAccount?.name || chosenAccount?.fullyQualifiedName || null,
+    accountType: chosenAccount?.accountType || null,
+    accountSubType: chosenAccount?.accountSubType || null,
+    confidence,
+  };
+}
+
+function deriveOverallConfidence(vendorConfidence, accountConfidence) {
+  const levels = [vendorConfidence, accountConfidence];
+  if (levels.includes('unknown')) {
+    return 'unknown';
+  }
+  if (levels.includes('uncertain')) {
+    return 'uncertain';
+  }
+  return 'exact';
+}
+
+function createMatchBadge(confidence) {
+  const level = MATCH_BADGE_LABELS[confidence] ? confidence : 'unknown';
+  const badge = document.createElement('span');
+  badge.className = `match-badge match-${level}`;
+  badge.textContent = MATCH_BADGE_LABELS[level];
+  return badge;
+}
+
+function extractInvoiceKeywords(invoice) {
+  const keywords = new Set();
+  const pushTokens = (text) => {
+    if (!text) {
+      return;
+    }
+    text
+      .toString()
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .forEach((token) => {
+        if (isMeaningfulKeyword(token)) {
+          keywords.add(token);
+        }
+      });
+  };
+
+  pushTokens(invoice?.data?.vendor);
+  pushTokens(invoice?.data?.invoiceNumber);
+  pushTokens(invoice?.data?.taxCode);
+
+  if (Array.isArray(invoice?.data?.products)) {
+    invoice.data.products.forEach((product) => {
+      pushTokens(product?.description);
+    });
+  }
+
+  pushTokens(invoice?.metadata?.originalName);
+
+  return [...keywords];
+}
+
+function isMeaningfulKeyword(token) {
+  return token && token.length >= 3 && !KEYWORD_STOPWORDS.has(token);
+}
+
+function scoreAccountCandidates(accounts, keywords) {
+  if (!Array.isArray(accounts) || !accounts.length || !keywords.length) {
+    return null;
+  }
+
+  let best = null;
+
+  accounts.forEach((account) => {
+    const haystack = normaliseComparableText([
+      account.name,
+      account.fullyQualifiedName,
+      account.accountType,
+      account.accountSubType,
+    ].filter(Boolean).join(' '));
+
+    if (!haystack) {
+      return;
+    }
+
+    const score = computeKeywordScore(keywords, haystack);
+    if (!score) {
+      return;
+    }
+
+    if (!best || score > best.score) {
+      best = { account, score };
+    }
+  });
+
+  return best;
+}
+
+function computeKeywordScore(keywords, haystack) {
+  return keywords.reduce((score, keyword) => {
+    if (haystack.includes(keyword)) {
+      return score + (keyword.length >= 6 ? 2 : 1);
+    }
+    return score;
+  }, 0);
+}
+
+function normaliseComparableText(value) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+
+  const text = value.toString().toLowerCase();
+  const normalized = typeof text.normalize === 'function' ? text.normalize('NFD') : text;
+
+  return normalized
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function computeNormalisedSimilarity(a, b) {
+  if (!a || !b) {
+    return 0;
+  }
+  if (a === b) {
+    return 1;
+  }
+  const distance = levenshteinDistance(a, b);
+  const longest = Math.max(a.length, b.length) || 1;
+  return (longest - distance) / longest;
+}
+
+function levenshteinDistance(a, b) {
+  if (a === b) {
+    return 0;
+  }
+
+  const aLength = a.length;
+  const bLength = b.length;
+
+  if (!aLength) {
+    return bLength;
+  }
+
+  if (!bLength) {
+    return aLength;
+  }
+
+  const matrix = Array.from({ length: aLength + 1 }, () => new Array(bLength + 1).fill(0));
+
+  for (let i = 0; i <= aLength; i += 1) {
+    matrix[i][0] = i;
+  }
+  for (let j = 0; j <= bLength; j += 1) {
+    matrix[0][j] = j;
+  }
+
+  for (let i = 1; i <= aLength; i += 1) {
+    for (let j = 1; j <= bLength; j += 1) {
+      if (a[i - 1] === b[j - 1]) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j - 1] + 1,
+        );
+      }
+    }
+  }
+
+  return matrix[aLength][bLength];
 }
 
 function createCellTitle(text) {

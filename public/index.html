@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Invoice Tools</title>
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=20240930" />
 </head>
 <body>
   <main class="container">
@@ -90,15 +90,18 @@
               <thead>
                 <tr>
                   <th scope="col">Invoice</th>
-                  <th scope="col">Vendor</th>
                   <th scope="col">Invoice date</th>
-                  <th scope="col">Total</th>
+                  <th scope="col">Vendor</th>
+                  <th scope="col">Account</th>
+                  <th scope="col">Total ex VAT</th>
+                  <th scope="col">VAT</th>
+                  <th scope="col">Grand total</th>
                   <th scope="col">Actions</th>
                 </tr>
               </thead>
               <tbody id="review-table-body">
                 <tr class="empty-row">
-                  <td colspan="5">No invoices pending review.</td>
+                  <td colspan="8">No invoices pending review.</td>
                 </tr>
               </tbody>
             </table>
@@ -133,6 +136,6 @@
     </section>
   </main>
 
-  <script src="app.js" defer></script>
+  <script src="app.js?v=20240930" defer></script>
 </body>
 </html>
