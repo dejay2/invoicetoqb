@@ -55,6 +55,7 @@ const OCR_IMAGE_MIME_TYPES = new Set([
 
 const GEMINI_TEXT_LIMIT = 60000;
 const VENDOR_VAT_TREATMENTS = new Set(['inclusive', 'exclusive', 'no_vat']);
+const AI_ACCOUNT_CONFIDENCE_VALUES = new Set(['high', 'medium', 'low', 'unknown']);
 const KEYWORD_STOPWORDS = new Set([
   'the',
   'and',
@@ -378,6 +379,54 @@ app.post('/api/quickbooks/companies/:realmId/vendors', async (req, res) => {
 
     console.error('Failed to create QuickBooks vendor', error);
     res.status(500).json({ error: 'Failed to create QuickBooks vendor.' });
+  }
+});
+
+app.post('/api/quickbooks/companies/:realmId/accounts', async (req, res) => {
+  const realmId = req.params.realmId;
+  const { name, accountType, accountSubType } = req.body || {};
+
+  if (!realmId) {
+    return res.status(400).json({ error: 'Realm ID is required.' });
+  }
+
+  const company = await getQuickBooksCompanyRecord(realmId);
+  if (!company) {
+    return res.status(404).json({ error: 'QuickBooks company not found.' });
+  }
+
+  const trimmedName = typeof name === 'string' ? name.trim() : '';
+  if (!trimmedName) {
+    return res.status(400).json({ error: 'Account name is required.' });
+  }
+
+  const normalisedAccountType = typeof accountType === 'string' && accountType.trim()
+    ? accountType.trim()
+    : null;
+  const normalisedAccountSubType = typeof accountSubType === 'string' && accountSubType.trim()
+    ? accountSubType.trim()
+    : null;
+
+  try {
+    const account = await createQuickBooksAccount(realmId, {
+      name: trimmedName,
+      accountType: normalisedAccountType,
+      accountSubType: normalisedAccountSubType,
+    });
+
+    res.status(201).json({ account });
+  } catch (error) {
+    if (error.code === 'TOKEN_MISSING') {
+      return res.status(400).json({ error: 'QuickBooks access token is not available for this company.' });
+    }
+
+    if (error.isQuickBooksError) {
+      const status = typeof error.status === 'number' && error.status >= 400 ? error.status : 502;
+      return res.status(status).json({ error: error.message || 'QuickBooks account creation failed.' });
+    }
+
+    console.error('Failed to create QuickBooks account', error);
+    res.status(500).json({ error: 'Failed to create QuickBooks account.' });
   }
 });
 
@@ -1175,6 +1224,38 @@ async function upsertQuickBooksVendorMetadata(realmId, vendor) {
   };
 }
 
+async function upsertQuickBooksAccountMetadata(realmId, account) {
+  if (!realmId || !account?.id) {
+    return null;
+  }
+
+  const existing = await readQuickBooksMetadataFile(realmId, 'accounts');
+  const items = Array.isArray(existing?.items) ? existing.items.slice() : [];
+  const filtered = items.filter((entry) => entry.id !== account.id);
+  filtered.push(account);
+  filtered.sort((a, b) => {
+    const aName = (a?.name || '').toString();
+    const bName = (b?.name || '').toString();
+    return aName.localeCompare(bName, undefined, { sensitivity: 'base' });
+  });
+
+  const timestamp = new Date().toISOString();
+  await writeQuickBooksMetadataFile(realmId, 'accounts', {
+    updatedAt: timestamp,
+    items: filtered,
+  });
+
+  await updateQuickBooksCompanyFields(realmId, {
+    accountsUpdatedAt: timestamp,
+    accountsCount: filtered.length,
+  });
+
+  return {
+    updatedAt: timestamp,
+    items: filtered,
+  };
+}
+
 function getQuickBooksMetadataPath(realmId, type) {
   return path.join(QUICKBOOKS_METADATA_DIR, realmId, `${type}.json`);
 }
@@ -1357,6 +1438,20 @@ function transformQuickBooksVendor(vendor) {
   };
 }
 
+function transformQuickBooksAccount(account) {
+  if (!account) {
+    return null;
+  }
+
+  return {
+    id: account.Id,
+    name: account.Name || account.FullyQualifiedName || `Account ${account.Id}`,
+    fullyQualifiedName: account.FullyQualifiedName || null,
+    accountType: account.AccountType || null,
+    accountSubType: account.AccountSubType || null,
+  };
+}
+
 async function createQuickBooksVendor(realmId, details) {
   if (!realmId) {
     const error = new Error('Realm ID is required.');
@@ -1419,17 +1514,69 @@ async function createQuickBooksVendor(realmId, details) {
   return normalised;
 }
 
+async function createQuickBooksAccount(realmId, details) {
+  if (!realmId) {
+    const error = new Error('Realm ID is required.');
+    error.code = 'BAD_REQUEST';
+    throw error;
+  }
+
+  const payload = {
+    Name: details.name,
+    AccountType: details.accountType || 'Expense',
+  };
+
+  if (details.accountSubType) {
+    payload.AccountSubType = details.accountSubType;
+  }
+
+  const account = await performQuickBooksFetch(realmId, async (accessToken) => {
+    const url = `${QUICKBOOKS_API_BASE_URL}/v3/company/${realmId}/account?minorversion=65`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'User-Agent': 'InvoiceToQB/1.0',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const errorBody = await safeReadJson(response);
+      const message =
+        errorBody?.Fault?.Error?.[0]?.Detail ||
+        errorBody?.Fault?.Error?.[0]?.Message ||
+        `QuickBooks account creation failed with status ${response.status}`;
+      const err = new Error(message);
+      err.isQuickBooksError = true;
+      err.status = response.status;
+      err.details = errorBody;
+      throw err;
+    }
+
+    const data = await response.json();
+    return data?.Account || data;
+  });
+
+  const normalised = transformQuickBooksAccount(account);
+  if (!normalised?.id) {
+    const error = new Error('QuickBooks account creation did not return an identifier.');
+    error.isQuickBooksError = true;
+    throw error;
+  }
+
+  await upsertQuickBooksAccountMetadata(realmId, normalised);
+  return normalised;
+}
+
 async function fetchQuickBooksAccounts(realmId, accessToken) {
   const accounts = await fetchQuickBooksQueryList(realmId, accessToken, 'Account');
   return accounts
     .filter((account) => account.Active !== false)
-    .map((account) => ({
-      id: account.Id,
-      name: account.Name || account.FullyQualifiedName || `Account ${account.Id}`,
-      fullyQualifiedName: account.FullyQualifiedName || null,
-      accountType: account.AccountType || null,
-      accountSubType: account.AccountSubType || null,
-    }));
+    .map(transformQuickBooksAccount)
+    .filter(Boolean);
 }
 
 async function fetchQuickBooksTaxCodes(realmId, accessToken) {
@@ -1974,7 +2121,14 @@ async function extractWithGemini(buffer, mimeType, options = {}) {
       "quantity": number | null,
       "unitPrice": number | null,
       "lineTotal": number | null,
-      "taxCode": string | null
+      "taxCode": string | null,
+      "suggestedAccount": {
+        "name": string | null,
+        "accountType": string | null,
+        "accountSubType": string | null,
+        "confidence": "high" | "medium" | "low" | "unknown",
+        "reason": string | null
+      }
     }
   ],
   "invoiceDate": string | null, // ISO 8601 (YYYY-MM-DD) when possible
@@ -1984,7 +2138,14 @@ async function extractWithGemini(buffer, mimeType, options = {}) {
   "vatAmount": number | null,
   "totalAmount": number | null,
   "taxCode": string | null,
-  "currency": string | null // 3-letter ISO code when available
+  "currency": string | null, // 3-letter ISO code when available
+  "suggestedAccount": {
+    "name": string | null,
+    "accountType": string | null,
+    "accountSubType": string | null,
+    "confidence": "high" | "medium" | "low" | "unknown",
+    "reason": string | null
+  }
 }
 Rules:
 - If the document text is provided below, rely exclusively on that text.
@@ -1993,8 +2154,13 @@ Rules:
 - If a field is missing, set it to null.
 - Combine multiple bill recipients into a single string if necessary.
 - For products, include at least a description. Omit other product fields if not present by setting them to null.
-- Do not add commentary. Return only minified JSON with the exact fields above.`;
-  const effectivePrompt = businessContext ? `${prompt}${businessContext}` : prompt;
+- Do not add commentary. Return only minified JSON with the exact fields above.
+Additional guidance:
+- Use the business context to determine which QuickBooks Online account is most appropriate for the entire invoice and each product.
+- When possible, set accountType to a valid QuickBooks Online AccountType (e.g., Expense, Cost of Goods Sold, Other Expense, Fixed Asset) and accountSubType to a valid detail type (e.g., RepairsMaintenance, SuppliesMaterialsCogs). If unsure, set them to null.
+- Confidence must be "high", "medium", "low", or "unknown". Use "high" only when the match is very strong for the business context.
+- Provide a brief reason that references invoice content explaining the recommendation.`;
+  const effectivePrompt = businessContext ? `${prompt}${businessContext}` : `${prompt}\n`;
 
   let contents;
   if (extractedText && extractedText.trim()) {
@@ -2077,7 +2243,7 @@ function sanitiseGeminiInvoice(raw) {
       totalAmount: null,
       taxCode: null,
       currency: null,
-      account: null,
+      suggestedAccount: null,
     };
   }
 
@@ -2096,7 +2262,7 @@ function sanitiseGeminiInvoice(raw) {
     totalAmount: sanitiseNumericValue(raw.totalAmount),
     taxCode: sanitiseOptionalString(raw.taxCode),
     currency: sanitiseCurrencyCode(raw.currency),
-    account: sanitiseOptionalString(raw.account),
+    suggestedAccount: sanitiseGeminiAccountSuggestion(raw.suggestedAccount),
   };
 }
 
@@ -2110,8 +2276,9 @@ function sanitiseGeminiProduct(entry) {
   const unitPrice = sanitiseNumericValue(entry.unitPrice);
   const lineTotal = sanitiseNumericValue(entry.lineTotal);
   const taxCode = sanitiseOptionalString(entry.taxCode);
+  const suggestedAccount = sanitiseGeminiAccountSuggestion(entry.suggestedAccount);
 
-  if (!description && quantity === null && unitPrice === null && lineTotal === null && !taxCode) {
+  if (!description && quantity === null && unitPrice === null && lineTotal === null && !taxCode && !suggestedAccount) {
     return null;
   }
 
@@ -2121,6 +2288,32 @@ function sanitiseGeminiProduct(entry) {
     unitPrice,
     lineTotal,
     taxCode,
+    suggestedAccount,
+  };
+}
+
+function sanitiseGeminiAccountSuggestion(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+
+  const name = sanitiseOptionalString(entry.name);
+  const accountType = sanitiseOptionalString(entry.accountType);
+  const accountSubType = sanitiseOptionalString(entry.accountSubType);
+  const confidenceRaw = typeof entry.confidence === 'string' ? entry.confidence.toLowerCase() : '';
+  const confidence = AI_ACCOUNT_CONFIDENCE_VALUES.has(confidenceRaw) ? confidenceRaw : 'unknown';
+  const reason = sanitiseOptionalString(entry.reason);
+
+  if (!name && !accountType && !accountSubType && !reason && confidence === 'unknown') {
+    return null;
+  }
+
+  return {
+    name,
+    accountType,
+    accountSubType,
+    confidence,
+    reason,
   };
 }
 

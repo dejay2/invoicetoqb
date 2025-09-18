@@ -31,6 +31,8 @@ const MATCH_BADGE_LABELS = {
   unknown: 'No match',
 };
 
+const AI_ACCOUNT_CONFIDENCE_VALUES = new Set(['high', 'medium', 'low', 'unknown']);
+
 const KEYWORD_STOPWORDS = new Set([
   'the',
   'and',
@@ -1477,6 +1479,42 @@ function createEnhancedReviewRow(invoice, metadata, historical) {
     accountCell.appendChild(createCellSubtitle(insights.account.reason));
   }
   accountCell.appendChild(createMatchBadge(insights.account.confidence));
+
+  if (insights.aiAccountSuggestion?.name) {
+    const suggestionInfo = insights.aiAccountSuggestion;
+    const parts = [];
+    if (suggestionInfo.quickBooksMatch?.account) {
+      const matchedAccount = suggestionInfo.quickBooksMatch.account;
+      const similarity = suggestionInfo.quickBooksMatch.similarity
+        ? ` (${Math.round(suggestionInfo.quickBooksMatch.similarity * 100)}% match)`
+        : '';
+      parts.push(`AI recommends ${matchedAccount.name || matchedAccount.fullyQualifiedName || suggestionInfo.name}${similarity}.`);
+    } else {
+      parts.push(`AI recommends new account "${suggestionInfo.name}".`);
+    }
+
+    if (suggestionInfo.reason) {
+      parts.push(suggestionInfo.reason);
+    }
+
+    accountCell.appendChild(createCellSubtitle(parts.join(' ')));
+
+    if (!suggestionInfo.quickBooksMatch?.account && selectedRealmId) {
+      const addAccountButton = document.createElement('button');
+      addAccountButton.type = 'button';
+      addAccountButton.className = 'inline-action';
+      addAccountButton.dataset.action = 'create-account';
+      addAccountButton.dataset.accountName = suggestionInfo.name;
+      if (suggestionInfo.accountType) {
+        addAccountButton.dataset.accountType = suggestionInfo.accountType;
+      }
+      if (suggestionInfo.accountSubType) {
+        addAccountButton.dataset.accountSubType = suggestionInfo.accountSubType;
+      }
+      addAccountButton.textContent = 'Add account to QuickBooks';
+      accountCell.appendChild(addAccountButton);
+    }
+  }
   row.appendChild(accountCell);
 
   const subtotalCell = document.createElement('td');
@@ -1580,10 +1618,12 @@ function buildInvoiceReviewInsights(invoice, metadata, historical) {
   const vendorHistoryCount = normalizedVendor ? historical.vendorCounts.get(normalizedVendor) || 0 : 0;
 
   const vendor = suggestVendorForInvoice(invoice, metadata, vendorHistoryCount);
+  const aiAccountSuggestion = deriveAiAccountSuggestion(invoice, metadata);
   const account = suggestAccountForInvoice(invoice, metadata, {
     vendorKey: normalizedVendor,
     matchedVendor: vendor,
     historicalVendorAccounts: historical.vendorAccountCounts,
+    aiAccountSuggestion,
   });
 
   const overallConfidence = deriveOverallConfidence(vendor.confidence, account.confidence);
@@ -1591,6 +1631,7 @@ function buildInvoiceReviewInsights(invoice, metadata, historical) {
   return {
     vendor,
     account,
+    aiAccountSuggestion,
     overallConfidence,
     totals: {
       net: invoice?.data?.subtotal ?? null,
@@ -1710,7 +1751,7 @@ function suggestVendorForInvoice(invoice, metadata, historyCount = 0) {
   };
 }
 
-function suggestAccountForInvoice(invoice, metadata, { vendorKey, matchedVendor, historicalVendorAccounts } = {}) {
+function suggestAccountForInvoice(invoice, metadata, { vendorKey, matchedVendor, historicalVendorAccounts, aiAccountSuggestion } = {}) {
   const empty = {
     id: null,
     name: null,
@@ -1750,6 +1791,15 @@ function suggestAccountForInvoice(invoice, metadata, { vendorKey, matchedVendor,
   let confidence = 'unknown';
   let reason = null;
 
+  if (aiAccountSuggestion?.quickBooksMatch?.account) {
+    chosenAccount = aiAccountSuggestion.quickBooksMatch.account;
+    chosenScore = (aiAccountSuggestion.quickBooksMatch.similarity || 0) * 100;
+    confidence = aiAccountSuggestion.finalConfidence || 'uncertain';
+    reason = aiAccountSuggestion.message || `AI recommended ${chosenAccount.name || chosenAccount.fullyQualifiedName || 'an account'}.`;
+  } else if (aiAccountSuggestion?.name && aiAccountSuggestion.message) {
+    reason = aiAccountSuggestion.message;
+  }
+
   if (vendorKey && historicalVendorAccounts?.has(vendorKey)) {
     const historyEntries = [...historicalVendorAccounts.get(vendorKey).entries()].sort((a, b) => b[1] - a[1]);
     if (historyEntries.length) {
@@ -1779,6 +1829,12 @@ function suggestAccountForInvoice(invoice, metadata, { vendorKey, matchedVendor,
     }
   }
 
+  if (!chosenAccount && aiAccountSuggestion?.quickBooksMatch?.account) {
+    chosenAccount = aiAccountSuggestion.quickBooksMatch.account;
+    confidence = aiAccountSuggestion.finalConfidence || 'uncertain';
+    reason = aiAccountSuggestion.message || `AI recommended ${aiAccountSuggestion.name}.`;
+  }
+
   return {
     id: chosenAccount?.id || null,
     name: chosenAccount?.name || chosenAccount?.fullyQualifiedName || null,
@@ -1786,6 +1842,89 @@ function suggestAccountForInvoice(invoice, metadata, { vendorKey, matchedVendor,
     accountSubType: chosenAccount?.accountSubType || null,
     confidence,
     reason,
+  };
+}
+
+function deriveAiAccountSuggestion(invoice, metadata) {
+  const suggestion = invoice?.data?.suggestedAccount;
+  if (!suggestion || !suggestion.name) {
+    return null;
+  }
+
+  const accounts = metadata?.accounts?.items || [];
+  const suggestionName = suggestion.name;
+  const normalizedSuggestion = normaliseComparableText(suggestionName);
+  let bestMatch = null;
+
+  if (normalizedSuggestion && accounts.length) {
+    accounts.forEach((account) => {
+      const candidateNames = [account.name, account.fullyQualifiedName].filter(Boolean);
+      candidateNames.forEach((candidateName) => {
+        const normalizedCandidate = normaliseComparableText(candidateName);
+        if (!normalizedCandidate) {
+          return;
+        }
+
+        const similarity = computeNormalisedSimilarity(normalizedSuggestion, normalizedCandidate);
+        if (!bestMatch || similarity > bestMatch.similarity) {
+          bestMatch = {
+            account,
+            similarity,
+            matchedName: candidateName,
+          };
+        }
+      });
+    });
+  }
+
+  const aiConfidenceRaw = typeof suggestion.confidence === 'string' ? suggestion.confidence.toLowerCase() : 'unknown';
+  const aiConfidence = AI_ACCOUNT_CONFIDENCE_VALUES.has(aiConfidenceRaw) ? aiConfidenceRaw : 'unknown';
+
+  let finalConfidence = 'unknown';
+  let quickBooksMatch = null;
+  if (bestMatch && bestMatch.similarity >= 0.68) {
+    quickBooksMatch = {
+      account: bestMatch.account,
+      similarity: bestMatch.similarity,
+      matchedName: bestMatch.matchedName,
+    };
+
+    if (bestMatch.similarity >= 0.92) {
+      finalConfidence = 'exact';
+    } else if (bestMatch.similarity >= 0.75) {
+      finalConfidence = 'uncertain';
+    } else {
+      finalConfidence = 'unknown';
+    }
+  }
+
+  if (finalConfidence === 'unknown') {
+    if (aiConfidence === 'high' || aiConfidence === 'medium') {
+      finalConfidence = 'uncertain';
+    }
+  }
+
+  const similarityText = quickBooksMatch
+    ? ` Closest QuickBooks match: ${quickBooksMatch.account.name || quickBooksMatch.account.fullyQualifiedName} (${Math.round(quickBooksMatch.similarity * 100)}% similarity).`
+    : '';
+
+  const reasonParts = [];
+  if (suggestion.reason) {
+    reasonParts.push(suggestion.reason);
+  }
+  reasonParts.push(`AI recommended account "${suggestionName}".`);
+  const message = `${reasonParts.join(' ')}${similarityText}`.trim();
+
+  return {
+    name: suggestionName,
+    accountType: suggestion.accountType || null,
+    accountSubType: suggestion.accountSubType || null,
+    aiConfidence,
+    reason: suggestion.reason || null,
+    message,
+    quickBooksMatch,
+    finalConfidence,
+    needsCreation: !quickBooksMatch,
   };
 }
 
@@ -1979,6 +2118,11 @@ async function handleReviewAction(event) {
     return;
   }
 
+  if (action === 'create-account') {
+    await handleCreateAccount(button);
+    return;
+  }
+
   const checksum = button.dataset.checksum;
   if (!checksum) {
     return;
@@ -2051,6 +2195,78 @@ async function handleCreateVendor(button) {
   } catch (error) {
     console.error(error);
     showStatus(globalStatus, error.message || 'Failed to create vendor in QuickBooks.', 'error');
+  } finally {
+    button.textContent = originalLabel;
+    button.disabled = false;
+    button.classList.remove('is-pending');
+  }
+}
+
+async function handleCreateAccount(button) {
+  if (button.disabled) {
+    return;
+  }
+
+  if (!selectedRealmId) {
+    showStatus(globalStatus, 'Select a QuickBooks company before adding accounts.', 'error');
+    return;
+  }
+
+  const accountName = typeof button.dataset.accountName === 'string' ? button.dataset.accountName.trim() : '';
+  if (!accountName) {
+    showStatus(globalStatus, 'Invoice is missing an account name to add.', 'error');
+    return;
+  }
+
+  const accountType = typeof button.dataset.accountType === 'string' ? button.dataset.accountType.trim() : '';
+  const accountSubType = typeof button.dataset.accountSubType === 'string' ? button.dataset.accountSubType.trim() : '';
+
+  const originalLabel = button.textContent;
+  button.disabled = true;
+  button.classList.add('is-pending');
+  button.textContent = 'Adding…';
+
+  try {
+    const response = await fetch(
+      `/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/accounts`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: accountName,
+          accountType: accountType || null,
+          accountSubType: accountSubType || null,
+        }),
+      }
+    );
+
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      payload = null;
+    }
+
+    if (!response.ok) {
+      const message = payload?.error || 'Failed to create account in QuickBooks.';
+      throw new Error(message);
+    }
+
+    await ensureCompanyMetadata(selectedRealmId, { force: true });
+    const metadata = companyMetadataCache.get(selectedRealmId) || null;
+    if (metadata) {
+      renderAccountList(metadata, 'No accounts available for this company.');
+      renderVendorList(metadata, 'No vendors available for this company.');
+    }
+    renderReviewTable();
+
+    const createdName = payload?.account?.name || accountName;
+    showStatus(globalStatus, `Added ${createdName} to QuickBooks.`, 'success');
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, error.message || 'Failed to create account in QuickBooks.', 'error');
   } finally {
     button.textContent = originalLabel;
     button.disabled = false;
