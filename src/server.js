@@ -290,6 +290,50 @@ app.post('/api/quickbooks/companies/:realmId/metadata/refresh', async (req, res)
   }
 });
 
+app.post('/api/quickbooks/companies/:realmId/vendors', async (req, res) => {
+  const realmId = req.params.realmId;
+  const { displayName, email, phone } = req.body || {};
+
+  if (!realmId) {
+    return res.status(400).json({ error: 'Realm ID is required.' });
+  }
+
+  const company = await getQuickBooksCompanyRecord(realmId);
+  if (!company) {
+    return res.status(404).json({ error: 'QuickBooks company not found.' });
+  }
+
+  const name = typeof displayName === 'string' ? displayName.trim() : '';
+  if (!name) {
+    return res.status(400).json({ error: 'Vendor displayName is required.' });
+  }
+
+  const normalisedEmail = typeof email === 'string' && email.trim() ? email.trim() : null;
+  const normalisedPhone = typeof phone === 'string' && phone.trim() ? phone.trim() : null;
+
+  try {
+    const vendor = await createQuickBooksVendor(realmId, {
+      displayName: name,
+      email: normalisedEmail,
+      phone: normalisedPhone,
+    });
+
+    res.status(201).json({ vendor });
+  } catch (error) {
+    if (error.code === 'TOKEN_MISSING') {
+      return res.status(400).json({ error: 'QuickBooks access token is not available for this company.' });
+    }
+
+    if (error.isQuickBooksError) {
+      const status = typeof error.status === 'number' && error.status >= 400 ? error.status : 502;
+      return res.status(status).json({ error: error.message || 'QuickBooks vendor creation failed.' });
+    }
+
+    console.error('Failed to create QuickBooks vendor', error);
+    res.status(500).json({ error: 'Failed to create QuickBooks vendor.' });
+  }
+});
+
 app.patch('/api/quickbooks/companies/:realmId/vendors/:vendorId/settings', async (req, res) => {
   const realmId = req.params.realmId;
   const vendorId = req.params.vendorId;
@@ -1043,6 +1087,38 @@ async function writeQuickBooksMetadataFile(realmId, type, payload) {
   await fs.writeFile(filePath, JSON.stringify(payload, null, 2));
 }
 
+async function upsertQuickBooksVendorMetadata(realmId, vendor) {
+  if (!realmId || !vendor?.id) {
+    return null;
+  }
+
+  const existing = await readQuickBooksMetadataFile(realmId, 'vendors');
+  const items = Array.isArray(existing?.items) ? existing.items.slice() : [];
+  const filtered = items.filter((entry) => entry.id !== vendor.id);
+  filtered.push(vendor);
+  filtered.sort((a, b) => {
+    const aName = (a?.displayName || '').toString();
+    const bName = (b?.displayName || '').toString();
+    return aName.localeCompare(bName, undefined, { sensitivity: 'base' });
+  });
+
+  const timestamp = new Date().toISOString();
+  await writeQuickBooksMetadataFile(realmId, 'vendors', {
+    updatedAt: timestamp,
+    items: filtered,
+  });
+
+  await updateQuickBooksCompanyFields(realmId, {
+    vendorsUpdatedAt: timestamp,
+    vendorsCount: filtered.length,
+  });
+
+  return {
+    updatedAt: timestamp,
+    items: filtered,
+  };
+}
+
 function getQuickBooksMetadataPath(realmId, type) {
   return path.join(QUICKBOOKS_METADATA_DIR, realmId, `${type}.json`);
 }
@@ -1203,12 +1279,88 @@ async function fetchQuickBooksVendors(realmId, accessToken) {
   const vendors = await fetchQuickBooksQueryList(realmId, accessToken, 'Vendor');
   return vendors
     .filter((vendor) => vendor.Active !== false)
-    .map((vendor) => ({
-      id: vendor.Id,
-      displayName: vendor.DisplayName || vendor.CompanyName || vendor.Title || vendor.FamilyName || vendor.GivenName || `Vendor ${vendor.Id}`,
-      email: vendor.PrimaryEmailAddr?.Address || null,
-      phone: vendor.PrimaryPhone?.FreeFormNumber || null,
-    }));
+    .map(transformQuickBooksVendor);
+}
+
+function transformQuickBooksVendor(vendor) {
+  if (!vendor) {
+    return null;
+  }
+
+  return {
+    id: vendor.Id,
+    displayName:
+      vendor.DisplayName ||
+      vendor.CompanyName ||
+      vendor.Title ||
+      vendor.FamilyName ||
+      vendor.GivenName ||
+      (vendor.Id ? `Vendor ${vendor.Id}` : null),
+    email: vendor.PrimaryEmailAddr?.Address || null,
+    phone: vendor.PrimaryPhone?.FreeFormNumber || null,
+  };
+}
+
+async function createQuickBooksVendor(realmId, details) {
+  if (!realmId) {
+    const error = new Error('Realm ID is required.');
+    error.code = 'BAD_REQUEST';
+    throw error;
+  }
+
+  const payload = {
+    DisplayName: details.displayName,
+    CompanyName: details.displayName,
+    PrintOnCheckName: details.displayName,
+  };
+
+  if (details.email) {
+    payload.PrimaryEmailAddr = { Address: details.email };
+  }
+
+  if (details.phone) {
+    payload.PrimaryPhone = { FreeFormNumber: details.phone };
+  }
+
+  const vendor = await performQuickBooksFetch(realmId, async (accessToken) => {
+    const url = `${QUICKBOOKS_API_BASE_URL}/v3/company/${realmId}/vendor?minorversion=65`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'User-Agent': 'InvoiceToQB/1.0',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const errorBody = await safeReadJson(response);
+      const message =
+        errorBody?.Fault?.Error?.[0]?.Detail ||
+        errorBody?.Fault?.Error?.[0]?.Message ||
+        `QuickBooks vendor creation failed with status ${response.status}`;
+      const err = new Error(message);
+      err.isQuickBooksError = true;
+      err.status = response.status;
+      err.details = errorBody;
+      throw err;
+    }
+
+    const data = await response.json();
+    return data?.Vendor || data;
+  });
+
+  const normalised = transformQuickBooksVendor(vendor);
+  if (!normalised?.id) {
+    const error = new Error('QuickBooks vendor creation did not return an identifier.');
+    error.isQuickBooksError = true;
+    throw error;
+  }
+
+  await upsertQuickBooksVendorMetadata(realmId, normalised);
+  return normalised;
 }
 
 async function fetchQuickBooksAccounts(realmId, accessToken) {

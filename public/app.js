@@ -1320,6 +1320,21 @@ function createEnhancedReviewRow(invoice, metadata, historical) {
     vendorCell.appendChild(createCellSubtitle(`Extracted as ${insights.vendor.original}`));
   }
   vendorCell.appendChild(createMatchBadge(insights.vendor.confidence));
+
+  if (
+    insights.vendor.confidence === 'unknown' &&
+    selectedRealmId &&
+    typeof invoice?.data?.vendor === 'string' &&
+    invoice.data.vendor.trim()
+  ) {
+    const addVendorButton = document.createElement('button');
+    addVendorButton.type = 'button';
+    addVendorButton.className = 'inline-action';
+    addVendorButton.dataset.action = 'create-vendor';
+    addVendorButton.dataset.vendorName = invoice.data.vendor.trim();
+    addVendorButton.textContent = 'Add vendor to QuickBooks';
+    vendorCell.appendChild(addVendorButton);
+  }
   row.appendChild(vendorCell);
 
   const accountCell = document.createElement('td');
@@ -1836,6 +1851,11 @@ async function handleReviewAction(event) {
   }
 
   const action = button.dataset.action;
+  if (action === 'create-vendor') {
+    await handleCreateVendor(button);
+    return;
+  }
+
   const checksum = button.dataset.checksum;
   if (!checksum) {
     return;
@@ -1847,6 +1867,71 @@ async function handleReviewAction(event) {
     await deleteInvoice(checksum, button);
   } else if (action === 'preview') {
     openInvoicePreview(checksum, button);
+  }
+}
+
+async function handleCreateVendor(button) {
+  if (button.disabled) {
+    return;
+  }
+
+  if (!selectedRealmId) {
+    showStatus(globalStatus, 'Select a QuickBooks company before adding vendors.', 'error');
+    return;
+  }
+
+  const vendorName = typeof button.dataset.vendorName === 'string' ? button.dataset.vendorName.trim() : '';
+  if (!vendorName) {
+    showStatus(globalStatus, 'Invoice is missing a vendor name to add.', 'error');
+    return;
+  }
+
+  const originalLabel = button.textContent;
+  button.disabled = true;
+  button.classList.add('is-pending');
+  button.textContent = 'Adding…';
+
+  try {
+    const response = await fetch(
+      `/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/vendors`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ displayName: vendorName }),
+      }
+    );
+
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      payload = null;
+    }
+
+    if (!response.ok) {
+      const message = payload?.error || 'Failed to create vendor in QuickBooks.';
+      throw new Error(message);
+    }
+
+    await ensureCompanyMetadata(selectedRealmId, { force: true });
+    const metadata = companyMetadataCache.get(selectedRealmId) || null;
+    if (metadata) {
+      renderVendorList(metadata, 'No vendors available for this company.');
+      renderAccountList(metadata, 'No accounts available for this company.');
+    }
+    renderReviewTable();
+
+    const createdName = payload?.vendor?.displayName || vendorName;
+    showStatus(globalStatus, `Added ${createdName} to QuickBooks.`, 'success');
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, error.message || 'Failed to create vendor in QuickBooks.', 'error');
+  } finally {
+    button.textContent = originalLabel;
+    button.disabled = false;
+    button.classList.remove('is-pending');
   }
 }
 

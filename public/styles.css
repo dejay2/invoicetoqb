@@ -722,6 +722,33 @@ pre {
   color: #ff6b61;
 }
 
+.inline-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+  padding: 0.35rem 0.85rem;
+  border-radius: 999px;
+  border: 1px solid rgba(88, 132, 255, 0.35);
+  background: rgba(12, 19, 31, 0.75);
+  color: #e8edf5;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+
+.inline-action:hover {
+  background: rgba(88, 132, 255, 0.28);
+  transform: translateY(-1px);
+}
+
+.inline-action.is-pending {
+  opacity: 0.7;
+  cursor: progress;
+  transform: none;
+}
+
 .cell-primary {
   font-weight: 600;
 }
