@@ -141,18 +141,50 @@ app.post('/api/parse-invoice', upload.single('invoice'), async (req, res) => {
       checksum: crypto.createHash('sha256').update(invoiceBuffer).digest('hex'),
     };
 
+    const realmId = typeof req.body?.realmId === 'string' ? req.body.realmId.trim() : '';
+    const bodyBusinessType = typeof req.body?.businessType === 'string' ? req.body.businessType.trim().slice(0, 120) : '';
+    let companyBusinessType = bodyBusinessType || null;
+
+    if (realmId) {
+      try {
+        const companyRecord = await getQuickBooksCompanyRecord(realmId);
+        if (companyRecord?.businessType) {
+          companyBusinessType = companyRecord.businessType;
+        }
+      } catch (lookupError) {
+        if (lookupError?.code !== 'NOT_FOUND') {
+          console.warn(
+            `Unable to load QuickBooks company profile for ${realmId}:`,
+            lookupError.message || lookupError
+          );
+        }
+      }
+    }
+
+    const companyProfile = realmId || companyBusinessType
+      ? {
+          realmId: realmId || null,
+          businessType: companyBusinessType || null,
+        }
+      : null;
+
     const existingInvoices = await readStoredInvoices();
     const duplicateByChecksum = existingInvoices.find((entry) => entry.metadata?.checksum === invoiceMetadata.checksum);
 
     const preprocessing = await preprocessInvoice(invoiceBuffer, req.file.mimetype);
+    logPreprocessingResult(invoiceMetadata.originalName, preprocessing);
+
     const parsedInvoice = await extractWithGemini(invoiceBuffer, req.file.mimetype, {
       extractedText: preprocessing.text,
+      originalName: invoiceMetadata.originalName,
+      businessType: companyBusinessType,
     });
 
     const enrichedInvoice = {
       parsedAt: new Date().toISOString(),
       metadata: {
         ...invoiceMetadata,
+        companyProfile,
         extraction: {
           method: preprocessing.method,
           textLength: preprocessing.text ? preprocessing.text.length : 0,
@@ -213,7 +245,7 @@ app.get('/api/quickbooks/companies', async (req, res) => {
 
 app.patch('/api/quickbooks/companies/:realmId', async (req, res) => {
   const realmId = req.params.realmId;
-  const { companyName, legalName } = req.body || {};
+  const { companyName, legalName, businessType } = req.body || {};
 
   if (!realmId) {
     return res.status(400).json({ error: 'Realm ID is required.' });
@@ -227,8 +259,8 @@ app.patch('/api/quickbooks/companies/:realmId', async (req, res) => {
     return res.status(400).json({ error: 'Legal name must be a string.' });
   }
 
-  if (companyName === undefined && legalName === undefined) {
-    return res.status(400).json({ error: 'Provide companyName and/or legalName to update.' });
+  if (companyName === undefined && legalName === undefined && businessType === undefined) {
+    return res.status(400).json({ error: 'Provide companyName, legalName, or businessType to update.' });
   }
 
   const updates = {};
@@ -238,6 +270,21 @@ app.patch('/api/quickbooks/companies/:realmId', async (req, res) => {
 
   if (legalName !== undefined) {
     updates.legalName = legalName.trim() ? legalName.trim() : null;
+  }
+
+  if (businessType !== undefined) {
+    if (businessType === null) {
+      updates.businessType = null;
+    } else if (typeof businessType === 'string') {
+      const trimmedType = businessType.trim();
+      if (!trimmedType) {
+        updates.businessType = null;
+      } else {
+        updates.businessType = trimmedType.slice(0, 120);
+      }
+    } else {
+      return res.status(400).json({ error: 'Business type must be a string when provided.' });
+    }
   }
 
   try {
@@ -670,7 +717,15 @@ app.post('/api/invoices/:checksum/match', async (req, res) => {
       return res.status(400).json({ error: 'No QuickBooks vendors or accounts available to match against.' });
     }
 
-    const suggestion = await matchInvoiceWithGemini({ invoice, vendorOptions, accountOptions });
+    const invoiceBusinessType = invoice?.metadata?.companyProfile?.businessType || null;
+
+    const suggestion = await matchInvoiceWithGemini({
+      invoice,
+      vendorOptions,
+      accountOptions,
+      sourceName: invoice?.metadata?.originalName || null,
+      businessType: invoiceBusinessType,
+    });
 
     const vendorLookup = new Map(vendorOptions.map((entry) => [entry.vendor.id, entry.vendor]));
     const accountLookup = new Map(accountOptions.map((entry) => [entry.account.id, entry.account]));
@@ -908,6 +963,7 @@ async function storeQuickBooksCompany({ realmId, companyName, legalName, tokens 
     realmId,
     companyName: companyName ?? existing.companyName ?? null,
     legalName: legalName ?? existing.legalName ?? null,
+    businessType: existing.businessType ?? null,
     environment: QUICKBOOKS_ENVIRONMENT,
     connectedAt: existing.connectedAt || now,
     updatedAt: now,
@@ -1689,7 +1745,10 @@ function sanitizeQuickBooksCompany(company) {
   }
 
   const { tokens, ...rest } = company;
-  return rest;
+  return {
+    ...rest,
+    businessType: rest.businessType ?? null,
+  };
 }
 
 async function preprocessInvoice(buffer, mimeType) {
@@ -1835,8 +1894,77 @@ function truncateText(text, limit) {
 }
 
 
-async function extractWithGemini(buffer, mimeType, { extractedText } = {}) {
+function logPreprocessingResult(originalName, preprocessing) {
+  const timestamp = new Date().toISOString();
+  const fileLabel = originalName || 'unknown file';
+
+  if (!preprocessing) {
+    console.log(`[${timestamp}] Preprocessing produced no result for ${fileLabel}.`);
+    return;
+  }
+
+  const method = preprocessing.method || 'unknown';
+  const textPreview = preprocessing.text
+    ? createLogPreviewText(preprocessing.text, 500)
+    : '[no text extracted]';
+
+  console.log(
+    `[${timestamp}] Preprocessing (${method}) for ${fileLabel}: ${textPreview}`
+  );
+}
+
+function createLogPreviewText(value, limit) {
+  if (!value) {
+    return '[empty]';
+  }
+
+  const { text, truncated } = truncateText(value, limit);
+  if (truncated) {
+    return `${text} (truncated from ${value.length} chars)`;
+  }
+  return text;
+}
+
+function logGeminiPrompt(stage, sourceName, contents = []) {
+  const timestamp = new Date().toISOString();
+  const label = sourceName || 'unknown file';
+
+  const formatted = contents
+    .map((message, index) => {
+      const role = message?.role || 'unknown-role';
+      const parts = Array.isArray(message?.parts) ? message.parts : [];
+      const partDetails = parts
+        .map((part) => {
+          if (typeof part?.text === 'string') {
+            return createLogPreviewText(part.text, 2000);
+          }
+
+          if (part?.inlineData) {
+            const mimeType = part.inlineData.mimeType || 'application/octet-stream';
+            const base64Length = part.inlineData.data ? part.inlineData.data.length : 0;
+            return `[inlineData mimeType=${mimeType} size=${base64Length} base64 chars]`;
+          }
+
+          return '[unsupported part]';
+        })
+        .join('\n---\n');
+
+      return `Message ${index + 1} (${role}):\n${partDetails}`;
+    })
+    .join('\n===\n');
+
+  console.log(
+    `[${timestamp}] Gemini ${stage} prompt for ${label}:\n${formatted || '[no prompt parts]'}`
+  );
+}
+
+
+async function extractWithGemini(buffer, mimeType, options = {}) {
+  const { extractedText, originalName, businessType } = options;
   const url = buildGeminiUrl();
+  const businessContext = businessType
+    ? `\nBusiness context:\n- The company operates as: ${businessType}\n`
+    : '';
   const prompt = `You are an expert system for reading invoices. Extract the following fields and respond with **only** valid JSON matching this schema:
 {
   "vendor": string | null,
@@ -1866,6 +1994,7 @@ Rules:
 - Combine multiple bill recipients into a single string if necessary.
 - For products, include at least a description. Omit other product fields if not present by setting them to null.
 - Do not add commentary. Return only minified JSON with the exact fields above.`;
+  const effectivePrompt = businessContext ? `${prompt}${businessContext}` : prompt;
 
   let contents;
   if (extractedText && extractedText.trim()) {
@@ -1874,7 +2003,7 @@ Rules:
       {
         role: 'user',
         parts: [
-          { text: `${prompt}\n\nDocument text:\n${documentText}` },
+          { text: `${effectivePrompt}\n\nDocument text:\n${documentText}` },
         ],
       },
     ];
@@ -1883,7 +2012,7 @@ Rules:
       {
         role: 'user',
         parts: [
-          { text: prompt },
+          { text: effectivePrompt },
           {
             inlineData: {
               data: buffer.toString('base64'),
@@ -1896,6 +2025,7 @@ Rules:
   }
 
   const payload = { contents };
+  logGeminiPrompt('extraction', originalName, payload.contents);
 
   const response = await fetch(url, {
     method: 'POST',
@@ -2140,7 +2270,7 @@ function rankAccountCandidates(invoice, accounts) {
     .sort((a, b) => b.score - a.score);
 }
 
-async function matchInvoiceWithGemini({ invoice, vendorOptions, accountOptions }) {
+async function matchInvoiceWithGemini({ invoice, vendorOptions, accountOptions, sourceName, businessType }) {
   const url = buildGeminiUrl();
   const keywords = extractInvoiceKeywords(invoice);
   const invoiceSummary = buildInvoiceSummary(invoice, keywords);
@@ -2161,7 +2291,8 @@ async function matchInvoiceWithGemini({ invoice, vendorOptions, accountOptions }
     })
     .join('\n');
 
-  const prompt = `You help match invoices to QuickBooks vendors and accounts. Choose the best options from the lists below.
+  const businessContext = businessType ? `\nBusiness context:\n- The company operates as: ${businessType}\n` : '';
+  const prompt = `You help match invoices to QuickBooks vendors and accounts. Choose the best options from the lists below.${businessContext}
 
 Invoice summary:
 ${invoiceSummary}
@@ -2199,6 +2330,9 @@ Rules:
       },
     ],
   };
+
+  const promptSourceName = sourceName || invoice?.metadata?.originalName || null;
+  logGeminiPrompt('matching', promptSourceName, payload.contents);
 
   const response = await fetch(url, {
     method: 'POST',

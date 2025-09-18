@@ -44,6 +44,17 @@
             <button id="refresh-metadata" type="button" class="secondary-button">Refresh QuickBooks Data</button>
           </div>
         </div>
+        <div class="panel-card">
+          <h2>Business profile</h2>
+          <p class="panel-summary">Share a short description of the business to guide AI account suggestions.</p>
+          <form id="business-profile-form" class="company-edit-form">
+            <div class="input-group">
+              <label for="company-business-type">Business type</label>
+              <input id="company-business-type" name="businessType" type="text" placeholder="e.g., Restaurant, Construction contractor" maxlength="120" />
+            </div>
+            <button id="business-profile-submit" type="submit" class="primary-button">Save profile</button>
+          </form>
+        </div>
       </section>
 
       <section id="add-invoices" class="company-panel" role="tabpanel" hidden>

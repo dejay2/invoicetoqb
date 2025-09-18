@@ -7,6 +7,9 @@ const companyPanels = document.querySelectorAll('.company-panel');
 const connectionStatus = document.getElementById('connection-status');
 const connectCompanyButton = document.getElementById('connect-company');
 const refreshMetadataButton = document.getElementById('refresh-metadata');
+const businessProfileForm = document.getElementById('business-profile-form');
+const businessTypeInput = document.getElementById('company-business-type');
+const businessProfileSubmit = document.getElementById('business-profile-submit');
 const vendorList = document.getElementById('vendor-list');
 const accountList = document.getElementById('account-list');
 const importVendorDefaultsButton = document.getElementById('import-vendor-defaults');
@@ -70,6 +73,7 @@ bootstrap();
 function bootstrap() {
   attachEventListeners();
   handleQuickBooksCallback();
+  renderBusinessProfile();
   refreshQuickBooksCompanies();
   loadStoredInvoices();
 }
@@ -103,6 +107,10 @@ function attachEventListeners() {
       }
       refreshCompanyMetadata(selectedRealmId);
     });
+  }
+
+  if (businessProfileForm) {
+    businessProfileForm.addEventListener('submit', handleBusinessProfileSave);
   }
 
   if (importVendorDefaultsButton) {
@@ -270,10 +278,20 @@ async function uploadAndProcessFile(file, statusEntry) {
     return false;
   }
 
+  if (!selectedRealmId) {
+    setUploadStatus(statusEntry, 'Select a company before uploading invoices.', 'error');
+    return false;
+  }
+
   setUploadStatus(statusEntry, 'Uploading to Gemini…');
 
   const formData = new FormData();
   formData.append('invoice', file);
+  formData.append('realmId', selectedRealmId);
+  const company = getSelectedCompany();
+  if (company?.businessType) {
+    formData.append('businessType', company.businessType);
+  }
 
   try {
     const response = await fetch('/api/parse-invoice', {
@@ -429,6 +447,7 @@ function resetCompanyPanels() {
   }
   renderVendorList(null, 'Select a company to load vendor details.');
   renderAccountList(null, 'Select a company to load account details.');
+  renderBusinessProfile();
 }
 
 function activateCompanyTab(targetId) {
@@ -468,6 +487,7 @@ function renderCompanySettings() {
 
   if (!company) {
     connectionStatus.textContent = 'Select a company to view connection details.';
+    renderBusinessProfile();
     return;
   }
 
@@ -487,6 +507,10 @@ function renderCompanySettings() {
     lines.push(`Updated ${formatTimestamp(company.updatedAt)}`);
   }
 
+  if (company.businessType) {
+    lines.push(`Business type: ${company.businessType}`);
+  }
+
   const counts = [];
   if (typeof company.vendorsCount === 'number') {
     counts.push(`${company.vendorsCount} vendors`);
@@ -502,6 +526,105 @@ function renderCompanySettings() {
   }
 
   connectionStatus.textContent = lines.join('\n');
+  renderBusinessProfile();
+}
+
+function renderBusinessProfile() {
+  if (!businessTypeInput || !businessProfileSubmit) {
+    return;
+  }
+
+  const company = getSelectedCompany();
+  if (!company) {
+    businessTypeInput.value = '';
+    businessTypeInput.disabled = true;
+    businessProfileSubmit.disabled = true;
+    return;
+  }
+
+  businessTypeInput.disabled = false;
+  businessTypeInput.value = company.businessType || '';
+  businessProfileSubmit.disabled = false;
+}
+
+async function handleBusinessProfileSave(event) {
+  event.preventDefault();
+
+  if (!selectedRealmId) {
+    showStatus(globalStatus, 'Select a company before updating the business profile.', 'error');
+    return;
+  }
+
+  const company = getSelectedCompany();
+  const rawValue = businessTypeInput ? businessTypeInput.value : '';
+  const trimmedValue = typeof rawValue === 'string' ? rawValue.trim() : '';
+  const nextBusinessType = trimmedValue || null;
+  const currentBusinessType = company?.businessType || null;
+
+  if ((currentBusinessType || null) === nextBusinessType) {
+    showStatus(globalStatus, 'Business profile is already up to date.', 'info');
+    return;
+  }
+
+  const endpoint = `/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}`;
+  const originalLabel = businessProfileSubmit ? businessProfileSubmit.textContent : '';
+
+  if (businessProfileSubmit) {
+    businessProfileSubmit.disabled = true;
+    businessProfileSubmit.textContent = 'Saving…';
+  }
+  if (businessTypeInput) {
+    businessTypeInput.disabled = true;
+  }
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ businessType: nextBusinessType }),
+    });
+
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      payload = null;
+    }
+
+    if (!response.ok) {
+      const message = payload?.error || 'Failed to update business profile.';
+      throw new Error(message);
+    }
+
+    const updatedCompany = payload?.company;
+    if (updatedCompany) {
+      const index = quickBooksCompanies.findIndex((entry) => entry.realmId === updatedCompany.realmId);
+      if (index >= 0) {
+        quickBooksCompanies[index] = updatedCompany;
+      } else {
+        quickBooksCompanies.push(updatedCompany);
+      }
+      renderCompanySettings();
+    } else {
+      await refreshQuickBooksCompanies(selectedRealmId);
+    }
+
+    showStatus(globalStatus, 'Business profile saved.', 'success');
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, error.message || 'Failed to update business profile.', 'error');
+  } finally {
+    if (businessTypeInput) {
+      businessTypeInput.disabled = !selectedRealmId;
+    }
+    if (businessProfileSubmit) {
+      businessProfileSubmit.disabled = !selectedRealmId;
+      businessProfileSubmit.textContent = originalLabel || 'Save profile';
+    }
+    renderBusinessProfile();
+  }
 }
 
 async function loadCompanyMetadata(realmId) {
