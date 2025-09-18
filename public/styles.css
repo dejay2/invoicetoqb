@@ -16,9 +16,9 @@ body {
 }
 
 .container {
-  width: min(900px, 90vw);
+  width: clamp(320px, 92vw, 1320px);
   margin: 3rem auto;
-  padding: 2.5rem;
+  padding: clamp(1.75rem, 2vw + 1.5rem, 3rem);
   border-radius: 24px;
   background: rgba(12, 17, 29, 0.85);
   box-shadow: 0 20px 45px rgba(8, 12, 20, 0.45);
@@ -548,6 +548,13 @@ pre {
   gap: 1rem;
 }
 
+.panel-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
 .entity-list {
   list-style: none;
   margin: 0;
@@ -565,6 +572,37 @@ pre {
   border-radius: 12px;
   background: rgba(12, 19, 31, 0.9);
   border: 1px solid rgba(88, 132, 255, 0.12);
+}
+
+.vendor-settings-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin-top: 0.35rem;
+}
+
+.vendor-setting-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: rgba(232, 237, 245, 0.75);
+}
+
+.vendor-setting-heading {
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(232, 237, 245, 0.6);
+}
+
+.vendor-setting-group select {
+  width: 100%;
+}
+
+.vendor-setting-select.is-pending {
+  opacity: 0.7;
+  cursor: progress;
 }
 
 .entity-list .empty {
@@ -593,7 +631,7 @@ pre {
 .review-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 900px;
+  min-width: min(1100px, 100%);
 }
 
 .archive-table thead,

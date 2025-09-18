@@ -1,6 +1,7 @@
 node_modules/
 data/*.json
 data/quickbooks/
+data/invoice_store/
 .serena/
 .env
 .env.local

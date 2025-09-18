@@ -9,6 +9,7 @@ const connectCompanyButton = document.getElementById('connect-company');
 const refreshMetadataButton = document.getElementById('refresh-metadata');
 const vendorList = document.getElementById('vendor-list');
 const accountList = document.getElementById('account-list');
+const importVendorDefaultsButton = document.getElementById('import-vendor-defaults');
 const reviewTableBody = document.getElementById('review-table-body');
 const archiveTableBody = document.getElementById('archive-table-body');
 const dropZone = document.getElementById('invoice-drop-zone');
@@ -54,6 +55,14 @@ const KEYWORD_STOPWORDS = new Set([
   'account',
 ]);
 
+const VENDOR_VAT_TREATMENT_VALUES = new Set(['inclusive', 'exclusive', 'no_vat']);
+const VAT_TREATMENT_OPTIONS = [
+  { value: '', label: 'No default' },
+  { value: 'inclusive', label: 'Inclusive of Tax' },
+  { value: 'exclusive', label: 'Exclusive of Tax' },
+  { value: 'no_vat', label: 'No VAT' },
+];
+
 bootstrap();
 
 function bootstrap() {
@@ -92,6 +101,14 @@ function attachEventListeners() {
       }
       refreshCompanyMetadata(selectedRealmId);
     });
+  }
+
+  if (importVendorDefaultsButton) {
+    importVendorDefaultsButton.addEventListener('click', handleImportVendorDefaults);
+  }
+
+  if (vendorList) {
+    vendorList.addEventListener('change', handleVendorSettingChange);
   }
 
   if (dropZone) {
@@ -554,10 +571,15 @@ function storeCompanyMetadata(realmId, metadata) {
 }
 
 function prepareMetadata(metadata) {
+  const vendors = prepareMetadataSection(metadata?.vendors);
+  const accounts = prepareMetadataSection(metadata?.accounts);
+  const taxCodes = prepareMetadataSection(metadata?.taxCodes);
+
   return {
-    vendors: prepareMetadataSection(metadata?.vendors),
-    accounts: prepareMetadataSection(metadata?.accounts),
-    taxCodes: prepareMetadataSection(metadata?.taxCodes),
+    vendors,
+    accounts,
+    taxCodes,
+    vendorSettings: prepareVendorSettings(metadata?.vendorSettings, { vendors, accounts, taxCodes }),
   };
 }
 
@@ -568,6 +590,42 @@ function prepareMetadataSection(section) {
     updatedAt: section?.updatedAt || null,
     items,
     lookup,
+  };
+}
+
+function prepareVendorSettings(settings, sections = {}) {
+  const entries = {};
+  const vendorLookup = sections?.vendors?.lookup;
+  const accountLookup = sections?.accounts?.lookup;
+  const taxCodeLookup = sections?.taxCodes?.lookup;
+
+  if (settings && typeof settings === 'object' && !Array.isArray(settings)) {
+    Object.entries(settings).forEach(([vendorId, entry]) => {
+      if (!vendorLookup?.has(vendorId)) {
+        return;
+      }
+
+      const accountId =
+        typeof entry?.accountId === 'string' && accountLookup?.has(entry.accountId)
+          ? entry.accountId
+          : null;
+      const taxCodeId =
+        typeof entry?.taxCodeId === 'string' && taxCodeLookup?.has(entry.taxCodeId)
+          ? entry.taxCodeId
+          : null;
+      const vatTreatment = VENDOR_VAT_TREATMENT_VALUES.has(entry?.vatTreatment)
+        ? entry.vatTreatment
+        : null;
+
+      if (accountId || taxCodeId || vatTreatment) {
+        entries[vendorId] = { accountId, taxCodeId, vatTreatment };
+      }
+    });
+  }
+
+  return {
+    entries,
+    lookup: new Map(Object.entries(entries)),
   };
 }
 
@@ -584,6 +642,10 @@ function renderVendorList(metadata, emptyMessage) {
     return;
   }
 
+  const vendorSettings = metadata?.vendorSettings?.entries || {};
+  const accountOptions = buildAccountOptions(metadata?.accounts?.items || []);
+  const taxCodeOptions = buildTaxCodeOptions(metadata?.taxCodes?.items || []);
+
   const sorted = [...items].sort((a, b) => {
     const nameA = (a.displayName || a.name || '').toLowerCase();
     const nameB = (b.displayName || b.name || '').toLowerCase();
@@ -596,7 +658,8 @@ function renderVendorList(metadata, emptyMessage) {
 
     const title = document.createElement('span');
     title.className = 'entity-name';
-    title.textContent = item.displayName || item.name || `Vendor ${item.id}`;
+    const vendorName = item.displayName || item.name || `Vendor ${item.id}`;
+    title.textContent = vendorName;
     element.appendChild(title);
 
     const metaParts = [];
@@ -614,8 +677,343 @@ function renderVendorList(metadata, emptyMessage) {
       element.appendChild(meta);
     }
 
+    const defaults = vendorSettings[item.id] || {};
+    const controls = createVendorSettingsControls({
+      vendorId: item.id,
+      vendorName,
+      defaults,
+      accountOptions,
+      taxCodeOptions,
+    });
+    element.appendChild(controls);
+
     vendorList.appendChild(element);
   });
+}
+
+function buildAccountOptions(accounts) {
+  const options = [{ value: '', label: 'No default' }];
+  const sorted = [...accounts].sort((a, b) => {
+    const labelA = (a.name || a.fullyQualifiedName || '').toLowerCase();
+    const labelB = (b.name || b.fullyQualifiedName || '').toLowerCase();
+    return labelA.localeCompare(labelB);
+  });
+
+  sorted.forEach((account) => {
+    const baseLabel = account.name || account.fullyQualifiedName || `Account ${account.id}`;
+    const labelParts = [baseLabel];
+    if (account.accountType) {
+      labelParts.push(account.accountType);
+    }
+    options.push({ value: account.id, label: labelParts.join(' • ') });
+  });
+
+  return options;
+}
+
+function buildTaxCodeOptions(taxCodes) {
+  const options = [{ value: '', label: 'No default' }];
+  const sorted = [...taxCodes].sort((a, b) => {
+    const labelA = (a.name || '').toLowerCase();
+    const labelB = (b.name || '').toLowerCase();
+    return labelA.localeCompare(labelB);
+  });
+
+  sorted.forEach((code) => {
+    const baseLabel = code.name || `Tax Code ${code.id}`;
+    const suffix = typeof code.rate === 'number' ? `${code.rate}%` : null;
+    const label = suffix ? `${baseLabel} • ${suffix}` : baseLabel;
+    options.push({ value: code.id, label });
+  });
+
+  return options;
+}
+
+function createVendorSettingsControls({ vendorId, vendorName, defaults, accountOptions, taxCodeOptions }) {
+  const container = document.createElement('div');
+  container.className = 'vendor-settings-grid';
+
+  const categorySelect = createVendorSettingSelect({
+    options: accountOptions,
+    value: defaults.accountId || '',
+    vendorId,
+    vendorName,
+    field: 'accountId',
+    disabled: accountOptions.length <= 1,
+    disabledHint: 'No QuickBooks accounts available. Refresh metadata to sync accounts.',
+  });
+
+  const vatBasisSelect = createVendorSettingSelect({
+    options: VAT_TREATMENT_OPTIONS,
+    value: defaults.vatTreatment || '',
+    vendorId,
+    vendorName,
+    field: 'vatTreatment',
+  });
+
+  const taxCodeSelect = createVendorSettingSelect({
+    options: taxCodeOptions,
+    value: defaults.taxCodeId || '',
+    vendorId,
+    vendorName,
+    field: 'taxCodeId',
+    disabled: taxCodeOptions.length <= 1,
+    disabledHint: 'No QuickBooks tax codes available. Refresh metadata to sync tax codes.',
+  });
+
+  container.appendChild(createVendorSettingGroup('CATEGORY', categorySelect));
+  container.appendChild(createVendorSettingGroup('AMOUNTS ARE', vatBasisSelect));
+  container.appendChild(createVendorSettingGroup('VAT', taxCodeSelect));
+
+  return container;
+}
+
+function createVendorSettingGroup(labelText, control) {
+  const wrapper = document.createElement('label');
+  wrapper.className = 'vendor-setting-group';
+
+  const heading = document.createElement('span');
+  heading.className = 'vendor-setting-heading';
+  heading.textContent = labelText;
+
+  wrapper.appendChild(heading);
+  wrapper.appendChild(control);
+
+  return wrapper;
+}
+
+function createVendorSettingSelect({
+  options,
+  value,
+  vendorId,
+  vendorName,
+  field,
+  disabled = false,
+  disabledHint = '',
+}) {
+  const select = document.createElement('select');
+  select.className = 'vendor-setting-select';
+  select.dataset.vendorId = vendorId;
+  select.dataset.settingField = field;
+  select.dataset.vendorName = vendorName;
+
+  options.forEach((option) => {
+    const optionElement = document.createElement('option');
+    optionElement.value = option.value;
+    optionElement.textContent = option.label;
+    if (option.disabled) {
+      optionElement.disabled = true;
+    }
+    select.appendChild(optionElement);
+  });
+
+  const availableValues = options.map((option) => option.value);
+  const initialValue = availableValues.includes(value) ? value : '';
+  select.value = initialValue;
+  select.dataset.previousValue = initialValue;
+
+  if (disabled) {
+    select.disabled = true;
+    if (disabledHint) {
+      select.title = disabledHint;
+    }
+  }
+
+  return select;
+}
+
+async function handleVendorSettingChange(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLSelectElement)) {
+    return;
+  }
+
+  if (!target.classList.contains('vendor-setting-select')) {
+    return;
+  }
+
+  const vendorId = target.dataset.vendorId;
+  const field = target.dataset.settingField;
+  if (!vendorId || !field) {
+    return;
+  }
+
+  const previousValue = target.dataset.previousValue ?? '';
+  const nextValue = target.value;
+
+  if (nextValue === previousValue) {
+    return;
+  }
+
+  if (!selectedRealmId) {
+    target.value = previousValue;
+    return;
+  }
+
+  if (target.disabled) {
+    return;
+  }
+
+  const payload = {};
+  if (field === 'accountId' || field === 'taxCodeId') {
+    payload[field] = nextValue || null;
+  } else if (field === 'vatTreatment') {
+    payload.vatTreatment = nextValue || null;
+  } else {
+    return;
+  }
+
+  const vendorName = target.dataset.vendorName || 'Vendor';
+
+  target.disabled = true;
+  target.classList.add('is-pending');
+  target.setAttribute('aria-busy', 'true');
+
+  try {
+    const response = await fetch(
+      `/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/vendors/${encodeURIComponent(vendorId)}/settings`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      }
+    );
+
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = body?.error || 'Failed to update vendor defaults.';
+      throw new Error(message);
+    }
+
+    const settings = body?.settings || {};
+    const resolvedValue = resolveVendorSettingFieldValue(field, settings);
+    target.value = resolvedValue;
+    target.dataset.previousValue = resolvedValue;
+
+    applyVendorSettingUpdate(selectedRealmId, vendorId, settings);
+    showStatus(globalStatus, `Saved defaults for ${vendorName}.`, 'success');
+  } catch (error) {
+    showStatus(globalStatus, error.message || 'Failed to update vendor defaults.', 'error');
+    target.value = previousValue;
+  } finally {
+    target.classList.remove('is-pending');
+    target.removeAttribute('aria-busy');
+    target.disabled = false;
+  }
+}
+
+function resolveVendorSettingFieldValue(field, settings) {
+  if (field === 'accountId') {
+    return typeof settings?.accountId === 'string' && settings.accountId ? settings.accountId : '';
+  }
+  if (field === 'taxCodeId') {
+    return typeof settings?.taxCodeId === 'string' && settings.taxCodeId ? settings.taxCodeId : '';
+  }
+  if (field === 'vatTreatment') {
+    return VENDOR_VAT_TREATMENT_VALUES.has(settings?.vatTreatment) ? settings.vatTreatment : '';
+  }
+  return '';
+}
+
+function applyVendorSettingUpdate(realmId, vendorId, settings) {
+  const metadata = companyMetadataCache.get(realmId);
+  if (!metadata) {
+    return;
+  }
+
+  const currentEntries = metadata.vendorSettings?.entries || {};
+  const nextEntries = { ...currentEntries };
+  const accountId =
+    typeof settings?.accountId === 'string' && metadata.accounts?.lookup?.has(settings.accountId)
+      ? settings.accountId
+      : null;
+  const taxCodeId =
+    typeof settings?.taxCodeId === 'string' && metadata.taxCodes?.lookup?.has(settings.taxCodeId)
+      ? settings.taxCodeId
+      : null;
+  const vatTreatment = VENDOR_VAT_TREATMENT_VALUES.has(settings?.vatTreatment)
+    ? settings.vatTreatment
+    : null;
+
+  if (accountId || taxCodeId || vatTreatment) {
+    nextEntries[vendorId] = { accountId, taxCodeId, vatTreatment };
+  } else {
+    delete nextEntries[vendorId];
+  }
+
+  metadata.vendorSettings = prepareVendorSettings(nextEntries, {
+    vendors: metadata.vendors,
+    accounts: metadata.accounts,
+    taxCodes: metadata.taxCodes,
+  });
+}
+
+async function handleImportVendorDefaults() {
+  if (!selectedRealmId) {
+    showStatus(globalStatus, 'Select a company before importing defaults.', 'error');
+    return;
+  }
+
+  if (!importVendorDefaultsButton) {
+    return;
+  }
+
+  const button = importVendorDefaultsButton;
+  const originalLabel = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Importing…';
+
+  try {
+    let metadata = companyMetadataCache.get(selectedRealmId);
+    if (!metadata) {
+      metadata = await ensureCompanyMetadata(selectedRealmId);
+    }
+
+    const response = await fetch(
+      `/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/vendors/import-defaults`,
+      {
+        method: 'POST',
+      }
+    );
+
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      payload = null;
+    }
+
+    if (!response.ok) {
+      const message = payload?.error || 'Failed to import vendor defaults.';
+      throw new Error(message);
+    }
+
+    const vendorSettingsMap = payload?.vendorSettings || {};
+    if (metadata) {
+      metadata.vendorSettings = prepareVendorSettings(vendorSettingsMap, {
+        vendors: metadata.vendors,
+        accounts: metadata.accounts,
+        taxCodes: metadata.taxCodes,
+      });
+      companyMetadataCache.set(selectedRealmId, metadata);
+      renderVendorList(metadata, 'No vendors available for this company.');
+    }
+
+    const appliedCount = Array.isArray(payload?.applied) ? payload.applied.length : 0;
+    if (appliedCount > 0) {
+      showStatus(globalStatus, `Imported defaults for ${appliedCount} vendor${appliedCount === 1 ? '' : 's'}.`, 'success');
+    } else {
+      showStatus(globalStatus, 'No new defaults found for vendors.', 'info');
+    }
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, error.message || 'Failed to import vendor defaults.', 'error');
+  } finally {
+    button.textContent = originalLabel;
+    button.disabled = false;
+  }
 }
 
 function renderAccountList(metadata, emptyMessage) {
@@ -970,6 +1368,17 @@ function createFallbackReviewRow(invoice) {
 function createReviewActionsCell(invoice) {
   const actionsCell = document.createElement('td');
   actionsCell.className = 'table-actions';
+
+  const previewButton = document.createElement('button');
+  previewButton.type = 'button';
+  previewButton.className = 'table-action';
+  previewButton.dataset.action = 'preview';
+  previewButton.dataset.checksum = invoice?.metadata?.checksum || '';
+  if (invoice?.metadata?.originalName) {
+    previewButton.dataset.filename = invoice.metadata.originalName;
+  }
+  previewButton.textContent = 'Preview';
+  actionsCell.appendChild(previewButton);
 
   const moveButton = document.createElement('button');
   moveButton.type = 'button';
@@ -1364,7 +1773,28 @@ async function handleReviewAction(event) {
     await moveInvoiceToArchive(checksum, button);
   } else if (action === 'delete') {
     await deleteInvoice(checksum, button);
+  } else if (action === 'preview') {
+    openInvoicePreview(checksum, button);
   }
+}
+
+function openInvoicePreview(checksum, button) {
+  if (!checksum) {
+    return;
+  }
+
+  const previewUrl = buildInvoicePreviewUrl(checksum);
+  const previewWindow = window.open(previewUrl, '_blank', 'noopener,noreferrer');
+
+  if (!previewWindow) {
+    const fileName = button?.dataset?.filename || 'invoice';
+    showStatus(globalStatus, `Allow pop-ups to preview ${fileName}.`, 'error');
+  }
+}
+
+function buildInvoicePreviewUrl(checksum) {
+  const encoded = encodeURIComponent(checksum);
+  return `/api/invoices/${encoded}/file`;
 }
 
 async function handleArchiveAction(event) {
