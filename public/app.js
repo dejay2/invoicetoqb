@@ -721,12 +721,45 @@ function buildTaxCodeOptions(taxCodes) {
 
   sorted.forEach((code) => {
     const baseLabel = code.name || `Tax Code ${code.id}`;
-    const suffix = typeof code.rate === 'number' ? `${code.rate}%` : null;
+    const numericRate = typeof code.rate === 'number' ? code.rate : null;
+    const hasEmbeddedRate =
+      numericRate !== null && ratesApproximatelyEqual(numericRate, parsePercentageFromLabel(baseLabel));
+    const suffix = numericRate !== null && !hasEmbeddedRate ? `${formatRateValue(numericRate)}%` : null;
     const label = suffix ? `${baseLabel} • ${suffix}` : baseLabel;
     options.push({ value: code.id, label });
   });
 
   return options;
+}
+
+function parsePercentageFromLabel(label) {
+  if (typeof label !== 'string') {
+    return null;
+  }
+
+  const match = label.match(/(-?\d+(?:\.\d+)?)\s*%/);
+  if (!match) {
+    return null;
+  }
+
+  const numeric = Number(match[1]);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function formatRateValue(rate) {
+  if (!Number.isFinite(rate)) {
+    return String(rate);
+  }
+
+  return rate % 1 === 0 ? rate.toString() : rate.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+function ratesApproximatelyEqual(a, b) {
+  if (!Number.isFinite(a) || !Number.isFinite(b)) {
+    return false;
+  }
+
+  return Math.abs(a - b) < 0.0001;
 }
 
 function createVendorSettingsControls({ vendorId, vendorName, defaults, accountOptions, taxCodeOptions }) {

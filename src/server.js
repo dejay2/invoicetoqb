@@ -1130,14 +1130,20 @@ async function fetchQuickBooksAccounts(realmId, accessToken) {
 }
 
 async function fetchQuickBooksTaxCodes(realmId, accessToken) {
-  const taxCodes = await fetchQuickBooksQueryList(realmId, accessToken, 'TaxCode');
-  return taxCodes
-    .filter((code) => code.Active !== false)
+  const [taxCodes, taxRates] = await Promise.all([
+    fetchQuickBooksQueryList(realmId, accessToken, 'TaxCode'),
+    fetchQuickBooksQueryList(realmId, accessToken, 'TaxRate'),
+  ]);
+
+  const taxRateLookup = buildTaxRateLookup(taxRates || []);
+
+  return (taxCodes || [])
+    .filter((code) => code?.Active !== false)
     .map((code) => ({
       id: code.Id,
       name: code.Name || `Tax Code ${code.Id}`,
       description: code.Description || null,
-      rate: deriveTaxCodeRate(code),
+      rate: deriveTaxCodeRate(code, taxRateLookup),
       agency: code.SalesTaxRateList?.TaxAgencyRef?.name || null,
       active: code.Active !== false,
     }));
@@ -1192,7 +1198,35 @@ async function fetchQuickBooksQueryList(realmId, accessToken, entity) {
   return items;
 }
 
-function deriveTaxCodeRate(taxCode) {
+function buildTaxRateLookup(taxRates) {
+  const lookup = new Map();
+
+  for (const rate of taxRates) {
+    if (rate?.Active === false) {
+      continue;
+    }
+
+    const rateId = rate?.Id;
+    if (!rateId) {
+      continue;
+    }
+
+    const numeric = normaliseRateNumber(rate?.RateValue ?? rate?.rateValue ?? rate?.Rate ?? rate?.rate);
+    if (numeric !== null) {
+      lookup.set(rateId, numeric);
+      continue;
+    }
+
+    const parsedFromName = extractPercentageFromLabel(rate?.Name || rate?.name);
+    if (parsedFromName !== null) {
+      lookup.set(rateId, parsedFromName);
+    }
+  }
+
+  return lookup;
+}
+
+function deriveTaxCodeRate(taxCode, taxRateLookup) {
   const details =
     taxCode?.SalesTaxRateList?.TaxRateDetail ||
     taxCode?.PurchaseTaxRateList?.TaxRateDetail ||
@@ -1201,19 +1235,64 @@ function deriveTaxCodeRate(taxCode) {
 
   const list = Array.isArray(details) ? details : details ? [details] : [];
 
-  if (!list.length) {
+  let total = 0;
+  let foundRate = false;
+
+  for (const detail of list) {
+    const directRate = normaliseRateNumber(detail?.RateValue ?? detail?.rateValue);
+    if (directRate !== null) {
+      total += directRate;
+      foundRate = true;
+      continue;
+    }
+
+    const refId = detail?.TaxRateRef?.value ?? detail?.TaxRateRef?.Value;
+    if (refId && taxRateLookup?.has(refId)) {
+      const lookupRate = normaliseRateNumber(taxRateLookup.get(refId));
+      if (lookupRate !== null) {
+        total += lookupRate;
+        foundRate = true;
+        continue;
+      }
+    }
+
+    const refName = detail?.TaxRateRef?.name ?? detail?.TaxRateRef?.Name;
+    const parsedFromName = extractPercentageFromLabel(refName);
+    if (parsedFromName !== null) {
+      total += parsedFromName;
+      foundRate = true;
+    }
+  }
+
+  if (foundRate && Number.isFinite(total)) {
+    return normaliseRateNumber(total);
+  }
+
+  const fallback = extractPercentageFromLabel(taxCode?.Name || taxCode?.name || taxCode?.Description || taxCode?.description);
+  return fallback;
+}
+
+function normaliseRateNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
     return null;
   }
 
-  const total = list.reduce((sum, detail) => {
-    const rate = Number(detail.RateValue ?? detail.rateValue);
-    if (Number.isFinite(rate)) {
-      return sum + rate;
-    }
-    return sum;
-  }, 0);
+  return Math.round(number * 1000000) / 1000000;
+}
 
-  return Number.isFinite(total) ? total : null;
+function extractPercentageFromLabel(label) {
+  if (typeof label !== 'string') {
+    return null;
+  }
+
+  const match = label.match(/(-?\d+(?:\.\d+)?)\s*%/);
+  if (!match) {
+    return null;
+  }
+
+  const numeric = Number(match[1]);
+  return Number.isFinite(numeric) ? numeric : null;
 }
 
 async function fetchLastVendorDefaults(realmId, accessToken, vendorId) {
