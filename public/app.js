@@ -53,6 +53,8 @@ const KEYWORD_STOPWORDS = new Set([
   'invoice',
   'number',
   'account',
+  'price',
+  'prices',
 ]);
 
 const VENDOR_VAT_TREATMENT_VALUES = new Set(['inclusive', 'exclusive', 'no_vat']);
@@ -1333,6 +1335,9 @@ function createEnhancedReviewRow(invoice, metadata, historical) {
   if (accountMetaParts.length) {
     accountCell.appendChild(createCellSubtitle(accountMetaParts.join(' • ')));
   }
+  if (insights.account.reason) {
+    accountCell.appendChild(createCellSubtitle(insights.account.reason));
+  }
   accountCell.appendChild(createMatchBadge(insights.account.confidence));
   row.appendChild(accountCell);
 
@@ -1439,6 +1444,7 @@ function buildInvoiceReviewInsights(invoice, metadata, historical) {
   const vendor = suggestVendorForInvoice(invoice, metadata, vendorHistoryCount);
   const account = suggestAccountForInvoice(invoice, metadata, {
     vendorKey: normalizedVendor,
+    matchedVendor: vendor,
     historicalVendorAccounts: historical.vendorAccountCounts,
   });
 
@@ -1534,7 +1540,16 @@ function suggestVendorForInvoice(invoice, metadata, historyCount = 0) {
   if (bestMatch) {
     quickBooksVendor = bestMatch.vendor;
     displayName = quickBooksVendor.displayName || quickBooksVendor.name || displayName;
-    if (bestMatch.normalizedName === normalizedVendor || bestMatch.similarity >= 0.92) {
+
+    const normalizedCandidate = bestMatch.normalizedName || '';
+    const sharedLength = Math.min(normalizedVendor.length, normalizedCandidate.length);
+    const hasMeaningfulOverlap =
+      sharedLength >= 4 &&
+      (normalizedVendor.includes(normalizedCandidate) || normalizedCandidate.includes(normalizedVendor));
+
+    if (hasMeaningfulOverlap) {
+      confidence = 'exact';
+    } else if (normalizedCandidate === normalizedVendor || bestMatch.similarity >= 0.92) {
       confidence = 'exact';
     } else if (bestMatch.similarity >= 0.68) {
       confidence = 'uncertain';
@@ -1557,13 +1572,14 @@ function suggestVendorForInvoice(invoice, metadata, historyCount = 0) {
   };
 }
 
-function suggestAccountForInvoice(invoice, metadata, { vendorKey, historicalVendorAccounts } = {}) {
+function suggestAccountForInvoice(invoice, metadata, { vendorKey, matchedVendor, historicalVendorAccounts } = {}) {
   const empty = {
     id: null,
     name: null,
     accountType: null,
     accountSubType: null,
     confidence: 'unknown',
+    reason: null,
   };
 
   if (!metadata?.accounts?.items?.length) {
@@ -1571,10 +1587,30 @@ function suggestAccountForInvoice(invoice, metadata, { vendorKey, historicalVend
   }
 
   const lookup = metadata.accounts.lookup || new Map();
+  const vendorSettingsLookup = metadata?.vendorSettings?.lookup;
+  const matchedVendorId = matchedVendor?.quickBooksVendor?.id || matchedVendor?.id || null;
+  const matchedVendorConfidence = matchedVendor?.confidence || 'unknown';
+
+  if (matchedVendorId && matchedVendorConfidence !== 'unknown') {
+    const defaults = vendorSettingsLookup?.get(matchedVendorId);
+    if (defaults?.accountId) {
+      const defaultAccount = lookup.get(defaults.accountId);
+      return {
+        id: defaultAccount?.id || defaults.accountId,
+        name: defaultAccount?.name || defaultAccount?.fullyQualifiedName || null,
+        accountType: defaultAccount?.accountType || null,
+        accountSubType: defaultAccount?.accountSubType || null,
+        confidence: matchedVendorConfidence === 'exact' ? 'exact' : 'uncertain',
+        reason: 'Vendor default account.',
+      };
+    }
+  }
+
   const keywords = extractInvoiceKeywords(invoice);
   let chosenAccount = null;
   let chosenScore = 0;
   let confidence = 'unknown';
+  let reason = null;
 
   if (vendorKey && historicalVendorAccounts?.has(vendorKey)) {
     const historyEntries = [...historicalVendorAccounts.get(vendorKey).entries()].sort((a, b) => b[1] - a[1]);
@@ -1585,6 +1621,7 @@ function suggestAccountForInvoice(invoice, metadata, { vendorKey, historicalVend
         chosenAccount = historyAccount;
         chosenScore = occurrences;
         confidence = occurrences >= 2 ? 'exact' : 'uncertain';
+        reason = `Matched historical account (${occurrences} occurrence${occurrences === 1 ? '' : 's'}).`;
       }
     }
   }
@@ -1593,6 +1630,7 @@ function suggestAccountForInvoice(invoice, metadata, { vendorKey, historicalVend
   if (candidate && (!chosenAccount || candidate.score > chosenScore)) {
     chosenAccount = candidate.account;
     chosenScore = candidate.score;
+    reason = candidate.score >= 3 ? 'Strong keyword overlap with account name.' : 'Keyword overlap with account name.';
   }
 
   if (chosenAccount && confidence === 'unknown') {
@@ -1609,6 +1647,7 @@ function suggestAccountForInvoice(invoice, metadata, { vendorKey, historicalVend
     accountType: chosenAccount?.accountType || null,
     accountSubType: chosenAccount?.accountSubType || null,
     confidence,
+    reason,
   };
 }
 

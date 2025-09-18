@@ -676,6 +676,11 @@ pre {
   border-color: rgba(255, 105, 97, 0.55);
 }
 
+.review-table tbody tr.match-pending-ai {
+  position: relative;
+  opacity: 0.85;
+}
+
 .cell-invoice,
 .cell-vendor,
 .cell-account {
@@ -812,6 +817,85 @@ pre {
 .matcher-actions button[type="submit"] {
   width: auto;
   padding-inline: 2rem;
+}
+
+body.invoice-preview-open {
+  overflow: hidden;
+}
+
+.invoice-preview-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 2000;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 150ms ease-in-out, visibility 150ms ease-in-out;
+}
+
+.invoice-preview-overlay.is-visible {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.invoice-preview-container {
+  width: min(90vw, 960px);
+  height: min(90vh, 720px);
+  display: flex;
+  flex-direction: column;
+  background: #1d1f2b;
+  border-radius: 12px;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.invoice-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
+  background: rgba(12, 14, 28, 0.9);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.invoice-preview-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #f9fafb;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.invoice-preview-close {
+  padding: 6px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  background: transparent;
+  color: #f9fafb;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 120ms ease-in-out, border-color 120ms ease-in-out;
+}
+
+.invoice-preview-close:hover,
+.invoice-preview-close:focus {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.25);
+  outline: none;
+}
+
+.invoice-preview-frame {
+  flex: 1;
+  width: 100%;
+  border: none;
+  background: #121320;
 }
 
 @media (max-width: 640px) {

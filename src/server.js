@@ -55,6 +55,34 @@ const OCR_IMAGE_MIME_TYPES = new Set([
 
 const GEMINI_TEXT_LIMIT = 60000;
 const VENDOR_VAT_TREATMENTS = new Set(['inclusive', 'exclusive', 'no_vat']);
+const KEYWORD_STOPWORDS = new Set([
+  'the',
+  'and',
+  'for',
+  'with',
+  'from',
+  'into',
+  'llc',
+  'ltd',
+  'limited',
+  'inc',
+  'co',
+  'company',
+  'corp',
+  'corporation',
+  'group',
+  'services',
+  'service',
+  'solutions',
+  'holdings',
+  'global',
+  'international',
+  'invoice',
+  'number',
+  'account',
+  'price',
+  'prices',
+]);
 
 let tesseractWorkerPromise = null;
 let pdfjsLibPromise = null;
@@ -553,6 +581,73 @@ app.post('/api/invoices/:checksum/status', async (req, res) => {
   } catch (error) {
     console.error('Failed to update invoice status', error);
     res.status(500).json({ error: 'Failed to update invoice status.' });
+  }
+});
+
+app.post('/api/invoices/:checksum/match', async (req, res) => {
+  try {
+    if (!GEMINI_API_KEY) {
+      return res.status(503).json({ error: 'Gemini matching is not configured.' });
+    }
+
+    const { checksum } = req.params;
+    const { realmId } = req.body || {};
+
+    if (!checksum) {
+      return res.status(400).json({ error: 'Invoice checksum is required.' });
+    }
+
+    if (!realmId) {
+      return res.status(400).json({ error: 'realmId is required to match against QuickBooks data.' });
+    }
+
+    const [invoice, metadata] = await Promise.all([
+      findStoredInvoiceByChecksum(checksum),
+      readQuickBooksCompanyMetadata(realmId).catch((error) => {
+        if (error?.code === 'NOT_FOUND') {
+          return null;
+        }
+        throw error;
+      }),
+    ]);
+
+    if (!invoice) {
+      return res.status(404).json({ error: 'Invoice not found.' });
+    }
+
+    if (!metadata) {
+      return res.status(404).json({ error: 'QuickBooks metadata not available for this company.' });
+    }
+
+    const vendorOptions = rankVendorCandidates(invoice, metadata?.vendors?.items || []).slice(0, 12);
+    const accountOptions = rankAccountCandidates(invoice, metadata?.accounts?.items || []).slice(0, 15);
+
+    if (!vendorOptions.length && !accountOptions.length) {
+      return res.status(400).json({ error: 'No QuickBooks vendors or accounts available to match against.' });
+    }
+
+    const suggestion = await matchInvoiceWithGemini({ invoice, vendorOptions, accountOptions });
+
+    const vendorLookup = new Map(vendorOptions.map((entry) => [entry.vendor.id, entry.vendor]));
+    const accountLookup = new Map(accountOptions.map((entry) => [entry.account.id, entry.account]));
+    const allAccountLookup = new Map((metadata?.accounts?.items || []).map((entry) => [entry.id, entry]));
+
+    const mappedVendor = mapAiVendorSuggestion(suggestion.vendor, vendorLookup);
+    const mappedAccount = mapAiAccountSuggestion(suggestion.account, accountLookup);
+
+    const vendorSettingsMap = metadata?.vendorSettings || {};
+    const finalSuggestion = applyVendorDefaultAccount(
+      { vendor: mappedVendor, account: mappedAccount },
+      { vendorSettings: vendorSettingsMap, accountLookup, allAccountLookup }
+    );
+
+    return res.json(finalSuggestion);
+  } catch (error) {
+    console.error('AI matching failed', error);
+    if (error?.isGeminiError) {
+      return res.status(502).json({ error: error.message });
+    }
+    return res.status(500).json({ error: 'Failed to generate AI match suggestions.' });
   }
 });
 
@@ -1683,7 +1778,604 @@ Rules:
     throw err;
   }
 
+  const parsed = JSON.parse(jsonText);
+  return sanitiseGeminiInvoice(parsed);
+}
+
+function sanitiseGeminiInvoice(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return {
+      vendor: null,
+      products: [],
+      invoiceDate: null,
+      invoiceNumber: null,
+      billTo: null,
+      subtotal: null,
+      vatAmount: null,
+      totalAmount: null,
+      taxCode: null,
+      currency: null,
+      account: null,
+    };
+  }
+
+  const products = Array.isArray(raw.products)
+    ? raw.products.map(sanitiseGeminiProduct).filter(Boolean)
+    : [];
+
+  return {
+    vendor: sanitiseOptionalString(raw.vendor),
+    products,
+    invoiceDate: sanitiseOptionalString(raw.invoiceDate),
+    invoiceNumber: sanitiseOptionalString(raw.invoiceNumber),
+    billTo: sanitiseOptionalString(raw.billTo),
+    subtotal: sanitiseNumericValue(raw.subtotal),
+    vatAmount: sanitiseNumericValue(raw.vatAmount),
+    totalAmount: sanitiseNumericValue(raw.totalAmount),
+    taxCode: sanitiseOptionalString(raw.taxCode),
+    currency: sanitiseCurrencyCode(raw.currency),
+    account: sanitiseOptionalString(raw.account),
+  };
+}
+
+function sanitiseGeminiProduct(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+
+  const description = sanitiseOptionalString(entry.description);
+  const quantity = sanitiseNumericValue(entry.quantity, { allowTextFraction: true });
+  const unitPrice = sanitiseNumericValue(entry.unitPrice);
+  const lineTotal = sanitiseNumericValue(entry.lineTotal);
+  const taxCode = sanitiseOptionalString(entry.taxCode);
+
+  if (!description && quantity === null && unitPrice === null && lineTotal === null && !taxCode) {
+    return null;
+  }
+
+  return {
+    description,
+    quantity,
+    unitPrice,
+    lineTotal,
+    taxCode,
+  };
+}
+
+function sanitiseOptionalString(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const text = String(value).trim();
+  return text ? text : null;
+}
+
+function sanitiseNumericValue(value, { allowTextFraction = false } = {}) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (allowTextFraction) {
+    const fractionMatch = trimmed.match(/^(\d+)\s*\/\s*(\d+)$/);
+    if (fractionMatch) {
+      const numerator = Number(fractionMatch[1]);
+      const denominator = Number(fractionMatch[2]);
+      if (Number.isFinite(numerator) && Number.isFinite(denominator) && denominator !== 0) {
+        return numerator / denominator;
+      }
+    }
+  }
+
+  const normalised = trimmed.replace(/[^0-9.+-]/g, '');
+  if (!normalised || normalised === '.' || normalised === '-' || normalised === '+') {
+    return null;
+  }
+
+  const parsed = Number(normalised);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function sanitiseCurrencyCode(value) {
+  const text = sanitiseOptionalString(value);
+  if (!text) {
+    return null;
+  }
+
+  const letters = text.replace(/[^a-zA-Z]/g, '');
+  if (letters.length < 3) {
+    return null;
+  }
+
+  return letters.slice(0, 3).toUpperCase();
+}
+
+async function findStoredInvoiceByChecksum(checksum) {
+  if (!checksum) {
+    return null;
+  }
+
+  const invoices = await readStoredInvoices().catch(() => []);
+  return invoices.find((entry) => entry?.metadata?.checksum === checksum) || null;
+}
+
+function rankVendorCandidates(invoice, vendors) {
+  const normalizedVendor = normaliseComparableText(invoice?.data?.vendor);
+  if (!normalizedVendor || !Array.isArray(vendors)) {
+    return [];
+  }
+
+  const candidates = vendors
+    .map((vendor) => {
+      const names = [vendor.displayName, vendor.name].filter(Boolean);
+      let bestScore = 0;
+      let matchedLabel = vendor.displayName || vendor.name || '';
+
+      names.forEach((name) => {
+        const normalizedCandidate = normaliseComparableText(name);
+        if (!normalizedCandidate) {
+          return;
+        }
+
+        const similarity = computeVendorSimilarity(normalizedVendor, normalizedCandidate);
+        if (similarity.score > bestScore) {
+          bestScore = similarity.score;
+          matchedLabel = similarity.label;
+        }
+      });
+
+      return {
+        vendor,
+        score: bestScore,
+        matchedLabel,
+      };
+    })
+    .filter((entry) => entry.score >= 0.4)
+    .sort((a, b) => b.score - a.score);
+
+  return candidates;
+}
+
+function rankAccountCandidates(invoice, accounts) {
+  if (!Array.isArray(accounts) || !accounts.length) {
+    return [];
+  }
+
+  const keywords = extractInvoiceKeywords(invoice);
+  if (!keywords.length) {
+    return [];
+  }
+
+  return accounts
+    .map((account) => {
+      const haystack = normaliseComparableText([
+        account.name,
+        account.fullyQualifiedName,
+        account.accountType,
+        account.accountSubType,
+      ].filter(Boolean).join(' '));
+
+      if (!haystack) {
+        return null;
+      }
+
+      const tokens = haystack.split(' ').filter(Boolean);
+      const { score, matchedKeywords } = computeKeywordScore(keywords, haystack, tokens);
+      if (!score) {
+        return null;
+      }
+
+      return {
+        account,
+        score,
+        matchedKeywords,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score);
+}
+
+async function matchInvoiceWithGemini({ invoice, vendorOptions, accountOptions }) {
+  const url = buildGeminiUrl();
+  const keywords = extractInvoiceKeywords(invoice);
+  const invoiceSummary = buildInvoiceSummary(invoice, keywords);
+  const vendorList = vendorOptions
+    .map((entry, index) => {
+      const vendor = entry.vendor;
+      const name = vendor.displayName || vendor.name || `Vendor ${vendor.id}`;
+      return `${index + 1}. id: ${vendor.id} • name: ${name}`;
+    })
+    .join('\n');
+
+  const accountList = accountOptions
+    .map((entry, index) => {
+      const account = entry.account;
+      const name = account.name || account.fullyQualifiedName || `Account ${account.id}`;
+      const type = [account.accountType, account.accountSubType].filter(Boolean).join(' / ');
+      return `${index + 1}. id: ${account.id} • name: ${name}${type ? ` • type: ${type}` : ''}`;
+    })
+    .join('\n');
+
+  const prompt = `You help match invoices to QuickBooks vendors and accounts. Choose the best options from the lists below.
+
+Invoice summary:
+${invoiceSummary}
+
+QuickBooks vendors:
+${vendorList || 'None provided'}
+
+QuickBooks accounts:
+${accountList || 'None provided'}
+
+Respond with JSON only, matching this schema:
+{
+  "vendor": {
+    "vendorId": string | null,
+    "confidence": "high" | "medium" | "low",
+    "reason": string
+  },
+  "account": {
+    "accountId": string | null,
+    "confidence": "high" | "medium" | "low",
+    "reason": string
+  }
+}
+Rules:
+- Prefer vendors and accounts that clearly relate to the invoice text.
+- Pick the closest option even if confidence is low; use null only when nothing fits.
+- Keep reasons under 80 characters and reference evidence from the invoice.
+- Do not add commentary outside the JSON.`;
+
+  const payload = {
+    contents: [
+      {
+        role: 'user',
+        parts: [{ text: prompt }],
+      },
+    ],
+  };
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': GEMINI_API_KEY,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorBody = await safeReadJson(response);
+    const message = errorBody?.error?.message || `Gemini API request failed with status ${response.status}`;
+    const err = new Error(message);
+    err.isGeminiError = true;
+    throw err;
+  }
+
+  const body = await response.json();
+  const candidateText = body?.candidates?.[0]?.content?.parts?.map((part) => part.text).join('').trim();
+  if (!candidateText) {
+    const err = new Error('Gemini API returned no content for matching.');
+    err.isGeminiError = true;
+    throw err;
+  }
+
+  const jsonText = extractJson(candidateText);
+  if (!jsonText) {
+    const err = new Error('Unable to extract JSON from Gemini matching response.');
+    err.isGeminiError = true;
+    throw err;
+  }
+
   return JSON.parse(jsonText);
+}
+
+function buildInvoiceSummary(invoice, keywords) {
+  const lines = [];
+  const vendor = invoice?.data?.vendor ? `Vendor text: "${invoice.data.vendor}"` : 'Vendor text: Unknown';
+  lines.push(vendor);
+
+  if (invoice?.data?.invoiceNumber) {
+    lines.push(`Invoice number: ${invoice.data.invoiceNumber}`);
+  }
+  if (invoice?.data?.invoiceDate) {
+    lines.push(`Invoice date: ${invoice.data.invoiceDate}`);
+  }
+  if (invoice?.data?.totalAmount !== undefined && invoice?.data?.totalAmount !== null) {
+    lines.push(`Total amount: ${invoice.data.totalAmount}`);
+  }
+
+  if (Array.isArray(invoice?.data?.products) && invoice.data.products.length) {
+    const sampled = invoice.data.products.slice(0, 5).map((product, index) => {
+      const description = product?.description ? product.description.trim().replace(/\s+/g, ' ') : 'No description';
+      const lineTotal = product?.lineTotal !== undefined && product?.lineTotal !== null ? ` • line total ${product.lineTotal}` : '';
+      return `${index + 1}. ${description}${lineTotal}`;
+    });
+    lines.push('Line items:');
+    lines.push(sampled.join('\n'));
+  }
+
+  if (keywords.length) {
+    lines.push(`Keywords: ${keywords.slice(0, 12).join(', ')}`);
+  }
+
+  return lines.join('\n');
+}
+
+function mapAiVendorSuggestion(suggestion, vendorLookup) {
+  if (!suggestion) {
+    return {
+      vendorId: null,
+      displayName: null,
+      confidence: 'unknown',
+      reason: null,
+    };
+  }
+
+  const vendor = suggestion.vendorId ? vendorLookup.get(suggestion.vendorId) : null;
+  const confidence = mapAiConfidence(suggestion.confidence);
+  return {
+    vendorId: vendor?.id || null,
+    displayName: vendor?.displayName || vendor?.name || suggestion.displayName || null,
+    confidence,
+    reason: suggestion.reason || null,
+  };
+}
+
+function mapAiAccountSuggestion(suggestion, accountLookup) {
+  if (!suggestion) {
+    return {
+      accountId: null,
+      name: null,
+      accountType: null,
+      accountSubType: null,
+      confidence: 'unknown',
+      reason: null,
+    };
+  }
+
+  const account = suggestion.accountId ? accountLookup.get(suggestion.accountId) : null;
+  const confidence = mapAiConfidence(suggestion.confidence);
+  return {
+    accountId: account?.id || null,
+    name: account?.name || account?.fullyQualifiedName || suggestion.name || null,
+    accountType: account?.accountType || null,
+    accountSubType: account?.accountSubType || null,
+    confidence,
+    reason: suggestion.reason || null,
+  };
+}
+
+function applyVendorDefaultAccount({ vendor, account }, { vendorSettings, accountLookup, allAccountLookup }) {
+  const vendorId = vendor?.vendorId;
+  const vendorConfidence = vendor?.confidence;
+  if (!vendorId || vendorConfidence === 'unknown') {
+    return { vendor, account };
+  }
+
+  const defaults = vendorSettings?.[vendorId];
+  if (!defaults?.accountId) {
+    return { vendor, account };
+  }
+
+  const resolved = accountLookup?.get(defaults.accountId) || allAccountLookup?.get(defaults.accountId) || null;
+  if (resolved) {
+    return {
+      vendor,
+      account: {
+        accountId: resolved.id,
+        name: resolved.name || resolved.fullyQualifiedName || account?.name || null,
+        accountType: resolved.accountType || null,
+        accountSubType: resolved.accountSubType || null,
+        confidence: vendorConfidence === 'exact' ? 'exact' : 'uncertain',
+        reason: 'Vendor default account.',
+      },
+    };
+  }
+
+  const fallbackAccount =
+    (account?.accountId === defaults.accountId ? account : null) || allAccountLookup?.get(defaults.accountId) || null;
+
+  return {
+    vendor,
+    account: {
+      accountId: defaults.accountId,
+      name: fallbackAccount?.name || fallbackAccount?.fullyQualifiedName || null,
+      accountType: fallbackAccount?.accountType || null,
+      accountSubType: fallbackAccount?.accountSubType || null,
+      confidence: vendorConfidence === 'exact' ? 'exact' : 'uncertain',
+      reason: 'Vendor default account.',
+    },
+  };
+}
+
+function mapAiConfidence(confidence) {
+  if (!confidence) {
+    return 'unknown';
+  }
+  const value = confidence.toString().toLowerCase();
+  if (value === 'high') {
+    return 'exact';
+  }
+  if (value === 'medium') {
+    return 'uncertain';
+  }
+  return 'unknown';
+}
+
+function normaliseComparableText(value) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+
+  const text = value.toString().toLowerCase();
+  const normalized = typeof text.normalize === 'function' ? text.normalize('NFD') : text;
+
+  return normalized
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function computeVendorSimilarity(normalizedVendor, normalizedCandidate) {
+  let score = computeNormalisedSimilarity(normalizedVendor, normalizedCandidate);
+  let label = normalizedCandidate;
+
+  if (!normalizedVendor || !normalizedCandidate) {
+    return { score, label };
+  }
+
+  if (normalizedCandidate.includes(normalizedVendor) || normalizedVendor.includes(normalizedCandidate)) {
+    score = Math.max(score, 0.9);
+  }
+
+  const candidateTokens = normalizedCandidate.split(' ').filter(Boolean);
+  candidateTokens.forEach((token) => {
+    if (token.length < 3) {
+      return;
+    }
+    const tokenSimilarity = computeNormalisedSimilarity(normalizedVendor, token);
+    if (tokenSimilarity > score) {
+      score = tokenSimilarity;
+      label = token;
+    }
+    if (normalizedVendor.includes(token) && token.length >= 4) {
+      score = Math.max(score, 0.86);
+      label = token;
+    }
+  });
+
+  return { score, label };
+}
+
+function computeKeywordScore(keywords, haystack, tokens) {
+  const matched = [];
+  const tokenList = Array.isArray(tokens) && tokens.length ? tokens : haystack.split(' ').filter(Boolean);
+
+  const score = keywords.reduce((running, keyword) => {
+    if (!keyword) {
+      return running;
+    }
+
+    if (haystack.includes(keyword)) {
+      matched.push(keyword);
+      return running + (keyword.length >= 6 ? 2 : 1.5);
+    }
+
+    const similar = tokenList.find((token) => computeNormalisedSimilarity(keyword, token) >= 0.82);
+    if (similar) {
+      matched.push(keyword);
+      return running + (keyword.length >= 6 ? 1.5 : 1);
+    }
+
+    return running;
+  }, 0);
+
+  return { score, matchedKeywords: matched.slice(0, 5) };
+}
+
+function extractInvoiceKeywords(invoice) {
+  const keywords = new Set();
+  const pushTokens = (text) => {
+    if (!text) {
+      return;
+    }
+
+    text
+      .toString()
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .forEach((token) => {
+        if (isMeaningfulKeyword(token)) {
+          keywords.add(token);
+        }
+      });
+  };
+
+  pushTokens(invoice?.data?.vendor);
+  pushTokens(invoice?.data?.invoiceNumber);
+  pushTokens(invoice?.data?.taxCode);
+
+  if (Array.isArray(invoice?.data?.products)) {
+    invoice.data.products.forEach((product) => {
+      pushTokens(product?.description);
+    });
+  }
+
+  pushTokens(invoice?.metadata?.originalName);
+
+  return [...keywords];
+}
+
+function isMeaningfulKeyword(token) {
+  return token && token.length >= 3 && !KEYWORD_STOPWORDS.has(token);
+}
+
+function computeNormalisedSimilarity(a, b) {
+  if (!a || !b) {
+    return 0;
+  }
+  if (a === b) {
+    return 1;
+  }
+  const distance = levenshteinDistance(a, b);
+  const longest = Math.max(a.length, b.length) || 1;
+  return (longest - distance) / longest;
+}
+
+function levenshteinDistance(a, b) {
+  if (a === b) {
+    return 0;
+  }
+
+  const aLength = a.length;
+  const bLength = b.length;
+
+  if (!aLength) {
+    return bLength;
+  }
+
+  if (!bLength) {
+    return aLength;
+  }
+
+  const matrix = Array.from({ length: aLength + 1 }, () => new Array(bLength + 1).fill(0));
+
+  for (let i = 0; i <= aLength; i += 1) {
+    matrix[i][0] = i;
+  }
+  for (let j = 0; j <= bLength; j += 1) {
+    matrix[0][j] = j;
+  }
+
+  for (let i = 1; i <= aLength; i += 1) {
+    for (let j = 1; j <= bLength; j += 1) {
+      if (a[i - 1] === b[j - 1]) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j - 1] + 1,
+        );
+      }
+    }
+  }
+
+  return matrix[aLength][bLength];
 }
 
 function extractJson(text) {
