@@ -1404,6 +1404,37 @@ app.post('/api/invoices/:checksum/status', async (req, res) => {
   }
 });
 
+app.patch('/api/invoices/:checksum/review', async (req, res) => {
+  const checksum = req.params.checksum;
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const hasVendorUpdate = Object.prototype.hasOwnProperty.call(body, 'vendorId');
+  const hasAccountUpdate = Object.prototype.hasOwnProperty.call(body, 'accountId');
+
+  if (!checksum) {
+    return res.status(400).json({ error: 'Checksum is required.' });
+  }
+
+  if (!hasVendorUpdate && !hasAccountUpdate) {
+    return res.status(400).json({ error: 'No review updates provided.' });
+  }
+
+  try {
+    const updated = await updateStoredInvoiceReviewSelection(checksum, {
+      vendorId: body.vendorId,
+      accountId: body.accountId,
+    });
+
+    if (!updated) {
+      return res.status(404).json({ error: 'Invoice not found.' });
+    }
+
+    return res.json({ invoice: updated });
+  } catch (error) {
+    console.error('Failed to update invoice review selection', error);
+    return res.status(500).json({ error: 'Failed to update invoice review selection.' });
+  }
+});
+
 app.post('/api/invoices/:checksum/match', async (req, res) => {
   try {
     if (!GEMINI_API_KEY) {
@@ -3934,6 +3965,49 @@ async function updateStoredInvoiceStatus(checksum, status) {
   return invoices[index];
 }
 
+async function updateStoredInvoiceReviewSelection(checksum, updates = {}) {
+  if (!checksum) {
+    return null;
+  }
+
+  const invoices = await readStoredInvoices();
+  const index = invoices.findIndex((entry) => entry?.metadata?.checksum === checksum);
+  if (index === -1) {
+    return null;
+  }
+
+  const hasVendorUpdate = Object.prototype.hasOwnProperty.call(updates, 'vendorId');
+  const hasAccountUpdate = Object.prototype.hasOwnProperty.call(updates, 'accountId');
+
+  if (!hasVendorUpdate && !hasAccountUpdate) {
+    return invoices[index];
+  }
+
+  const currentSelection =
+    invoices[index] && typeof invoices[index].reviewSelection === 'object'
+      ? { ...invoices[index].reviewSelection }
+      : {};
+
+  if (hasVendorUpdate) {
+    currentSelection.vendorId = normaliseNullableId(updates.vendorId);
+  }
+
+  if (hasAccountUpdate) {
+    currentSelection.accountId = normaliseNullableId(updates.accountId);
+  }
+
+  const normalizedSelection = normalizeReviewSelection(currentSelection);
+
+  const updatedInvoice = {
+    ...invoices[index],
+    reviewSelection: normalizedSelection,
+  };
+
+  invoices[index] = updatedInvoice;
+  await writeStoredInvoices(invoices);
+  return updatedInvoice;
+}
+
 async function deleteStoredInvoice(checksum) {
   if (!checksum) {
     return false;
@@ -3962,10 +4036,51 @@ function normalizeStoredInvoice(entry) {
   }
 
   const status = entry.status === 'review' ? 'review' : 'archive';
+  const reviewSelection = normalizeReviewSelection(entry.reviewSelection);
   return {
     ...entry,
     status,
+    reviewSelection,
   };
+}
+
+function normalizeReviewSelection(selection) {
+  if (!selection || typeof selection !== 'object') {
+    return null;
+  }
+
+  const vendorId = normaliseNullableId(selection.vendorId);
+  const accountId = normaliseNullableId(selection.accountId);
+
+  if (!vendorId && !accountId) {
+    return null;
+  }
+
+  return {
+    vendorId,
+    accountId,
+  };
+}
+
+function normaliseNullableId(value) {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value);
+  }
+
+  if (typeof value === 'bigint') {
+    return value.toString();
+  }
+
+  if (value === null) {
+    return null;
+  }
+
+  return null;
 }
 
 async function ensureInvoiceFileStored(metadata, buffer) {

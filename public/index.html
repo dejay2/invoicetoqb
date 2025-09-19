@@ -153,10 +153,20 @@
         <div class="panel-card">
           <h2>To Review</h2>
           <p class="panel-summary">Invoices awaiting manual checks before export are listed below.</p>
+          <div id="review-bulk-actions" class="review-bulk-actions" hidden>
+            <span id="review-selection-count" class="bulk-selection-count">No invoices selected.</span>
+            <div class="review-bulk-buttons">
+              <button type="button" id="review-bulk-archive" class="bulk-action" disabled>Move selected to archive</button>
+              <button type="button" id="review-bulk-delete" class="bulk-action destructive" disabled>Delete selected</button>
+            </div>
+          </div>
           <div class="table-wrapper">
             <table class="review-table">
               <thead>
                 <tr>
+                  <th scope="col" class="col-select">
+                    <input type="checkbox" id="review-select-all" aria-label="Select all invoices awaiting review" />
+                  </th>
                   <th scope="col">Invoice</th>
                   <th scope="col">Invoice date</th>
                   <th scope="col">Vendor</th>
@@ -169,7 +179,7 @@
               </thead>
               <tbody id="review-table-body">
                 <tr class="empty-row">
-                  <td colspan="8">No invoices pending review.</td>
+                  <td colspan="9">No invoices pending review.</td>
                 </tr>
               </tbody>
             </table>
@@ -204,6 +214,6 @@
     </section>
   </main>
 
-  <script src="app.js?v=20240930" defer></script>
+  <script src="app.js?v=20241001" defer></script>
 </body>
 </html>

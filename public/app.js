@@ -14,6 +14,11 @@ const vendorList = document.getElementById('vendor-list');
 const accountList = document.getElementById('account-list');
 const importVendorDefaultsButton = document.getElementById('import-vendor-defaults');
 const reviewTableBody = document.getElementById('review-table-body');
+const reviewSelectAllCheckbox = document.getElementById('review-select-all');
+const reviewBulkActions = document.getElementById('review-bulk-actions');
+const reviewBulkArchiveButton = document.getElementById('review-bulk-archive');
+const reviewBulkDeleteButton = document.getElementById('review-bulk-delete');
+const reviewSelectionCount = document.getElementById('review-selection-count');
 const archiveTableBody = document.getElementById('archive-table-body');
 const dropZone = document.getElementById('invoice-drop-zone');
 const uploadInput = document.getElementById('invoice-upload-input');
@@ -38,6 +43,7 @@ let selectedRealmId = '';
 const companyMetadataCache = new Map();
 const metadataRequests = new Map();
 let storedInvoices = [];
+const reviewSelectedChecksums = new Set();
 
 const MATCH_BADGE_LABELS = {
   exact: 'Exact match',
@@ -181,6 +187,19 @@ function attachEventListeners() {
 
   if (reviewTableBody) {
     reviewTableBody.addEventListener('click', handleReviewAction);
+    reviewTableBody.addEventListener('change', handleReviewChange);
+  }
+
+  if (reviewSelectAllCheckbox) {
+    reviewSelectAllCheckbox.addEventListener('change', handleReviewSelectAllChange);
+  }
+
+  if (reviewBulkArchiveButton) {
+    reviewBulkArchiveButton.addEventListener('click', handleBulkArchiveSelected);
+  }
+
+  if (reviewBulkDeleteButton) {
+    reviewBulkDeleteButton.addEventListener('click', handleBulkDeleteSelected);
   }
 
   tabButtons.forEach((button) => {
@@ -188,6 +207,9 @@ function attachEventListeners() {
       activateCompanyTab(button.dataset.companyTab);
     });
   });
+
+  document.addEventListener('dragover', handleDocumentDragOver);
+  document.addEventListener('drop', handleDocumentDrop);
 }
 
 function handleQuickBooksCallback() {
@@ -211,6 +233,14 @@ function handleQuickBooksCallback() {
 
 function handleDropZoneDragOver(event) {
   event.preventDefault();
+  event.stopPropagation();
+  if (event.dataTransfer) {
+    try {
+      event.dataTransfer.dropEffect = 'copy';
+    } catch (error) {
+      // ignore browser dropEffect errors
+    }
+  }
   if (dropZone) {
     dropZone.classList.add('dragover');
   }
@@ -225,11 +255,13 @@ function handleDropZoneDragLeave(event) {
 
 function handleDropZoneDrop(event) {
   event.preventDefault();
+  event.stopPropagation();
   if (dropZone) {
     dropZone.classList.remove('dragover');
   }
-  if (event.dataTransfer?.files?.length) {
-    processSelectedFiles(event.dataTransfer.files);
+  const files = extractFilesFromDataTransfer(event.dataTransfer);
+  if (files.length) {
+    processSelectedFiles(files);
   }
 }
 
@@ -258,6 +290,102 @@ async function processSelectedFiles(fileList) {
   if (movedToReview) {
     activateCompanyTab('to-review');
   }
+}
+
+function extractFilesFromDataTransfer(dataTransfer) {
+  if (!dataTransfer) {
+    return [];
+  }
+
+  if (dataTransfer.files?.length) {
+    return Array.from(dataTransfer.files);
+  }
+
+  if (dataTransfer.items?.length) {
+    const collected = [];
+    Array.from(dataTransfer.items).forEach((item) => {
+      if (typeof item.getAsFile === 'function' && item.kind === 'file') {
+        const file = item.getAsFile();
+        if (file) {
+          collected.push(file);
+        }
+      }
+    });
+    if (collected.length) {
+      return collected;
+    }
+  }
+
+  return [];
+}
+
+function handleDocumentDragOver(event) {
+  if (!dropZone || !isAddInvoicesPanelActive()) {
+    return;
+  }
+
+  const zone = findDropZoneFromEvent(event.target);
+  if (!zone) {
+    return;
+  }
+
+  event.preventDefault();
+  if (event.dataTransfer) {
+    try {
+      event.dataTransfer.dropEffect = 'copy';
+    } catch (error) {
+      // ignore
+    }
+  }
+
+  dropZone.classList.add('dragover');
+}
+
+function handleDocumentDrop(event) {
+  if (!dropZone || !isAddInvoicesPanelActive()) {
+    return;
+  }
+
+  const zone = findDropZoneFromEvent(event.target);
+  if (!zone) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  dropZone.classList.remove('dragover');
+
+  const files = extractFilesFromDataTransfer(event.dataTransfer);
+  if (files.length) {
+    processSelectedFiles(files);
+  }
+}
+
+function findDropZoneFromEvent(target) {
+  if (!target || !dropZone) {
+    return null;
+  }
+
+  if (target === dropZone || dropZone.contains(target)) {
+    return dropZone;
+  }
+
+  if (typeof target.closest === 'function') {
+    const closest = target.closest('#invoice-drop-zone');
+    if (closest === dropZone) {
+      return dropZone;
+    }
+  }
+
+  return null;
+}
+
+function isAddInvoicesPanelActive() {
+  const panel = document.getElementById('add-invoices');
+  if (!panel) {
+    return false;
+  }
+  return !panel.hasAttribute('hidden');
 }
 
 function clearUploadStatusEmptyState() {
@@ -1162,6 +1290,51 @@ function buildAccountOptions(accounts) {
   return options;
 }
 
+function buildReviewVendorOptions(vendors) {
+  const options = [{ value: '', label: 'No vendor selected' }];
+  const sorted = [...vendors].sort((a, b) => {
+    const nameA = (a.displayName || a.name || '').toLowerCase();
+    const nameB = (b.displayName || b.name || '').toLowerCase();
+    return nameA.localeCompare(nameB);
+  });
+
+  sorted.forEach((vendor) => {
+    if (!vendor?.id) {
+      return;
+    }
+    const label = vendor.displayName || vendor.name || `Vendor ${vendor.id}`;
+    options.push({ value: vendor.id, label });
+  });
+
+  return options;
+}
+
+function buildReviewAccountOptions(accounts) {
+  const options = [{ value: '', label: 'No account selected' }];
+  const sorted = [...accounts].sort((a, b) => {
+    const valueA = (a.name || a.fullyQualifiedName || '').toLowerCase();
+    const valueB = (b.name || b.fullyQualifiedName || '').toLowerCase();
+    return valueA.localeCompare(valueB);
+  });
+
+  sorted.forEach((account) => {
+    if (!account?.id) {
+      return;
+    }
+    const baseLabel = account.name || account.fullyQualifiedName || `Account ${account.id}`;
+    const parts = [baseLabel];
+    if (account.accountType) {
+      parts.push(account.accountType);
+    }
+    if (account.accountSubType && account.accountSubType !== account.accountType) {
+      parts.push(account.accountSubType);
+    }
+    options.push({ value: account.id, label: parts.join(' • ') });
+  });
+
+  return options;
+}
+
 function buildTaxCodeOptions(taxCodes) {
   const options = [{ value: '', label: 'No default' }];
   const sorted = [...taxCodes].sort((a, b) => {
@@ -1703,10 +1876,12 @@ function renderReviewTable() {
 
   const reviewItems = storedInvoices.filter((invoice) => invoice?.status === 'review');
   if (!reviewItems.length) {
+    reviewSelectedChecksums.clear();
+    updateReviewSelectionUi({ totalItems: 0 });
     const row = document.createElement('tr');
     row.className = 'empty-row';
     const cell = document.createElement('td');
-    cell.colSpan = 8;
+    cell.colSpan = 9;
     cell.textContent = 'No invoices pending review.';
     row.appendChild(cell);
     reviewTableBody.appendChild(row);
@@ -1721,11 +1896,19 @@ function renderReviewTable() {
 
   const metadata = selectedRealmId ? companyMetadataCache.get(selectedRealmId) : null;
   const historical = buildReviewMatchHistory(storedInvoices, metadata);
+  const checksums = sorted
+    .map((invoice) => (typeof invoice?.metadata?.checksum === 'string' ? invoice.metadata.checksum : null))
+    .filter(Boolean);
+  const availableChecksumSet = new Set(checksums);
+
+  pruneReviewSelection(availableChecksumSet);
 
   sorted.forEach((invoice) => {
     const row = createReviewTableRow(invoice, metadata, historical);
     reviewTableBody.appendChild(row);
   });
+
+  updateReviewSelectionUi({ totalItems: availableChecksumSet.size });
 }
 
 function createReviewTableRow(invoice, metadata, historical) {
@@ -1742,6 +1925,13 @@ function createEnhancedReviewRow(invoice, metadata, historical) {
   const row = document.createElement('tr');
   row.dataset.matchConfidence = insights.overallConfidence;
   row.classList.add(`match-${insights.overallConfidence}`);
+
+  const checksum = typeof invoice?.metadata?.checksum === 'string' ? invoice.metadata.checksum : '';
+  if (checksum) {
+    row.dataset.checksum = checksum;
+  }
+
+  row.appendChild(createReviewSelectionCell(checksum));
 
   const invoiceCell = document.createElement('td');
   invoiceCell.className = 'cell-invoice';
@@ -1762,11 +1952,27 @@ function createEnhancedReviewRow(invoice, metadata, historical) {
   dateCell.appendChild(createCellTitle(formatDate(invoice.data?.invoiceDate)));
   row.appendChild(dateCell);
 
+  const reviewSelection = getInvoiceReviewSelection(invoice);
+  const vendorLookup = metadata?.vendors?.lookup || null;
+  const accountLookup = metadata?.accounts?.lookup || null;
+  const vendorSelectionId = reviewSelection?.vendorId || insights.vendor.quickBooksVendor?.id || '';
+  const accountSelectionId = reviewSelection?.accountId || insights.account.id || '';
+  const selectedVendor = vendorSelectionId && vendorLookup?.has(vendorSelectionId)
+    ? vendorLookup.get(vendorSelectionId)
+    : null;
+  const selectedAccount = accountSelectionId && accountLookup?.has(accountSelectionId)
+    ? accountLookup.get(accountSelectionId)
+    : null;
+
   const vendorCell = document.createElement('td');
   vendorCell.className = 'cell-vendor';
-  vendorCell.appendChild(createCellTitle(insights.vendor.displayName || '—'));
+  const vendorDisplayName = selectedVendor?.displayName || selectedVendor?.name || insights.vendor.displayName || '—';
+  vendorCell.appendChild(createCellTitle(vendorDisplayName || '—'));
   if (insights.vendor.original && insights.vendor.displayName && insights.vendor.displayName !== insights.vendor.original) {
     vendorCell.appendChild(createCellSubtitle(`Extracted as ${insights.vendor.original}`));
+  }
+  if (reviewSelection?.vendorId && !selectedVendor) {
+    vendorCell.appendChild(createCellSubtitle('Selected vendor is no longer available in QuickBooks metadata.'));
   }
   vendorCell.appendChild(createMatchBadge(insights.vendor.confidence));
 
@@ -1784,20 +1990,50 @@ function createEnhancedReviewRow(invoice, metadata, historical) {
     addVendorButton.textContent = 'Add vendor to QuickBooks';
     vendorCell.appendChild(addVendorButton);
   }
+
+  const vendorSelect = createReviewVendorSelect({
+    metadata,
+    checksum,
+    selectedVendorId: vendorLookup?.has(vendorSelectionId) ? vendorSelectionId : '',
+  });
+  if (vendorSelect) {
+    vendorCell.appendChild(vendorSelect);
+  } else if (selectedRealmId && (!metadata || !metadata?.vendors?.items?.length)) {
+    vendorCell.appendChild(createCellSubtitle('Connect QuickBooks to manage vendors.'));
+  }
+
   row.appendChild(vendorCell);
 
   const accountCell = document.createElement('td');
   accountCell.className = 'cell-account';
-  accountCell.appendChild(createCellTitle(insights.account.name || '—'));
+  const accountDisplayName = selectedAccount?.name || selectedAccount?.fullyQualifiedName || insights.account.name || '—';
+  accountCell.appendChild(createCellTitle(accountDisplayName || '—'));
   const accountMetaParts = [];
-  if (insights.account.accountType) {
-    accountMetaParts.push(insights.account.accountType);
+
+  if (selectedAccount) {
+    if (selectedAccount.accountType) {
+      accountMetaParts.push(selectedAccount.accountType);
+    }
+    if (selectedAccount.accountSubType && selectedAccount.accountSubType !== selectedAccount.accountType) {
+      accountMetaParts.push(selectedAccount.accountSubType);
+    }
+  } else {
+    if (insights.account.accountType) {
+      accountMetaParts.push(insights.account.accountType);
+    }
+    if (
+      insights.account.accountSubType &&
+      insights.account.accountSubType !== insights.account.accountType
+    ) {
+      accountMetaParts.push(insights.account.accountSubType);
+    }
   }
-  if (insights.account.accountSubType && insights.account.accountSubType !== insights.account.accountType) {
-    accountMetaParts.push(insights.account.accountSubType);
-  }
+
   if (accountMetaParts.length) {
     accountCell.appendChild(createCellSubtitle(accountMetaParts.join(' • ')));
+  }
+  if (reviewSelection?.accountId && !selectedAccount) {
+    accountCell.appendChild(createCellSubtitle('Selected account is no longer available in QuickBooks metadata.'));
   }
   if (insights.account.reason) {
     accountCell.appendChild(createCellSubtitle(insights.account.reason));
@@ -1839,6 +2075,18 @@ function createEnhancedReviewRow(invoice, metadata, historical) {
       accountCell.appendChild(addAccountButton);
     }
   }
+
+  const accountSelect = createReviewAccountSelect({
+    metadata,
+    checksum,
+    selectedAccountId: accountLookup?.has(accountSelectionId) ? accountSelectionId : '',
+  });
+  if (accountSelect) {
+    accountCell.appendChild(accountSelect);
+  } else if (selectedRealmId && (!metadata || !metadata?.accounts?.items?.length)) {
+    accountCell.appendChild(createCellSubtitle('Connect QuickBooks to manage accounts.'));
+  }
+
   row.appendChild(accountCell);
 
   const subtotalCell = document.createElement('td');
@@ -1864,6 +2112,13 @@ function createFallbackReviewRow(invoice) {
   const row = document.createElement('tr');
   row.dataset.matchConfidence = 'unknown';
   row.classList.add('match-unknown');
+
+  const checksum = typeof invoice?.metadata?.checksum === 'string' ? invoice.metadata.checksum : '';
+  if (checksum) {
+    row.dataset.checksum = checksum;
+  }
+
+  row.appendChild(createReviewSelectionCell(checksum));
 
   const invoiceCell = document.createElement('td');
   invoiceCell.className = 'cell-invoice';
@@ -1935,6 +2190,105 @@ function createReviewActionsCell(invoice) {
   actionsCell.appendChild(deleteButton);
 
   return actionsCell;
+}
+
+function createReviewSelectionCell(checksum) {
+  const cell = document.createElement('td');
+  cell.className = 'cell-select';
+
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.className = 'review-select-checkbox';
+  checkbox.dataset.checksum = checksum || '';
+  checkbox.checked = checksum ? reviewSelectedChecksums.has(checksum) : false;
+  checkbox.disabled = !checksum;
+  checkbox.setAttribute('aria-label', 'Select invoice for bulk actions');
+
+  cell.appendChild(checkbox);
+  return cell;
+}
+
+function createReviewVendorSelect({ metadata, checksum, selectedVendorId }) {
+  const vendors = metadata?.vendors?.items;
+  if (!Array.isArray(vendors) || !vendors.length) {
+    return null;
+  }
+
+  const select = document.createElement('select');
+  select.className = 'review-field review-vendor-select';
+  select.dataset.checksum = checksum || '';
+  select.dataset.field = 'vendorId';
+  select.setAttribute('aria-label', 'Select QuickBooks vendor');
+
+  buildReviewVendorOptions(vendors).forEach((option) => {
+    const element = document.createElement('option');
+    element.value = option.value;
+    element.textContent = option.label;
+    select.appendChild(element);
+  });
+
+  const value = typeof selectedVendorId === 'string' ? selectedVendorId : '';
+  select.value = value;
+  select.dataset.currentValue = value;
+
+  if (!checksum) {
+    select.disabled = true;
+  }
+
+  return select;
+}
+
+function createReviewAccountSelect({ metadata, checksum, selectedAccountId }) {
+  const accounts = metadata?.accounts?.items;
+  if (!Array.isArray(accounts) || !accounts.length) {
+    return null;
+  }
+
+  const select = document.createElement('select');
+  select.className = 'review-field review-account-select';
+  select.dataset.checksum = checksum || '';
+  select.dataset.field = 'accountId';
+  select.setAttribute('aria-label', 'Select QuickBooks account');
+
+  buildReviewAccountOptions(accounts).forEach((option) => {
+    const element = document.createElement('option');
+    element.value = option.value;
+    element.textContent = option.label;
+    select.appendChild(element);
+  });
+
+  const value = typeof selectedAccountId === 'string' ? selectedAccountId : '';
+  select.value = value;
+  select.dataset.currentValue = value;
+
+  if (!checksum) {
+    select.disabled = true;
+  }
+
+  return select;
+}
+
+function getInvoiceReviewSelection(invoice) {
+  if (!invoice || typeof invoice !== 'object') {
+    return null;
+  }
+
+  const selection = invoice.reviewSelection;
+  if (!selection || typeof selection !== 'object') {
+    return null;
+  }
+
+  const vendorId = typeof selection.vendorId === 'string' && selection.vendorId ? selection.vendorId : null;
+  const accountId = typeof selection.accountId === 'string' && selection.accountId ? selection.accountId : null;
+
+  if (!vendorId && !accountId) {
+    return null;
+  }
+
+  return {
+    vendorId,
+    accountId,
+  };
 }
 
 function buildInvoiceReviewInsights(invoice, metadata, historical) {
@@ -2461,6 +2815,435 @@ async function handleReviewAction(event) {
   }
 }
 
+function handleReviewChange(event) {
+  const target = event.target;
+  if (!target) {
+    return;
+  }
+
+  if (target.classList.contains('review-select-checkbox')) {
+    handleReviewSelectionToggle(target);
+    return;
+  }
+
+  if (target.classList.contains('review-vendor-select')) {
+    void handleInvoiceReviewFieldChange(target, 'vendorId');
+    return;
+  }
+
+  if (target.classList.contains('review-account-select')) {
+    void handleInvoiceReviewFieldChange(target, 'accountId');
+  }
+}
+
+function handleReviewSelectionToggle(checkbox) {
+  const checksum = typeof checkbox.dataset.checksum === 'string' ? checkbox.dataset.checksum : '';
+  if (!checksum) {
+    checkbox.checked = false;
+    return;
+  }
+
+  if (checkbox.checked) {
+    reviewSelectedChecksums.add(checksum);
+  } else {
+    reviewSelectedChecksums.delete(checksum);
+  }
+
+  updateReviewSelectionUi({ totalItems: getReviewRowCount() });
+}
+
+function handleReviewSelectAllChange(event) {
+  if (!reviewTableBody) {
+    return;
+  }
+
+  const checkbox = event.target;
+  const shouldSelectAll = checkbox.checked;
+  checkbox.indeterminate = false;
+
+  const rowCheckboxes = reviewTableBody.querySelectorAll('input.review-select-checkbox');
+  rowCheckboxes.forEach((rowCheckbox) => {
+    if (rowCheckbox.disabled) {
+      return;
+    }
+    rowCheckbox.checked = shouldSelectAll;
+    const checksum = rowCheckbox.dataset.checksum;
+    if (!checksum) {
+      return;
+    }
+    if (shouldSelectAll) {
+      reviewSelectedChecksums.add(checksum);
+    } else {
+      reviewSelectedChecksums.delete(checksum);
+    }
+  });
+
+  updateReviewSelectionUi({ totalItems: getReviewRowCount() });
+}
+
+function getReviewRowCount() {
+  if (!reviewTableBody) {
+    return 0;
+  }
+  return reviewTableBody.querySelectorAll('tr[data-checksum]').length;
+}
+
+function pruneReviewSelection(availableChecksums) {
+  if (!(availableChecksums instanceof Set)) {
+    return;
+  }
+
+  reviewSelectedChecksums.forEach((checksum) => {
+    if (!availableChecksums.has(checksum)) {
+      reviewSelectedChecksums.delete(checksum);
+    }
+  });
+}
+
+function updateReviewSelectionUi({ totalItems = getReviewRowCount() } = {}) {
+  const selectedCount = reviewSelectedChecksums.size;
+
+  if (reviewSelectionCount) {
+    reviewSelectionCount.textContent = selectedCount
+      ? `${selectedCount} invoice${selectedCount === 1 ? '' : 's'} selected`
+      : 'No invoices selected.';
+  }
+
+  if (reviewBulkActions) {
+    reviewBulkActions.hidden = selectedCount === 0;
+  }
+
+  if (reviewBulkArchiveButton) {
+    reviewBulkArchiveButton.disabled = selectedCount === 0;
+  }
+
+  if (reviewBulkDeleteButton) {
+    reviewBulkDeleteButton.disabled = selectedCount === 0;
+  }
+
+  if (reviewSelectAllCheckbox) {
+    reviewSelectAllCheckbox.disabled = totalItems === 0;
+    reviewSelectAllCheckbox.checked = totalItems > 0 && selectedCount === totalItems;
+    reviewSelectAllCheckbox.indeterminate = selectedCount > 0 && selectedCount < totalItems;
+  }
+}
+
+async function handleInvoiceReviewFieldChange(select, field) {
+  if (!select || select.disabled) {
+    return;
+  }
+
+  const checksum = typeof select.dataset.checksum === 'string' ? select.dataset.checksum : '';
+  if (!checksum) {
+    select.value = '';
+    return;
+  }
+
+  const previousValue = typeof select.dataset.currentValue === 'string' ? select.dataset.currentValue : '';
+  const nextValue = typeof select.value === 'string' ? select.value : '';
+
+  if (nextValue === previousValue) {
+    return;
+  }
+
+  const payload = field === 'vendorId'
+    ? { vendorId: nextValue || null }
+    : { accountId: nextValue || null };
+
+  const originalDisabled = select.disabled;
+  select.disabled = true;
+  select.classList.add('is-pending');
+
+  try {
+    await updateInvoiceReviewSelectionRequest(checksum, payload);
+    applyInvoiceReviewSelection(checksum, payload);
+    select.dataset.currentValue = nextValue;
+    renderReviewTable();
+    const fieldLabel = field === 'vendorId' ? 'Vendor' : 'Account';
+    showStatus(globalStatus, `${fieldLabel} updated for invoice.`, 'success');
+  } catch (error) {
+    console.error('Failed to update invoice review selection', error);
+    select.value = previousValue;
+    showStatus(globalStatus, error.message || 'Failed to update invoice.', 'error');
+  } finally {
+    select.disabled = originalDisabled;
+    select.classList.remove('is-pending');
+  }
+}
+
+async function handleBulkArchiveSelected() {
+  if (!reviewSelectedChecksums.size) {
+    return;
+  }
+
+  const checksums = Array.from(reviewSelectedChecksums);
+  const originalArchiveLabel = reviewBulkArchiveButton ? reviewBulkArchiveButton.textContent : '';
+
+  if (reviewBulkArchiveButton) {
+    reviewBulkArchiveButton.disabled = true;
+    reviewBulkArchiveButton.classList.add('is-pending');
+    reviewBulkArchiveButton.textContent = 'Archiving…';
+  }
+
+  if (reviewBulkDeleteButton) {
+    reviewBulkDeleteButton.disabled = true;
+  }
+
+  const errors = [];
+  let successCount = 0;
+
+  try {
+    for (const checksum of checksums) {
+      try {
+        await updateInvoiceStatusRequest(checksum, 'archive', {
+          errorMessage: 'Failed to move invoice to archive.',
+        });
+        successCount += 1;
+      } catch (error) {
+        errors.push(error);
+        console.error('Failed to archive invoice', checksum, error);
+      }
+    }
+
+    if (successCount) {
+      showStatus(globalStatus, `Moved ${successCount} invoice${successCount === 1 ? '' : 's'} to archive.`, 'success');
+    }
+
+    if (errors.length) {
+      const message = errors.length === 1
+        ? errors[0].message || 'Failed to move invoice to archive.'
+        : `Failed to move ${errors.length} invoices to archive.`;
+      showStatus(globalStatus, message, 'error');
+    }
+
+    reviewSelectedChecksums.clear();
+    await loadStoredInvoices();
+  } catch (error) {
+    console.error('Bulk archive operation failed', error);
+    showStatus(globalStatus, error.message || 'Failed to archive selected invoices.', 'error');
+  } finally {
+    if (reviewBulkArchiveButton) {
+      reviewBulkArchiveButton.textContent = originalArchiveLabel;
+      reviewBulkArchiveButton.disabled = false;
+      reviewBulkArchiveButton.classList.remove('is-pending');
+    }
+
+    if (reviewBulkDeleteButton) {
+      reviewBulkDeleteButton.disabled = false;
+    }
+
+    updateReviewSelectionUi({ totalItems: getReviewRowCount() });
+  }
+}
+
+async function handleBulkDeleteSelected() {
+  if (!reviewSelectedChecksums.size) {
+    return;
+  }
+
+  const checksums = Array.from(reviewSelectedChecksums);
+  const originalDeleteLabel = reviewBulkDeleteButton ? reviewBulkDeleteButton.textContent : '';
+
+  if (reviewBulkDeleteButton) {
+    reviewBulkDeleteButton.disabled = true;
+    reviewBulkDeleteButton.classList.add('is-pending');
+    reviewBulkDeleteButton.textContent = 'Deleting…';
+  }
+
+  if (reviewBulkArchiveButton) {
+    reviewBulkArchiveButton.disabled = true;
+  }
+
+  const errors = [];
+  let successCount = 0;
+
+  try {
+    for (const checksum of checksums) {
+      try {
+        await deleteInvoiceRequest(checksum, {
+          errorMessage: 'Failed to delete invoice.',
+        });
+        successCount += 1;
+      } catch (error) {
+        errors.push(error);
+        console.error('Failed to delete invoice', checksum, error);
+      }
+    }
+
+    if (successCount) {
+      showStatus(globalStatus, `Deleted ${successCount} invoice${successCount === 1 ? '' : 's'}.`, 'success');
+    }
+
+    if (errors.length) {
+      const message = errors.length === 1
+        ? errors[0].message || 'Failed to delete invoice.'
+        : `Failed to delete ${errors.length} invoices.`;
+      showStatus(globalStatus, message, 'error');
+    }
+
+    reviewSelectedChecksums.clear();
+    await loadStoredInvoices();
+  } catch (error) {
+    console.error('Bulk delete operation failed', error);
+    showStatus(globalStatus, error.message || 'Failed to delete selected invoices.', 'error');
+  } finally {
+    if (reviewBulkDeleteButton) {
+      reviewBulkDeleteButton.textContent = originalDeleteLabel;
+      reviewBulkDeleteButton.disabled = false;
+      reviewBulkDeleteButton.classList.remove('is-pending');
+    }
+
+    if (reviewBulkArchiveButton) {
+      reviewBulkArchiveButton.disabled = false;
+    }
+
+    updateReviewSelectionUi({ totalItems: getReviewRowCount() });
+  }
+}
+
+function applyInvoiceReviewSelection(checksum, updates = {}) {
+  if (!checksum || !Array.isArray(storedInvoices)) {
+    return;
+  }
+
+  const index = storedInvoices.findIndex((entry) => entry?.metadata?.checksum === checksum);
+  if (index === -1) {
+    return;
+  }
+
+  const current = storedInvoices[index];
+  const existingSelection = current.reviewSelection && typeof current.reviewSelection === 'object'
+    ? { ...current.reviewSelection }
+    : {};
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'vendorId')) {
+    existingSelection.vendorId = sanitizeReviewSelectionId(updates.vendorId);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'accountId')) {
+    existingSelection.accountId = sanitizeReviewSelectionId(updates.accountId);
+  }
+
+  const nextSelection = normalizeClientReviewSelection(existingSelection);
+
+  storedInvoices[index] = {
+    ...current,
+    reviewSelection: nextSelection,
+  };
+}
+
+function sanitizeReviewSelectionId(value) {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed || null;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value);
+  }
+  if (typeof value === 'bigint') {
+    return value.toString();
+  }
+  return null;
+}
+
+function normalizeClientReviewSelection(selection) {
+  if (!selection || typeof selection !== 'object') {
+    return null;
+  }
+
+  const vendorId = sanitizeReviewSelectionId(selection.vendorId);
+  const accountId = sanitizeReviewSelectionId(selection.accountId);
+
+  if (!vendorId && !accountId) {
+    return null;
+  }
+
+  return {
+    vendorId,
+    accountId,
+  };
+}
+
+async function updateInvoiceReviewSelectionRequest(checksum, updates = {}, { errorMessage } = {}) {
+  if (!checksum) {
+    throw new Error(errorMessage || 'Invoice checksum is required.');
+  }
+
+  const response = await fetch(`/api/invoices/${encodeURIComponent(checksum)}/review`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(updates),
+  });
+
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch (error) {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    const message = payload?.error || errorMessage || 'Failed to update invoice review selection.';
+    throw new Error(message);
+  }
+
+  return payload?.invoice || null;
+}
+
+async function updateInvoiceStatusRequest(checksum, status, { errorMessage } = {}) {
+  if (!checksum) {
+    throw new Error(errorMessage || 'Invoice checksum is required.');
+  }
+
+  const response = await fetch(`/api/invoices/${encodeURIComponent(checksum)}/status`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ status }),
+  });
+
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch (error) {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    const message = payload?.error || errorMessage || 'Failed to update invoice status.';
+    throw new Error(message);
+  }
+
+  return payload?.invoice || null;
+}
+
+async function deleteInvoiceRequest(checksum, { errorMessage } = {}) {
+  if (!checksum) {
+    throw new Error(errorMessage || 'Invoice checksum is required.');
+  }
+
+  const response = await fetch(`/api/invoices/${encodeURIComponent(checksum)}`, {
+    method: 'DELETE',
+  });
+
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch (error) {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    const message = payload?.error || errorMessage || 'Failed to delete invoice.';
+    throw new Error(message);
+  }
+
+  return payload || {};
+}
+
 async function handleCreateVendor(button) {
   if (button.disabled) {
     return;
@@ -2642,26 +3425,9 @@ async function moveInvoiceToReview(checksum, button) {
   button.textContent = 'Moving…';
 
   try {
-    const response = await fetch(`/api/invoices/${encodeURIComponent(checksum)}/status`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ status: 'review' }),
+    await updateInvoiceStatusRequest(checksum, 'review', {
+      errorMessage: 'Failed to move invoice to review.',
     });
-
-    let payload = null;
-    try {
-      payload = await response.json();
-    } catch (error) {
-      payload = null;
-    }
-
-    if (!response.ok) {
-      const message = payload?.error || 'Failed to move invoice to review.';
-      throw new Error(message);
-    }
-
     showStatus(globalStatus, 'Invoice moved to review.', 'success');
     await loadStoredInvoices();
   } catch (error) {
@@ -2679,26 +3445,9 @@ async function moveInvoiceToArchive(checksum, button) {
   button.textContent = 'Moving…';
 
   try {
-    const response = await fetch(`/api/invoices/${encodeURIComponent(checksum)}/status`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ status: 'archive' }),
+    await updateInvoiceStatusRequest(checksum, 'archive', {
+      errorMessage: 'Failed to move invoice to archive.',
     });
-
-    let payload = null;
-    try {
-      payload = await response.json();
-    } catch (error) {
-      payload = null;
-    }
-
-    if (!response.ok) {
-      const message = payload?.error || 'Failed to move invoice to archive.';
-      throw new Error(message);
-    }
-
     showStatus(globalStatus, 'Invoice moved to archive.', 'success');
     await loadStoredInvoices();
   } catch (error) {
@@ -2716,22 +3465,7 @@ async function deleteInvoice(checksum, button) {
   button.textContent = 'Deleting…';
 
   try {
-    const response = await fetch(`/api/invoices/${encodeURIComponent(checksum)}`, {
-      method: 'DELETE',
-    });
-
-    let payload = null;
-    try {
-      payload = await response.json();
-    } catch (error) {
-      payload = null;
-    }
-
-    if (!response.ok) {
-      const message = payload?.error || 'Failed to delete invoice.';
-      throw new Error(message);
-    }
-
+    await deleteInvoiceRequest(checksum, { errorMessage: 'Failed to delete invoice.' });
     showStatus(globalStatus, 'Invoice removed from archive.', 'success');
     await loadStoredInvoices();
   } catch (error) {
