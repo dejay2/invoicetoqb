@@ -370,7 +370,8 @@ pre {
 }
 
 .primary-button,
-.secondary-button {
+.secondary-button,
+.danger-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -394,7 +395,8 @@ pre {
 }
 
 .primary-button:disabled,
-.secondary-button:disabled {
+.secondary-button:disabled,
+.danger-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
   box-shadow: none;
@@ -409,6 +411,16 @@ pre {
 
 .secondary-button:hover {
   background: rgba(88, 132, 255, 0.28);
+}
+
+.danger-button {
+  background: rgba(255, 112, 141, 0.2);
+  color: #ff869f;
+  border: 1px solid rgba(255, 112, 141, 0.45);
+}
+
+.danger-button:hover {
+  background: rgba(255, 112, 141, 0.28);
 }
 
 .company-dashboard {
@@ -834,6 +846,86 @@ pre {
 .input-group span {
   font-size: 0.85rem;
   color: rgba(232, 237, 245, 0.7);
+}
+
+.input-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+}
+
+.checkbox-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.75rem;
+}
+
+.checkbox-group label {
+  font-size: 0.95rem;
+  color: rgba(232, 237, 245, 0.8);
+}
+
+.onedrive-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.form-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 1rem 0 1.25rem;
+  color: rgba(232, 237, 245, 0.55);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.form-divider::before,
+.form-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(88, 132, 255, 0.2);
+}
+
+.onedrive-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.onedrive-status {
+  margin-top: 1.25rem;
+  border-top: 1px solid rgba(88, 132, 255, 0.18);
+  padding-top: 1.25rem;
+  display: grid;
+  gap: 0.85rem 1.25rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.onedrive-status div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.onedrive-status dt {
+  margin: 0;
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(232, 237, 245, 0.55);
+}
+
+.onedrive-status dd {
+  margin: 0;
+  font-size: 0.95rem;
+  color: rgba(232, 237, 245, 0.88);
+  word-break: break-word;
 }
 
 .matcher-actions {

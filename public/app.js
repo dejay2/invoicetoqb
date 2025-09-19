@@ -18,6 +18,20 @@ const archiveTableBody = document.getElementById('archive-table-body');
 const dropZone = document.getElementById('invoice-drop-zone');
 const uploadInput = document.getElementById('invoice-upload-input');
 const uploadStatusList = document.getElementById('upload-status-list');
+const oneDriveForm = document.getElementById('onedrive-settings-form');
+const oneDriveShareInput = document.getElementById('onedrive-share-url');
+const oneDriveDriveIdInput = document.getElementById('onedrive-drive-id');
+const oneDriveFolderIdInput = document.getElementById('onedrive-folder-id');
+const oneDriveFolderPathInput = document.getElementById('onedrive-folder-path');
+const oneDriveEnabledInput = document.getElementById('onedrive-enabled');
+const oneDriveStatusContainer = document.getElementById('onedrive-status');
+const oneDriveStatusState = document.getElementById('onedrive-status-state');
+const oneDriveStatusFolder = document.getElementById('onedrive-status-folder');
+const oneDriveStatusLastSync = document.getElementById('onedrive-status-last-sync');
+const oneDriveStatusResult = document.getElementById('onedrive-status-result');
+const oneDriveSyncButton = document.getElementById('onedrive-sync-now');
+const oneDriveClearButton = document.getElementById('onedrive-clear');
+const oneDriveSaveButton = document.getElementById('onedrive-save');
 
 let quickBooksCompanies = [];
 let selectedRealmId = '';
@@ -76,6 +90,7 @@ function bootstrap() {
   attachEventListeners();
   handleQuickBooksCallback();
   renderBusinessProfile();
+  renderOneDriveSettings();
   refreshQuickBooksCompanies();
   loadStoredInvoices();
 }
@@ -113,6 +128,18 @@ function attachEventListeners() {
 
   if (businessProfileForm) {
     businessProfileForm.addEventListener('submit', handleBusinessProfileSave);
+  }
+
+  if (oneDriveForm) {
+    oneDriveForm.addEventListener('submit', handleOneDriveSettingsSave);
+  }
+
+  if (oneDriveSyncButton) {
+    oneDriveSyncButton.addEventListener('click', handleOneDriveSyncClick);
+  }
+
+  if (oneDriveClearButton) {
+    oneDriveClearButton.addEventListener('click', handleOneDriveDisconnect);
   }
 
   if (importVendorDefaultsButton) {
@@ -450,6 +477,7 @@ function resetCompanyPanels() {
   renderVendorList(null, 'Select a company to load vendor details.');
   renderAccountList(null, 'Select a company to load account details.');
   renderBusinessProfile();
+  renderOneDriveSettings();
 }
 
 function activateCompanyTab(targetId) {
@@ -529,6 +557,7 @@ function renderCompanySettings() {
 
   connectionStatus.textContent = lines.join('\n');
   renderBusinessProfile();
+  renderOneDriveSettings();
 }
 
 function renderBusinessProfile() {
@@ -547,6 +576,118 @@ function renderBusinessProfile() {
   businessTypeInput.disabled = false;
   businessTypeInput.value = company.businessType || '';
   businessProfileSubmit.disabled = false;
+}
+
+function renderOneDriveSettings() {
+  if (!oneDriveEnabledInput || !oneDriveForm) {
+    return;
+  }
+
+  const company = getSelectedCompany();
+  const hasCompany = Boolean(company);
+
+  const inputs = [
+    oneDriveShareInput,
+    oneDriveDriveIdInput,
+    oneDriveFolderIdInput,
+    oneDriveFolderPathInput,
+    oneDriveEnabledInput,
+  ];
+
+  inputs.forEach((input) => {
+    if (input) {
+      input.disabled = !hasCompany;
+    }
+  });
+
+  if (oneDriveSaveButton) {
+    oneDriveSaveButton.disabled = !hasCompany;
+  }
+
+  if (!hasCompany) {
+    oneDriveForm.reset();
+    if (oneDriveStatusContainer) {
+      oneDriveStatusContainer.hidden = true;
+    }
+    if (oneDriveSyncButton) {
+      oneDriveSyncButton.disabled = true;
+    }
+    if (oneDriveClearButton) {
+      oneDriveClearButton.disabled = true;
+    }
+    return;
+  }
+
+  const config = company.oneDrive || null;
+
+  if (oneDriveShareInput) {
+    oneDriveShareInput.value = config?.shareUrl || '';
+  }
+  if (oneDriveDriveIdInput) {
+    oneDriveDriveIdInput.value = config?.driveId || '';
+  }
+  if (oneDriveFolderIdInput) {
+    oneDriveFolderIdInput.value = config?.folderId || '';
+  }
+  if (oneDriveFolderPathInput) {
+    oneDriveFolderPathInput.value = config?.folderPath || '';
+  }
+
+  const isEnabled = config ? config.enabled !== false : false;
+  oneDriveEnabledInput.checked = isEnabled;
+
+  if (oneDriveSyncButton) {
+    oneDriveSyncButton.disabled = !config || !isEnabled || !config.driveId || !config.folderId;
+  }
+  if (oneDriveClearButton) {
+    oneDriveClearButton.disabled = !config;
+  }
+
+  if (!oneDriveStatusContainer) {
+    return;
+  }
+
+  if (!config) {
+    oneDriveStatusContainer.hidden = true;
+    return;
+  }
+
+  oneDriveStatusContainer.hidden = false;
+
+  if (oneDriveStatusState) {
+    oneDriveStatusState.textContent = formatStatusLabel(config.status, isEnabled ? 'Connected' : 'Disabled');
+  }
+
+  if (oneDriveStatusFolder) {
+    const folderParts = [];
+    if (config.folderName) {
+      folderParts.push(config.folderName);
+    }
+    if (config.folderPath) {
+      folderParts.push(config.folderPath);
+    }
+    if (!folderParts.length && config.webUrl) {
+      folderParts.push(config.webUrl);
+    }
+    if (!folderParts.length && config.shareUrl) {
+      folderParts.push(config.shareUrl);
+    }
+    oneDriveStatusFolder.textContent = folderParts.length ? folderParts.join(' • ') : 'Not specified';
+  }
+
+  if (oneDriveStatusLastSync) {
+    if (config.lastSyncAt) {
+      oneDriveStatusLastSync.textContent = formatTimestamp(config.lastSyncAt);
+    } else if (isEnabled) {
+      oneDriveStatusLastSync.textContent = 'Not run yet';
+    } else {
+      oneDriveStatusLastSync.textContent = 'Disabled';
+    }
+  }
+
+  if (oneDriveStatusResult) {
+    oneDriveStatusResult.textContent = buildOneDriveResultText(config, { enabled: isEnabled });
+  }
 }
 
 async function handleBusinessProfileSave(event) {
@@ -626,6 +767,189 @@ async function handleBusinessProfileSave(event) {
       businessProfileSubmit.textContent = originalLabel || 'Save profile';
     }
     renderBusinessProfile();
+  }
+}
+
+async function handleOneDriveSettingsSave(event) {
+  event.preventDefault();
+
+  if (!selectedRealmId) {
+    showStatus(globalStatus, 'Select a company before updating OneDrive settings.', 'error');
+    return;
+  }
+
+  const shareUrl = normaliseTextInput(oneDriveShareInput?.value);
+  const driveId = normaliseTextInput(oneDriveDriveIdInput?.value);
+  const folderId = normaliseTextInput(oneDriveFolderIdInput?.value);
+  const folderPath = normaliseTextInput(oneDriveFolderPathInput?.value);
+  const enabled = oneDriveEnabledInput ? oneDriveEnabledInput.checked : false;
+
+  if (enabled && !shareUrl && !(driveId && (folderId || folderPath))) {
+    showStatus(
+      globalStatus,
+      'Provide a sharing link or the drive and folder details before enabling OneDrive automation.',
+      'error'
+    );
+    return;
+  }
+
+  const payload = { enabled };
+  if (shareUrl) {
+    payload.shareUrl = shareUrl;
+  }
+  if (driveId) {
+    payload.driveId = driveId;
+  }
+  if (folderId) {
+    payload.folderId = folderId;
+  }
+  if (folderPath) {
+    payload.folderPath = folderPath;
+  }
+
+  const endpoint = `/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/onedrive`;
+  const originalLabel = oneDriveSaveButton ? oneDriveSaveButton.textContent : '';
+
+  if (oneDriveSaveButton) {
+    oneDriveSaveButton.disabled = true;
+    oneDriveSaveButton.textContent = 'Saving…';
+  }
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    let body = null;
+    try {
+      body = await response.json();
+    } catch (error) {
+      body = null;
+    }
+
+    if (!response.ok) {
+      const message = body?.error || 'Failed to update OneDrive settings.';
+      throw new Error(message);
+    }
+
+    if (body?.oneDrive !== undefined) {
+      updateLocalCompanyOneDrive(selectedRealmId, body.oneDrive);
+    } else {
+      await refreshQuickBooksCompanies(selectedRealmId);
+    }
+
+    showStatus(
+      globalStatus,
+      enabled ? 'OneDrive folder connected. Sync will run shortly.' : 'OneDrive automation disabled.',
+      'success'
+    );
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, error.message || 'Failed to update OneDrive settings.', 'error');
+  } finally {
+    if (oneDriveSaveButton) {
+      oneDriveSaveButton.disabled = !selectedRealmId;
+      oneDriveSaveButton.textContent = originalLabel || 'Save OneDrive settings';
+    }
+    renderOneDriveSettings();
+  }
+}
+
+async function handleOneDriveSyncClick() {
+  if (!selectedRealmId) {
+    showStatus(globalStatus, 'Select a company before triggering a OneDrive sync.', 'error');
+    return;
+  }
+
+  if (!oneDriveSyncButton || oneDriveSyncButton.disabled) {
+    return;
+  }
+
+  const originalLabel = oneDriveSyncButton.textContent;
+  oneDriveSyncButton.disabled = true;
+  oneDriveSyncButton.textContent = 'Syncing…';
+
+  try {
+    const response = await fetch(`/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/onedrive/sync`, {
+      method: 'POST',
+    });
+
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      payload = null;
+    }
+
+    if (!response.ok) {
+      const message = payload?.error || 'Failed to start OneDrive sync.';
+      throw new Error(message);
+    }
+
+    showStatus(globalStatus, 'OneDrive sync queued. This may take a minute to complete.', 'success');
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, error.message || 'Failed to start OneDrive sync.', 'error');
+  } finally {
+    if (oneDriveSyncButton) {
+      oneDriveSyncButton.textContent = originalLabel || 'Sync now';
+      oneDriveSyncButton.disabled = false;
+    }
+    renderOneDriveSettings();
+  }
+}
+
+async function handleOneDriveDisconnect() {
+  if (!selectedRealmId) {
+    showStatus(globalStatus, 'Select a company before disconnecting OneDrive.', 'error');
+    return;
+  }
+
+  if (!oneDriveClearButton || oneDriveClearButton.disabled) {
+    return;
+  }
+
+  const confirmed = window.confirm('Disconnect the configured OneDrive folder from this company?');
+  if (!confirmed) {
+    return;
+  }
+
+  const originalLabel = oneDriveClearButton.textContent;
+  oneDriveClearButton.disabled = true;
+  oneDriveClearButton.textContent = 'Disconnecting…';
+
+  try {
+    const response = await fetch(`/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/onedrive`, {
+      method: 'DELETE',
+    });
+
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      payload = null;
+    }
+
+    if (!response.ok) {
+      const message = payload?.error || 'Failed to disconnect OneDrive.';
+      throw new Error(message);
+    }
+
+    updateLocalCompanyOneDrive(selectedRealmId, null);
+    showStatus(globalStatus, 'Disconnected the OneDrive folder for this company.', 'success');
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, error.message || 'Failed to disconnect OneDrive.', 'error');
+  } finally {
+    if (oneDriveClearButton) {
+      oneDriveClearButton.textContent = originalLabel || 'Disconnect';
+      oneDriveClearButton.disabled = !selectedRealmId;
+    }
+    renderOneDriveSettings();
   }
 }
 
@@ -2417,6 +2741,81 @@ async function deleteInvoice(checksum, button) {
     button.textContent = originalLabel;
     button.disabled = false;
   }
+}
+
+function normaliseTextInput(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  return value.trim();
+}
+
+function updateLocalCompanyOneDrive(realmId, state) {
+  if (!realmId) {
+    return;
+  }
+
+  const index = quickBooksCompanies.findIndex((entry) => entry.realmId === realmId);
+  if (index === -1) {
+    return;
+  }
+
+  quickBooksCompanies[index] = {
+    ...quickBooksCompanies[index],
+    oneDrive: state || null,
+  };
+
+  if (selectedRealmId === realmId) {
+    renderOneDriveSettings();
+  }
+}
+
+function formatStatusLabel(value, fallback = 'Unknown') {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text) {
+    return fallback;
+  }
+
+  return text
+    .split(/[_\s]+/)
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ');
+}
+
+function buildOneDriveResultText(config, { enabled = true } = {}) {
+  if (!config) {
+    return enabled ? 'Not connected.' : 'Disabled.';
+  }
+
+  if (config.lastSyncError?.message) {
+    const label = config.lastSyncStatus ? formatStatusLabel(config.lastSyncStatus, 'Error') : 'Error';
+    return `${label} • ${config.lastSyncError.message}`;
+  }
+
+  if (!config.lastSyncStatus) {
+    return enabled ? 'No syncs yet.' : 'Disabled.';
+  }
+
+  const metrics = config.lastSyncMetrics || {};
+  const parts = [];
+
+  if (typeof metrics.createdCount === 'number' && metrics.createdCount > 0) {
+    parts.push(`${metrics.createdCount} new ${metrics.createdCount === 1 ? 'invoice' : 'invoices'}`);
+  }
+
+  if (typeof metrics.processedItems === 'number' && metrics.processedItems > 0) {
+    if (!parts.length || metrics.processedItems !== metrics.createdCount) {
+      parts.push(`${metrics.processedItems} file${metrics.processedItems === 1 ? '' : 's'} processed`);
+    }
+  }
+
+  if (!parts.length && config.lastSyncStatus === 'success') {
+    parts.push('Completed without errors');
+  }
+
+  const label = formatStatusLabel(config.lastSyncStatus, enabled ? 'Success' : 'Disabled');
+  return parts.length ? `${label} • ${parts.join(', ')}` : label;
 }
 
 function formatTimestamp(value) {

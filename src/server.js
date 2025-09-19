@@ -40,6 +40,27 @@ const QUICKBOOKS_AUTH_URL = 'https://appcenter.intuit.com/connect/oauth2';
 const QUICKBOOKS_TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
 const QUICKBOOKS_STATE_TTL_MS = 10 * 60 * 1000;
 
+const MS_GRAPH_CLIENT_ID = process.env.MS_GRAPH_CLIENT_ID || '';
+const MS_GRAPH_CLIENT_SECRET = process.env.MS_GRAPH_CLIENT_SECRET || '';
+const MS_GRAPH_TENANT_ID = process.env.MS_GRAPH_TENANT_ID || '';
+const MS_GRAPH_SCOPE = process.env.MS_GRAPH_SCOPE || 'https://graph.microsoft.com/.default';
+const GRAPH_API_BASE_URL = 'https://graph.microsoft.com/v1.0';
+const GRAPH_AUTH_URL = MS_GRAPH_TENANT_ID
+  ? `https://login.microsoftonline.com/${MS_GRAPH_TENANT_ID}/oauth2/v2.0/token`
+  : null;
+const ONEDRIVE_POLL_INTERVAL_MS = Math.max(parseInt(process.env.ONEDRIVE_POLL_INTERVAL_MS || '90000', 10), 15000);
+const ONEDRIVE_MAX_FILE_SIZE_BYTES = Math.max(
+  parseInt(process.env.ONEDRIVE_MAX_FILE_SIZE_BYTES || `${10 * 1024 * 1024}`, 10),
+  1024
+);
+const ONEDRIVE_MAX_DELTA_PAGES = Math.max(parseInt(process.env.ONEDRIVE_MAX_DELTA_PAGES || '5', 10), 1);
+
+const ONEDRIVE_SYNC_ENABLED = Boolean(MS_GRAPH_CLIENT_ID && MS_GRAPH_CLIENT_SECRET && MS_GRAPH_TENANT_ID);
+
+let graphTokenCache = { token: null, expiresAt: 0 };
+const activeOneDrivePolls = new Map();
+let oneDrivePollingTimer = null;
+
 const quickBooksStates = new Map();
 const quickBooksCallbackPaths = getQuickBooksCallbackPaths();
 
@@ -118,6 +139,620 @@ function derivePathFromUrl(urlValue) {
 
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
+async function ingestInvoiceFromSource({
+  buffer,
+  mimeType,
+  originalName,
+  fileSize,
+  realmId,
+  businessType,
+  remoteSource,
+} = {}) {
+  if (!buffer) {
+    throw new Error('Invoice buffer is required.');
+  }
+
+  if (!mimeType) {
+    throw new Error('Invoice mimeType is required.');
+  }
+
+  if (!GEMINI_API_KEY) {
+    const error = new Error('Gemini API key is not configured. Set GEMINI_API_KEY in the environment.');
+    error.code = 'GEMINI_UNCONFIGURED';
+    throw error;
+  }
+
+  const sourceBuffer = Buffer.isBuffer(buffer)
+    ? buffer
+    : Buffer.from(buffer);
+
+  const invoiceBuffer = Buffer.allocUnsafe(sourceBuffer.length);
+  sourceBuffer.copy(invoiceBuffer);
+  const storageBuffer = Buffer.allocUnsafe(sourceBuffer.length);
+  sourceBuffer.copy(storageBuffer);
+
+  const checksum = crypto.createHash('sha256').update(invoiceBuffer).digest('hex');
+
+  const metadata = {
+    originalName: typeof originalName === 'string' && originalName.trim() ? originalName.trim() : 'invoice',
+    mimeType,
+    size: typeof fileSize === 'number' && Number.isFinite(fileSize) ? fileSize : sourceBuffer.length,
+    checksum,
+  };
+
+  let resolvedRealmId = typeof realmId === 'string' ? realmId.trim() : '';
+  let resolvedBusinessType = typeof businessType === 'string' ? businessType.trim().slice(0, 120) : '';
+
+  if (resolvedRealmId) {
+    try {
+      const companyRecord = await getQuickBooksCompanyRecord(resolvedRealmId);
+      if (companyRecord?.businessType) {
+        resolvedBusinessType = companyRecord.businessType;
+      }
+    } catch (lookupError) {
+      if (lookupError?.code !== 'NOT_FOUND') {
+        console.warn(
+          `Unable to load QuickBooks company profile for ${resolvedRealmId}:`,
+          lookupError.message || lookupError
+        );
+      }
+    }
+  }
+
+  const companyProfile = resolvedRealmId || resolvedBusinessType
+    ? {
+        realmId: resolvedRealmId || null,
+        businessType: resolvedBusinessType || null,
+      }
+    : null;
+
+  if (remoteSource) {
+    const normalisedRemote = normalizeRemoteSourceMetadata(remoteSource);
+    if (normalisedRemote) {
+      metadata.remoteSource = normalisedRemote;
+    }
+  }
+
+  const existingInvoices = await readStoredInvoices();
+
+  if (metadata.remoteSource?.provider) {
+    const duplicateByRemote = existingInvoices.find((entry) =>
+      isSameRemoteSource(entry?.metadata?.remoteSource, metadata.remoteSource)
+    );
+    if (duplicateByRemote) {
+      return {
+        invoice: duplicateByRemote,
+        duplicate: {
+          reason: 'Remote file already processed.',
+          match: duplicateByRemote,
+        },
+        skipped: true,
+      };
+    }
+  }
+
+  const duplicateByChecksum = existingInvoices.find((entry) => entry.metadata?.checksum === metadata.checksum) || null;
+
+  const preprocessing = await preprocessInvoice(invoiceBuffer, mimeType);
+  logPreprocessingResult(metadata.originalName, preprocessing);
+
+  const parsedInvoice = await extractWithGemini(invoiceBuffer, mimeType, {
+    extractedText: preprocessing.text,
+    originalName: metadata.originalName,
+    businessType: resolvedBusinessType,
+  });
+
+  const enrichedInvoice = {
+    parsedAt: new Date().toISOString(),
+    metadata: {
+      ...metadata,
+      companyProfile,
+      extraction: {
+        method: preprocessing.method,
+        textLength: preprocessing.text ? preprocessing.text.length : 0,
+        truncated: Boolean(preprocessing.truncated),
+        totalPages: preprocessing.totalPages ?? null,
+        processedPages: preprocessing.processedPages ?? null,
+        error: preprocessing.error || null,
+      },
+    },
+    data: parsedInvoice,
+  };
+
+  const duplicateInvoice = findDuplicateInvoice(existingInvoices, enrichedInvoice.data);
+  const duplicateMatch = duplicateInvoice || duplicateByChecksum || null;
+  const duplicateReason = duplicateInvoice
+    ? 'Matched existing invoice fields'
+    : duplicateByChecksum
+      ? 'File contents match an existing invoice (checksum)'
+      : null;
+
+  const storagePayload = {
+    ...enrichedInvoice,
+    duplicateOf: duplicateMatch?.metadata?.checksum || null,
+    status: 'archive',
+  };
+
+  await ensureInvoiceFileStored(metadata, storageBuffer);
+  await persistInvoice(existingInvoices, storagePayload);
+
+  return {
+    invoice: enrichedInvoice,
+    duplicate: duplicateMatch
+      ? {
+          reason: duplicateReason,
+          match: duplicateMatch,
+        }
+      : null,
+    stored: storagePayload,
+  };
+}
+
+function isOneDriveSyncConfigured() {
+  return ONEDRIVE_SYNC_ENABLED && Boolean(GRAPH_AUTH_URL);
+}
+
+async function acquireMicrosoftGraphToken() {
+  if (!isOneDriveSyncConfigured()) {
+    throw new Error('Microsoft Graph credentials are not configured.');
+  }
+
+  const now = Date.now();
+  if (graphTokenCache.token && graphTokenCache.expiresAt - 60000 > now) {
+    return graphTokenCache.token;
+  }
+
+  const params = new URLSearchParams();
+  params.set('client_id', MS_GRAPH_CLIENT_ID);
+  params.set('client_secret', MS_GRAPH_CLIENT_SECRET);
+  params.set('grant_type', 'client_credentials');
+  params.set('scope', MS_GRAPH_SCOPE);
+
+  const response = await fetch(GRAPH_AUTH_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: params.toString(),
+  });
+
+  if (!response.ok) {
+    const errorBody = await safeReadJson(response);
+    const message =
+      errorBody?.error_description ||
+      errorBody?.error ||
+      `Microsoft Graph token request failed with status ${response.status}`;
+    const error = new Error(message);
+    error.status = response.status;
+    error.body = errorBody;
+    throw error;
+  }
+
+  const data = await response.json();
+  const expiresIn = typeof data.expires_in === 'number' ? data.expires_in : Number.parseInt(data.expires_in, 10) || 3600;
+  const expiresAt = now + Math.max(expiresIn - 60, 60) * 1000;
+  graphTokenCache = {
+    token: data.access_token,
+    expiresAt,
+  };
+
+  return graphTokenCache.token;
+}
+
+function buildGraphUrl(resource, query) {
+  if (!resource) {
+    throw new Error('Graph resource path is required.');
+  }
+
+  const url = /^https?:/i.test(resource)
+    ? new URL(resource)
+    : new URL(resource.replace(/^\/+/, ''), `${GRAPH_API_BASE_URL.replace(/\/+$/, '')}/`);
+
+  if (query && typeof query === 'object') {
+    Object.entries(query).forEach(([key, value]) => {
+      if (value === null || value === undefined) {
+        return;
+      }
+      if (Array.isArray(value)) {
+        value.forEach((entry) => {
+          if (entry !== null && entry !== undefined) {
+            url.searchParams.append(key, entry);
+          }
+        });
+        return;
+      }
+      url.searchParams.set(key, value);
+    });
+  }
+
+  return url;
+}
+
+async function graphFetch(resource, { method = 'GET', headers = {}, body, query, responseType = 'json' } = {}) {
+  const token = await acquireMicrosoftGraphToken();
+  const url = buildGraphUrl(resource, query);
+
+  const requestHeaders = {
+    Authorization: `Bearer ${token}`,
+    ...headers,
+  };
+
+  const init = {
+    method,
+    headers: requestHeaders,
+  };
+
+  if (body !== undefined && body !== null) {
+    if (Buffer.isBuffer(body) || typeof body === 'string') {
+      init.body = body;
+    } else {
+      init.body = JSON.stringify(body);
+      init.headers['Content-Type'] = init.headers['Content-Type'] || 'application/json';
+    }
+  }
+
+  const response = await fetch(url.toString(), init);
+
+  if (!response.ok) {
+    const errorBody = await safeReadJson(response);
+    const message =
+      errorBody?.error?.message ||
+      errorBody?.error_description ||
+      `Microsoft Graph request failed with status ${response.status}`;
+    const error = new Error(message);
+    error.status = response.status;
+    error.body = errorBody;
+    throw error;
+  }
+
+  if (responseType === 'json') {
+    return response.json();
+  }
+  if (responseType === 'text') {
+    return response.text();
+  }
+  if (responseType === 'buffer') {
+    const arrayBuffer = await response.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+  }
+  if (responseType === 'response') {
+    return response;
+  }
+
+  return response;
+}
+
+function encodeSharingUrl(shareUrl) {
+  const trimmed = sanitiseOptionalString(shareUrl);
+  if (!trimmed) {
+    return null;
+  }
+  const base64 = Buffer.from(trimmed, 'utf-8').toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  return `u!${base64}`;
+}
+
+function normaliseGraphFolderPath(folderPath) {
+  const trimmed = sanitiseOptionalString(folderPath) || '';
+  const withoutRoot = trimmed.replace(/^drive\/?root:?/i, '').replace(/^:+/, '');
+  const normalised = withoutRoot.startsWith('/') ? withoutRoot : `/${withoutRoot}`;
+  return normalised.replace(/\/+$/, '');
+}
+
+async function resolveOneDriveFolderReference({ shareUrl, driveId, folderId, folderPath }) {
+  if (!isOneDriveSyncConfigured()) {
+    throw new Error('OneDrive integration is not configured.');
+  }
+
+  let item;
+  let resolvedDriveId = sanitiseOptionalString(driveId);
+  const trimmedShareUrl = sanitiseOptionalString(shareUrl);
+
+  if (trimmedShareUrl) {
+    const encoded = encodeSharingUrl(trimmedShareUrl);
+    item = await graphFetch(`/shares/${encoded}/driveItem`, {
+      query: {
+        $select: 'id,name,parentReference,webUrl,folder',
+      },
+    });
+    resolvedDriveId = item?.parentReference?.driveId || resolvedDriveId;
+  } else if (resolvedDriveId && sanitiseOptionalString(folderId)) {
+    item = await graphFetch(`/drives/${encodeURIComponent(resolvedDriveId)}/items/${encodeURIComponent(folderId)}`, {
+      query: {
+        $select: 'id,name,parentReference,webUrl,folder',
+      },
+    });
+  } else if (resolvedDriveId && sanitiseOptionalString(folderPath)) {
+    const normalisedPath = normaliseGraphFolderPath(folderPath);
+    item = await graphFetch(`/drives/${encodeURIComponent(resolvedDriveId)}/root:${normalisedPath}:`, {
+      query: {
+        $select: 'id,name,parentReference,webUrl,folder',
+      },
+    });
+  } else {
+    throw new Error('Provide shareUrl or driveId with folderId/folderPath to configure OneDrive sync.');
+  }
+
+  if (!item?.folder) {
+    throw new Error('The selected OneDrive resource is not a folder.');
+  }
+
+  const parentPath = item.parentReference?.path || null;
+  const displayPath = parentPath ? `${parentPath}/${item.name}` : item.name || null;
+
+  return {
+    id: item.id,
+    driveId: item.parentReference?.driveId || resolvedDriveId || null,
+    parentId: item.parentReference?.id || null,
+    name: item.name || 'Folder',
+    path: displayPath,
+    webUrl: item.webUrl || null,
+    shareUrl: trimmedShareUrl || null,
+  };
+}
+
+async function pollAllOneDriveCompanies() {
+  if (!isOneDriveSyncConfigured()) {
+    return;
+  }
+
+  try {
+    const companies = await readQuickBooksCompanies();
+    const tasks = companies
+      .map((company) => {
+        if (!company?.realmId) {
+          return null;
+        }
+        const config = ensureOneDriveStateDefaults(company.oneDrive);
+        if (!config || config.enabled === false) {
+          return null;
+        }
+        return queueOneDrivePoll(company.realmId, { reason: 'interval' });
+      })
+      .filter(Boolean);
+
+    await Promise.allSettled(tasks);
+  } catch (error) {
+    console.error('OneDrive poll enumeration failed', error);
+  }
+}
+
+async function queueOneDrivePoll(realmId, { reason = 'manual' } = {}) {
+  if (!isOneDriveSyncConfigured() || !realmId) {
+    return null;
+  }
+
+  if (activeOneDrivePolls.has(realmId)) {
+    return activeOneDrivePolls.get(realmId);
+  }
+
+  const task = (async () => {
+    try {
+      const company = await getQuickBooksCompanyRecord(realmId);
+      if (!company) {
+        return;
+      }
+      await pollOneDriveForCompany(company, { reason });
+    } catch (error) {
+      console.error(`OneDrive sync failed for realm ${realmId}`, error);
+      const timestamp = new Date().toISOString();
+      await updateQuickBooksCompanyOneDrive(realmId, {
+        status: 'error',
+        lastSyncStatus: 'error',
+        lastSyncReason: reason,
+        lastSyncError: {
+          message: error.message || 'OneDrive sync failed.',
+          at: timestamp,
+        },
+        updatedAt: timestamp,
+      }).catch((updateError) => {
+        console.warn(`Unable to persist OneDrive error state for ${realmId}`, updateError.message || updateError);
+      });
+    } finally {
+      activeOneDrivePolls.delete(realmId);
+    }
+  })();
+
+  activeOneDrivePolls.set(realmId, task);
+  return task;
+}
+
+async function pollOneDriveForCompany(company, { reason = 'manual' } = {}) {
+  const config = ensureOneDriveStateDefaults(company.oneDrive);
+  if (!config || config.enabled === false) {
+    return;
+  }
+
+  if (!config.driveId || !config.folderId) {
+    await updateQuickBooksCompanyOneDrive(company.realmId, {
+      status: 'error',
+      lastSyncStatus: 'error',
+      lastSyncReason: reason,
+      lastSyncError: {
+        message: 'OneDrive folder is not fully configured. Provide driveId and folderId.',
+        at: new Date().toISOString(),
+      },
+    });
+    return;
+  }
+
+  const startedAt = Date.now();
+  let nextLink = config.deltaLink
+    ? config.deltaLink
+    : `${GRAPH_API_BASE_URL.replace(/\/+$/, '')}/drives/${encodeURIComponent(config.driveId)}/items/${encodeURIComponent(config.folderId)}/delta`;
+  let latestDelta = config.deltaLink || null;
+  let processedItems = 0;
+  let createdCount = 0;
+  let skippedCount = 0;
+  let pages = 0;
+  const errors = [];
+
+  while (nextLink && pages < ONEDRIVE_MAX_DELTA_PAGES) {
+    let response;
+    try {
+      response = await graphFetch(nextLink, { responseType: 'json' });
+    } catch (error) {
+      errors.push(error);
+      break;
+    }
+
+    const entries = Array.isArray(response?.value) ? response.value : [];
+    for (const item of entries) {
+      if (!item || item.deleted || !item.file) {
+        continue;
+      }
+      processedItems += 1;
+      try {
+        const result = await processOneDriveItem(company, config, item, { reason });
+        if (result?.skipped) {
+          skippedCount += 1;
+        } else if (result?.stored) {
+          createdCount += 1;
+        }
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+
+    pages += 1;
+
+    if (response['@odata.nextLink']) {
+      nextLink = response['@odata.nextLink'];
+    } else {
+      nextLink = null;
+      if (response['@odata.deltaLink']) {
+        latestDelta = response['@odata.deltaLink'];
+      }
+    }
+  }
+
+  const completedAt = new Date().toISOString();
+  const status = errors.length ? 'warning' : 'connected';
+  const lastSyncStatus = errors.length ? 'partial' : 'success';
+  const lastSyncError = errors.length
+    ? {
+        message: errors[0]?.message || 'OneDrive sync completed with errors.',
+        at: completedAt,
+      }
+    : null;
+
+  await updateQuickBooksCompanyOneDrive(company.realmId, {
+    status,
+    deltaLink: latestDelta,
+    lastSyncAt: completedAt,
+    lastSyncStatus,
+    lastSyncReason: reason,
+    lastSyncDurationMs: Date.now() - startedAt,
+    lastSyncError,
+    lastSyncMetrics: {
+      processedItems,
+      createdCount,
+      skippedCount,
+      pages,
+      errorCount: errors.length,
+    },
+  });
+}
+
+async function processOneDriveItem(company, config, item, { reason = 'manual' } = {}) {
+  const remoteSource = {
+    provider: 'onedrive',
+    driveId: config.driveId,
+    itemId: item.id,
+    parentId: item.parentReference?.id || config.folderId || null,
+    path: buildDriveItemPath(item),
+    webUrl: item.webUrl || null,
+    eTag: item.eTag || null,
+    lastModifiedDateTime: item.lastModifiedDateTime || null,
+    syncedAt: new Date().toISOString(),
+    reason,
+  };
+
+  const download = await downloadOneDriveItem(config.driveId, item.id);
+
+  if (download.size > ONEDRIVE_MAX_FILE_SIZE_BYTES) {
+    console.warn(
+      `Skipping OneDrive item ${item.id} for realm ${company.realmId} because it exceeds the configured size limit (${download.size} bytes).`
+    );
+    return { skipped: true, reason: 'file-too-large' };
+  }
+
+  return ingestInvoiceFromSource({
+    buffer: download.buffer,
+    mimeType: download.mimeType,
+    originalName: download.originalName,
+    fileSize: download.size,
+    realmId: company.realmId,
+    businessType: company.businessType || null,
+    remoteSource,
+  });
+}
+
+async function downloadOneDriveItem(driveId, itemId) {
+  const metadata = await graphFetch(`/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}`, {
+    query: {
+      $select: 'id,name,size,file,@microsoft.graph.downloadUrl',
+    },
+  });
+
+  const downloadUrl = metadata?.['@microsoft.graph.downloadUrl'];
+  if (!downloadUrl) {
+    throw new Error('Download URL not available for OneDrive item.');
+  }
+
+  const response = await fetch(downloadUrl);
+  if (!response.ok) {
+    const message = `OneDrive file download failed with status ${response.status}`;
+    const error = new Error(message);
+    error.status = response.status;
+    throw error;
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  const mimeType = response.headers.get('content-type') || metadata?.file?.mimeType || 'application/octet-stream';
+  const size = typeof metadata?.size === 'number' ? metadata.size : buffer.length;
+
+  return {
+    buffer,
+    mimeType,
+    size,
+    originalName: metadata?.name || `${itemId}.bin`,
+  };
+}
+
+function buildDriveItemPath(item) {
+  if (!item) {
+    return null;
+  }
+  const parentPath = item.parentReference?.path || null;
+  if (parentPath) {
+    return `${parentPath}/${item.name}`;
+  }
+  return item.name || null;
+}
+
+function startOneDriveSyncScheduler() {
+  if (!isOneDriveSyncConfigured()) {
+    return;
+  }
+
+  if (oneDrivePollingTimer) {
+    clearInterval(oneDrivePollingTimer);
+  }
+
+  const tick = () => {
+    pollAllOneDriveCompanies().catch((error) => {
+      console.error('Scheduled OneDrive polling failed', error);
+    });
+  };
+
+  tick();
+  oneDrivePollingTimer = setInterval(tick, ONEDRIVE_POLL_INTERVAL_MS);
+  console.log(
+    `OneDrive folder polling enabled (interval ${Math.max(Math.round(ONEDRIVE_POLL_INTERVAL_MS / 1000), 1)}s)`
+  );
+}
+
 app.post('/api/parse-invoice', upload.single('invoice'), async (req, res) => {
   try {
     if (!req.file) {
@@ -127,107 +762,29 @@ app.post('/api/parse-invoice', upload.single('invoice'), async (req, res) => {
     if (!GEMINI_API_KEY) {
       return res.status(500).json({ error: 'Gemini API key is not configured. Set GEMINI_API_KEY in the environment.' });
     }
-
-    const sourceBuffer = Buffer.isBuffer(req.file.buffer)
-      ? req.file.buffer
-      : Buffer.from(req.file.buffer);
-    const invoiceBuffer = Buffer.allocUnsafe(sourceBuffer.length);
-    sourceBuffer.copy(invoiceBuffer);
-    const storageBuffer = Buffer.allocUnsafe(sourceBuffer.length);
-    sourceBuffer.copy(storageBuffer);
-    const invoiceMetadata = {
-      originalName: req.file.originalname,
-      mimeType: req.file.mimetype,
-      size: req.file.size,
-      checksum: crypto.createHash('sha256').update(invoiceBuffer).digest('hex'),
-    };
-
     const realmId = typeof req.body?.realmId === 'string' ? req.body.realmId.trim() : '';
     const bodyBusinessType = typeof req.body?.businessType === 'string' ? req.body.businessType.trim().slice(0, 120) : '';
-    let companyBusinessType = bodyBusinessType || null;
 
-    if (realmId) {
-      try {
-        const companyRecord = await getQuickBooksCompanyRecord(realmId);
-        if (companyRecord?.businessType) {
-          companyBusinessType = companyRecord.businessType;
-        }
-      } catch (lookupError) {
-        if (lookupError?.code !== 'NOT_FOUND') {
-          console.warn(
-            `Unable to load QuickBooks company profile for ${realmId}:`,
-            lookupError.message || lookupError
-          );
-        }
-      }
-    }
-
-    const companyProfile = realmId || companyBusinessType
-      ? {
-          realmId: realmId || null,
-          businessType: companyBusinessType || null,
-        }
-      : null;
-
-    const existingInvoices = await readStoredInvoices();
-    const duplicateByChecksum = existingInvoices.find((entry) => entry.metadata?.checksum === invoiceMetadata.checksum);
-
-    const preprocessing = await preprocessInvoice(invoiceBuffer, req.file.mimetype);
-    logPreprocessingResult(invoiceMetadata.originalName, preprocessing);
-
-    const parsedInvoice = await extractWithGemini(invoiceBuffer, req.file.mimetype, {
-      extractedText: preprocessing.text,
-      originalName: invoiceMetadata.originalName,
-      businessType: companyBusinessType,
+    const result = await ingestInvoiceFromSource({
+      buffer: req.file.buffer,
+      mimeType: req.file.mimetype,
+      originalName: req.file.originalname,
+      fileSize: req.file.size,
+      realmId,
+      businessType: bodyBusinessType,
     });
 
-    const enrichedInvoice = {
-      parsedAt: new Date().toISOString(),
-      metadata: {
-        ...invoiceMetadata,
-        companyProfile,
-        extraction: {
-          method: preprocessing.method,
-          textLength: preprocessing.text ? preprocessing.text.length : 0,
-          truncated: Boolean(preprocessing.truncated),
-          totalPages: preprocessing.totalPages ?? null,
-          processedPages: preprocessing.processedPages ?? null,
-          error: preprocessing.error || null,
-        },
-      },
-      data: parsedInvoice,
-    };
-
-    const duplicateInvoice = findDuplicateInvoice(existingInvoices, enrichedInvoice.data);
-    const duplicateMatch = duplicateInvoice || duplicateByChecksum || null;
-    const duplicateReason = duplicateInvoice
-      ? 'Matched existing invoice fields'
-      : duplicateByChecksum
-        ? 'File contents match an existing invoice (checksum)'
-        : null;
-
-    const storagePayload = {
-      ...enrichedInvoice,
-      duplicateOf: duplicateMatch?.metadata?.checksum || null,
-      status: 'archive',
-    };
-
-    await ensureInvoiceFileStored(invoiceMetadata, storageBuffer);
-    await persistInvoice(existingInvoices, storagePayload);
-
     return res.json({
-      invoice: enrichedInvoice,
-      duplicate: duplicateMatch
-        ? {
-            reason: duplicateReason,
-            match: duplicateMatch,
-          }
-        : null,
+      invoice: result.invoice,
+      duplicate: result.duplicate,
     });
   } catch (error) {
     console.error('Failed to process invoice', error);
     if (error.isGeminiError) {
       return res.status(502).json({ error: error.message });
+    }
+    if (error.code === 'GEMINI_UNCONFIGURED') {
+      return res.status(500).json({ error: error.message });
     }
     return res.status(500).json({ error: 'Failed to parse invoice. Please try again.' });
   }
@@ -297,6 +854,129 @@ app.patch('/api/quickbooks/companies/:realmId', async (req, res) => {
     }
     console.error('Failed to update QuickBooks company details', error);
     res.status(500).json({ error: 'Failed to update QuickBooks company details.' });
+  }
+});
+
+app.patch('/api/quickbooks/companies/:realmId/onedrive', async (req, res) => {
+  const realmId = req.params.realmId;
+  if (!realmId) {
+    return res.status(400).json({ error: 'Realm ID is required.' });
+  }
+
+  if (!isOneDriveSyncConfigured()) {
+    return res.status(503).json({ error: 'OneDrive integration is not configured on the server.' });
+  }
+
+  const { shareUrl, driveId, folderId, folderPath, enabled } = req.body || {};
+  const enableSync = enabled !== false;
+
+  try {
+    const company = await getQuickBooksCompanyRecord(realmId);
+    if (!company) {
+      return res.status(404).json({ error: 'QuickBooks company not found.' });
+    }
+
+    let nextState;
+    if (enableSync) {
+      const folder = await resolveOneDriveFolderReference({ shareUrl, driveId, folderId, folderPath });
+      nextState = {
+        enabled: true,
+        status: 'connected',
+        driveId: folder.driveId,
+        folderId: folder.id,
+        folderPath: folder.path,
+        folderName: folder.name,
+        webUrl: folder.webUrl,
+        shareUrl: folder.shareUrl,
+        parentId: folder.parentId,
+        deltaLink: null,
+        lastSyncStatus: null,
+        lastSyncError: null,
+        lastSyncReason: 'configuration',
+        lastSyncMetrics: null,
+      };
+    } else {
+      nextState = {
+        enabled: false,
+        status: 'disabled',
+        deltaLink: null,
+        lastSyncStatus: null,
+        lastSyncError: null,
+        lastSyncMetrics: null,
+        lastSyncReason: 'disabled',
+      };
+    }
+
+    await updateQuickBooksCompanyOneDrive(realmId, nextState, { replace: true });
+
+    if (enableSync) {
+      queueOneDrivePoll(realmId, { reason: 'configuration' }).catch((error) => {
+        console.warn(`Unable to trigger OneDrive sync for ${realmId}`, error.message || error);
+      });
+    }
+
+    const updated = await getQuickBooksCompanyRecord(realmId);
+    return res.json({ oneDrive: sanitizeOneDriveSettings(updated?.oneDrive) });
+  } catch (error) {
+    if (error.code === 'NOT_FOUND') {
+      return res.status(404).json({ error: 'QuickBooks company not found.' });
+    }
+    if (error.status === 404) {
+      return res.status(404).json({ error: 'Unable to locate the specified OneDrive folder.' });
+    }
+    if (error.status === 403) {
+      return res.status(403).json({ error: 'Access to the specified OneDrive folder was denied.' });
+    }
+    console.error('Failed to update OneDrive settings', error);
+    return res.status(500).json({ error: 'Failed to update OneDrive settings.' });
+  }
+});
+
+app.delete('/api/quickbooks/companies/:realmId/onedrive', async (req, res) => {
+  const realmId = req.params.realmId;
+  if (!realmId) {
+    return res.status(400).json({ error: 'Realm ID is required.' });
+  }
+
+  try {
+    await updateQuickBooksCompanyOneDrive(realmId, null, { replace: true });
+    res.json({ oneDrive: null });
+  } catch (error) {
+    if (error.code === 'NOT_FOUND') {
+      return res.status(404).json({ error: 'QuickBooks company not found.' });
+    }
+    console.error('Failed to remove OneDrive settings', error);
+    res.status(500).json({ error: 'Failed to remove OneDrive settings.' });
+  }
+});
+
+app.post('/api/quickbooks/companies/:realmId/onedrive/sync', async (req, res) => {
+  const realmId = req.params.realmId;
+  if (!realmId) {
+    return res.status(400).json({ error: 'Realm ID is required.' });
+  }
+
+  if (!isOneDriveSyncConfigured()) {
+    return res.status(503).json({ error: 'OneDrive integration is not configured on the server.' });
+  }
+
+  try {
+    const company = await getQuickBooksCompanyRecord(realmId);
+    if (!company) {
+      return res.status(404).json({ error: 'QuickBooks company not found.' });
+    }
+
+    queueOneDrivePoll(realmId, { reason: 'manual' }).catch((error) => {
+      console.warn(`Unable to trigger manual OneDrive sync for ${realmId}`, error.message || error);
+    });
+
+    return res.status(202).json({ accepted: true, oneDrive: sanitizeOneDriveSettings(company.oneDrive) });
+  } catch (error) {
+    if (error.code === 'NOT_FOUND') {
+      return res.status(404).json({ error: 'QuickBooks company not found.' });
+    }
+    console.error('Failed to schedule OneDrive sync', error);
+    return res.status(500).json({ error: 'Failed to schedule OneDrive sync.' });
   }
 });
 
@@ -911,6 +1591,12 @@ warmQuickBooksMetadata().catch((error) => {
   console.error('QuickBooks metadata warmup failed', error);
 });
 
+if (isOneDriveSyncConfigured()) {
+  startOneDriveSyncScheduler();
+} else if (process.env.MS_GRAPH_CLIENT_ID || process.env.MS_GRAPH_CLIENT_SECRET || process.env.MS_GRAPH_TENANT_ID) {
+  console.warn('OneDrive sync is not enabled. Provide MS_GRAPH_CLIENT_ID, MS_GRAPH_CLIENT_SECRET, and MS_GRAPH_TENANT_ID to activate folder monitoring.');
+}
+
 async function exchangeQuickBooksCode(code) {
   if (!QUICKBOOKS_CLIENT_ID || !QUICKBOOKS_CLIENT_SECRET) {
     throw new Error('QuickBooks API credentials are not configured.');
@@ -1019,6 +1705,8 @@ async function storeQuickBooksCompany({ realmId, companyName, legalName, tokens 
     tokens: tokens || existing.tokens || null,
   };
 
+  record.oneDrive = ensureOneDriveStateDefaults(record.oneDrive || existing.oneDrive || null);
+
   if (existingIndex >= 0) {
     companies[existingIndex] = record;
   } else {
@@ -1051,9 +1739,63 @@ async function updateQuickBooksCompanyFields(realmId, updates) {
     updatedAt: now,
   };
 
+  next.oneDrive = ensureOneDriveStateDefaults(next.oneDrive || companies[index].oneDrive || null);
+
   companies[index] = next;
   await persistQuickBooksCompanies(companies);
   return next;
+}
+
+async function updateQuickBooksCompanyOneDrive(realmId, updates, { replace = false } = {}) {
+  const companies = await readQuickBooksCompanies();
+  const index = companies.findIndex((entry) => entry.realmId === realmId);
+
+  if (index < 0) {
+    const error = new Error('QuickBooks company not found.');
+    error.code = 'NOT_FOUND';
+    throw error;
+  }
+
+  const now = new Date().toISOString();
+  const currentNormalised = normalizeOneDriveState(companies[index].oneDrive || null);
+  const current = ensureOneDriveStateDefaults(currentNormalised);
+  let nextState = null;
+
+  if (replace) {
+    const replacement = normalizeOneDriveState(updates);
+    nextState = replacement ? ensureOneDriveStateDefaults(replacement) : null;
+    if (nextState) {
+      nextState.updatedAt = now;
+      if (!nextState.createdAt) {
+        nextState.createdAt = now;
+      }
+    }
+  } else {
+    const updateFragment = normalizeOneDriveState(updates || {});
+    if (current || (updateFragment && Object.keys(updateFragment).length)) {
+      const merged = {
+        ...(current || {}),
+        ...(updateFragment || {}),
+        updatedAt: now,
+      };
+      nextState = ensureOneDriveStateDefaults(merged);
+      if (!nextState.createdAt && current?.createdAt) {
+        nextState.createdAt = current.createdAt;
+      }
+      if (!nextState.createdAt) {
+        nextState.createdAt = now;
+      }
+    }
+  }
+
+  companies[index] = {
+    ...companies[index],
+    oneDrive: nextState,
+    updatedAt: now,
+  };
+
+  await persistQuickBooksCompanies(companies);
+  return companies[index];
 }
 
 async function updateQuickBooksCompanyTokens(realmId, tokens) {
@@ -1075,6 +1817,8 @@ async function updateQuickBooksCompanyTokens(realmId, tokens) {
     tokens,
     updatedAt: new Date().toISOString(),
   };
+
+  companies[index].oneDrive = ensureOneDriveStateDefaults(companies[index].oneDrive || null);
 
   await persistQuickBooksCompanies(companies);
   return companies[index];
@@ -1891,11 +2635,205 @@ function sanitizeQuickBooksCompany(company) {
     return company;
   }
 
-  const { tokens, ...rest } = company;
+  const { tokens, oneDrive, ...rest } = company;
   return {
     ...rest,
     businessType: rest.businessType ?? null,
+    oneDrive: sanitizeOneDriveSettings(oneDrive),
   };
+}
+
+function sanitizeOneDriveSettings(config) {
+  const normalized = normalizeOneDriveState(config);
+  if (!normalized) {
+    return null;
+  }
+
+  const { deltaLink, clientState, ...rest } = normalized;
+  return rest;
+}
+
+function ensureOneDriveStateDefaults(config) {
+  const normalized = normalizeOneDriveState(config);
+  if (!normalized) {
+    return null;
+  }
+
+  const result = { ...normalized };
+  const now = new Date().toISOString();
+
+  if (!Object.prototype.hasOwnProperty.call(result, 'enabled')) {
+    result.enabled = true;
+  } else if (result.enabled !== false) {
+    result.enabled = true;
+  }
+
+  const defaultStatus = result.enabled === false ? 'disabled' : 'connected';
+  if (!Object.prototype.hasOwnProperty.call(result, 'status') || !result.status) {
+    result.status = defaultStatus;
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(result, 'createdAt') || !result.createdAt) {
+    result.createdAt = now;
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(result, 'updatedAt') || !result.updatedAt) {
+    result.updatedAt = now;
+  }
+
+  return result;
+}
+
+function normalizeOneDriveState(config) {
+  if (!config || typeof config !== 'object') {
+    return null;
+  }
+
+  const result = {};
+
+  if (Object.prototype.hasOwnProperty.call(config, 'enabled')) {
+    result.enabled = config.enabled === false ? false : true;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'status')) {
+    const statusValue = sanitiseOptionalString(config.status);
+    result.status = statusValue || null;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'driveId')) {
+    result.driveId = sanitiseOptionalString(config.driveId);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'folderId')) {
+    result.folderId = sanitiseOptionalString(config.folderId);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'folderPath')) {
+    result.folderPath = sanitiseOptionalString(config.folderPath);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'folderName')) {
+    result.folderName = sanitiseOptionalString(config.folderName);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'webUrl')) {
+    result.webUrl = sanitiseOptionalString(config.webUrl);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'shareUrl')) {
+    result.shareUrl = sanitiseOptionalString(config.shareUrl);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'parentId')) {
+    result.parentId = sanitiseOptionalString(config.parentId);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'deltaLink')) {
+    result.deltaLink = sanitiseOptionalString(config.deltaLink);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'lastSyncAt')) {
+    result.lastSyncAt = sanitiseIsoString(config.lastSyncAt);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'lastSyncStatus')) {
+    result.lastSyncStatus = sanitiseOptionalString(config.lastSyncStatus);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'lastSyncReason')) {
+    result.lastSyncReason = sanitiseOptionalString(config.lastSyncReason);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'lastSyncDurationMs')) {
+    result.lastSyncDurationMs = Number.isFinite(config.lastSyncDurationMs)
+      ? Number(config.lastSyncDurationMs)
+      : null;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'lastSyncError')) {
+    result.lastSyncError = normalizeOneDriveSyncError(config.lastSyncError);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'lastSyncMetrics')) {
+    result.lastSyncMetrics = normalizeOneDriveMetrics(config.lastSyncMetrics);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'subscriptionId')) {
+    result.subscriptionId = sanitiseOptionalString(config.subscriptionId);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'subscriptionExpiration')) {
+    result.subscriptionExpiration = sanitiseIsoString(config.subscriptionExpiration);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'clientState')) {
+    result.clientState = sanitiseOptionalString(config.clientState);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'createdAt')) {
+    result.createdAt = sanitiseIsoString(config.createdAt);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'updatedAt')) {
+    result.updatedAt = sanitiseIsoString(config.updatedAt);
+  }
+
+  if (!Object.keys(result).length) {
+    return {};
+  }
+
+  return result;
+}
+
+function normalizeOneDriveSyncError(error) {
+  if (!error || typeof error !== 'object') {
+    return null;
+  }
+
+  const message = sanitiseOptionalString(error.message || error.error || error.description);
+  if (!message) {
+    return null;
+  }
+
+  const at = sanitiseIsoString(error.at || error.timestamp) || new Date().toISOString();
+  return {
+    message,
+    at,
+  };
+}
+
+function normalizeOneDriveMetrics(metrics) {
+  if (!metrics || typeof metrics !== 'object') {
+    return null;
+  }
+
+  const processedItems = Number.isFinite(metrics.processedItems) ? Number(metrics.processedItems) : 0;
+  const createdCount = Number.isFinite(metrics.createdCount) ? Number(metrics.createdCount) : 0;
+  const skippedCount = Number.isFinite(metrics.skippedCount) ? Number(metrics.skippedCount) : 0;
+  const pages = Number.isFinite(metrics.pages) ? Number(metrics.pages) : 0;
+  const errorCount = Number.isFinite(metrics.errorCount) ? Number(metrics.errorCount) : 0;
+
+  return {
+    processedItems,
+    createdCount,
+    skippedCount,
+    pages,
+    errorCount,
+  };
+}
+
+function sanitiseIsoString(value) {
+  const text = sanitiseOptionalString(value);
+  if (!text) {
+    return null;
+  }
+
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed.toISOString();
 }
 
 async function preprocessInvoice(buffer, mimeType) {
@@ -2324,6 +3262,78 @@ function sanitiseOptionalString(value) {
 
   const text = String(value).trim();
   return text ? text : null;
+}
+
+function normalizeRemoteSourceMetadata(remoteSource) {
+  if (!remoteSource || typeof remoteSource !== 'object') {
+    return null;
+  }
+
+  const provider = sanitiseOptionalString(remoteSource.provider)?.toLowerCase() || 'unknown';
+  const syncedAtSource = sanitiseOptionalString(remoteSource.syncedAt);
+  let syncedAt = new Date().toISOString();
+  if (syncedAtSource) {
+    const parsed = new Date(syncedAtSource);
+    if (!Number.isNaN(parsed.getTime())) {
+      syncedAt = parsed.toISOString();
+    }
+  }
+
+  const entry = {
+    provider,
+    driveId: sanitiseOptionalString(remoteSource.driveId || remoteSource.storageId || remoteSource.parentDriveId),
+    itemId: sanitiseOptionalString(remoteSource.itemId || remoteSource.resourceId),
+    parentId: sanitiseOptionalString(remoteSource.parentId || remoteSource.parentReferenceId),
+    path: sanitiseOptionalString(remoteSource.path || remoteSource.parentPath),
+    webUrl: sanitiseOptionalString(remoteSource.webUrl || remoteSource.url),
+    eTag: sanitiseOptionalString(remoteSource.eTag || remoteSource.etag),
+    lastModifiedDateTime: sanitiseOptionalString(remoteSource.lastModifiedDateTime),
+    syncedAt,
+  };
+
+  if (!entry.itemId && !entry.webUrl && !entry.path) {
+    return null;
+  }
+
+  return entry;
+}
+
+function isSameRemoteSource(existing, candidate) {
+  if (!existing || !candidate) {
+    return false;
+  }
+
+  if (existing.provider !== candidate.provider) {
+    return false;
+  }
+
+  if (existing.provider === 'onedrive') {
+    const driveMatches = existing.driveId && candidate.driveId ? existing.driveId === candidate.driveId : true;
+    if (!driveMatches) {
+      return false;
+    }
+    if (existing.itemId && candidate.itemId && existing.itemId === candidate.itemId) {
+      return true;
+    }
+    if (existing.webUrl && candidate.webUrl && existing.webUrl === candidate.webUrl) {
+      return true;
+    }
+    return false;
+  }
+
+  if (existing.itemId && candidate.itemId && existing.itemId === candidate.itemId) {
+    return true;
+  }
+
+  if (existing.path && candidate.path && existing.path === candidate.path) {
+    return true;
+  }
+
+  if (existing.webUrl && candidate.webUrl && existing.webUrl === candidate.webUrl) {
+    return true;
+  }
+
+  return false;
 }
 
 function sanitiseNumericValue(value, { allowTextFraction = false } = {}) {

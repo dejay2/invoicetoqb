@@ -55,6 +55,60 @@
             <button id="business-profile-submit" type="submit" class="primary-button">Save profile</button>
           </form>
         </div>
+        <div class="panel-card">
+          <h2>OneDrive automation</h2>
+          <p class="panel-summary">Monitor a OneDrive folder and import new invoices automatically for this company.</p>
+          <form id="onedrive-settings-form" class="onedrive-form">
+            <div class="input-group">
+              <label for="onedrive-share-url">Sharing link (optional)</label>
+              <input id="onedrive-share-url" name="shareUrl" type="url" placeholder="https://onedrive.live.com/..." autocomplete="off" />
+              <span>Provide a sharing link or specify the Drive and folder details below.</span>
+            </div>
+            <div class="form-divider"><span>or</span></div>
+            <div class="input-row">
+              <div class="input-group">
+                <label for="onedrive-drive-id">Drive ID</label>
+                <input id="onedrive-drive-id" name="driveId" type="text" autocomplete="off" />
+              </div>
+              <div class="input-group">
+                <label for="onedrive-folder-id">Folder ID</label>
+                <input id="onedrive-folder-id" name="folderId" type="text" autocomplete="off" />
+              </div>
+            </div>
+            <div class="input-group">
+              <label for="onedrive-folder-path">Folder path (optional)</label>
+              <input id="onedrive-folder-path" name="folderPath" type="text" placeholder="/Invoices/Incoming" autocomplete="off" />
+              <span>Use when the folder ID is unknown. The path is relative to the drive root.</span>
+            </div>
+            <label class="checkbox-group">
+              <input id="onedrive-enabled" name="enabled" type="checkbox" />
+              <span>Enable automatic imports from this folder</span>
+            </label>
+            <div class="onedrive-actions">
+              <button type="submit" id="onedrive-save" class="primary-button">Save OneDrive settings</button>
+              <button type="button" id="onedrive-sync-now" class="secondary-button">Sync now</button>
+              <button type="button" id="onedrive-clear" class="danger-button">Disconnect</button>
+            </div>
+          </form>
+          <dl class="onedrive-status" id="onedrive-status" hidden>
+            <div>
+              <dt>Status</dt>
+              <dd id="onedrive-status-state">Not connected</dd>
+            </div>
+            <div>
+              <dt>Folder</dt>
+              <dd id="onedrive-status-folder">—</dd>
+            </div>
+            <div>
+              <dt>Last sync</dt>
+              <dd id="onedrive-status-last-sync">—</dd>
+            </div>
+            <div>
+              <dt>Last result</dt>
+              <dd id="onedrive-status-result">—</dd>
+            </div>
+          </dl>
+        </div>
       </section>
 
       <section id="add-invoices" class="company-panel" role="tabpanel" hidden>
