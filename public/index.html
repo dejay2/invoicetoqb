@@ -87,6 +87,7 @@
             <div class="onedrive-actions">
               <button type="submit" id="onedrive-save" class="primary-button">Save OneDrive settings</button>
               <button type="button" id="onedrive-sync-now" class="secondary-button">Sync now</button>
+              <button type="button" id="onedrive-resync" class="secondary-button">Full resync</button>
               <button type="button" id="onedrive-clear" class="danger-button">Disconnect</button>
             </div>
           </form>
@@ -106,6 +107,68 @@
             <div>
               <dt>Last result</dt>
               <dd id="onedrive-status-result">—</dd>
+            </div>
+            <div>
+              <dt>Activity log</dt>
+              <dd id="onedrive-status-log">—</dd>
+            </div>
+          </dl>
+        </div>
+        <div class="panel-card">
+          <h2>Gmail inbox monitoring</h2>
+          <p class="panel-summary">Connect a Gmail mailbox to watch for new invoice attachments and ingest them automatically.</p>
+          <form id="gmail-settings-form" class="gmail-form">
+            <div class="input-group">
+              <label for="gmail-email">Mailbox email address</label>
+              <input id="gmail-email" name="email" type="email" placeholder="accounts@yourcompany.com" autocomplete="off" />
+              <span>The connected Google account should have access to the inbox you want to monitor.</span>
+            </div>
+            <div class="input-group">
+              <label for="gmail-search-query">Search query</label>
+              <input id="gmail-search-query" name="searchQuery" type="text" placeholder="in:inbox has:attachment" autocomplete="off" />
+              <span>Uses Gmail search syntax to limit which messages are processed. Leave blank to use the default.</span>
+            </div>
+            <div class="input-group">
+              <label for="gmail-label-ids">Label filters (optional)</label>
+              <input id="gmail-label-ids" name="labelIds" type="text" placeholder="INBOX,Finance" autocomplete="off" />
+              <span>Comma-separated label IDs or names. Leave blank to include all labels.</span>
+            </div>
+            <div class="input-group">
+              <label for="gmail-mime-types">Allowed MIME types</label>
+              <input id="gmail-mime-types" name="allowedMimeTypes" type="text" placeholder="application/pdf,image/png,image/jpeg" autocomplete="off" />
+              <span>Comma-separated list. Attachments with other types are skipped.</span>
+            </div>
+            <div class="input-group">
+              <label for="gmail-poll-interval">Polling interval (seconds)</label>
+              <input id="gmail-poll-interval" name="pollInterval" type="number" min="15" step="15" autocomplete="off" />
+            </div>
+            <label class="checkbox-group">
+              <input id="gmail-enabled" name="enabled" type="checkbox" />
+              <span>Enable automatic imports from this mailbox</span>
+            </label>
+            <div class="gmail-actions">
+              <button type="button" id="gmail-connect" class="primary-button">Connect Gmail inbox</button>
+              <button type="submit" id="gmail-save" class="primary-button">Save Gmail settings</button>
+              <button type="button" id="gmail-sync-now" class="secondary-button">Sync now</button>
+              <button type="button" id="gmail-disconnect" class="danger-button">Disconnect</button>
+            </div>
+          </form>
+          <dl class="gmail-status" id="gmail-status" hidden>
+            <div>
+              <dt>Status</dt>
+              <dd id="gmail-status-state">Not connected</dd>
+            </div>
+            <div>
+              <dt>Mailbox</dt>
+              <dd id="gmail-status-email">—</dd>
+            </div>
+            <div>
+              <dt>Last sync</dt>
+              <dd id="gmail-status-last-sync">—</dd>
+            </div>
+            <div>
+              <dt>Last result</dt>
+              <dd id="gmail-status-result">—</dd>
             </div>
           </dl>
         </div>
@@ -214,6 +277,6 @@
     </section>
   </main>
 
-  <script src="app.js?v=20241001" defer></script>
+  <script src="app.js?v=20241007" defer></script>
 </body>
 </html>

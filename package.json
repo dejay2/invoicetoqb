@@ -17,5 +17,8 @@
     "node-fetch": "^3.3.2",
     "pdfjs-dist": "^4.8.69",
     "tesseract.js": "^5.1.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0"
   }
 }

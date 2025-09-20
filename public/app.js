@@ -34,9 +34,27 @@ const oneDriveStatusState = document.getElementById('onedrive-status-state');
 const oneDriveStatusFolder = document.getElementById('onedrive-status-folder');
 const oneDriveStatusLastSync = document.getElementById('onedrive-status-last-sync');
 const oneDriveStatusResult = document.getElementById('onedrive-status-result');
+const oneDriveStatusLog = document.getElementById('onedrive-status-log');
 const oneDriveSyncButton = document.getElementById('onedrive-sync-now');
+const oneDriveResyncButton = document.getElementById('onedrive-resync');
 const oneDriveClearButton = document.getElementById('onedrive-clear');
 const oneDriveSaveButton = document.getElementById('onedrive-save');
+const gmailForm = document.getElementById('gmail-settings-form');
+const gmailEmailInput = document.getElementById('gmail-email');
+const gmailSearchInput = document.getElementById('gmail-search-query');
+const gmailLabelIdsInput = document.getElementById('gmail-label-ids');
+const gmailMimeTypesInput = document.getElementById('gmail-mime-types');
+const gmailPollIntervalInput = document.getElementById('gmail-poll-interval');
+const gmailEnabledInput = document.getElementById('gmail-enabled');
+const gmailConnectButton = document.getElementById('gmail-connect');
+const gmailSaveButton = document.getElementById('gmail-save');
+const gmailSyncButton = document.getElementById('gmail-sync-now');
+const gmailDisconnectButton = document.getElementById('gmail-disconnect');
+const gmailStatusContainer = document.getElementById('gmail-status');
+const gmailStatusState = document.getElementById('gmail-status-state');
+const gmailStatusEmail = document.getElementById('gmail-status-email');
+const gmailStatusLastSync = document.getElementById('gmail-status-last-sync');
+const gmailStatusResult = document.getElementById('gmail-status-result');
 
 let quickBooksCompanies = [];
 let selectedRealmId = '';
@@ -97,6 +115,7 @@ function bootstrap() {
   handleQuickBooksCallback();
   renderBusinessProfile();
   renderOneDriveSettings();
+  renderGmailSettings();
   refreshQuickBooksCompanies();
   loadStoredInvoices();
 }
@@ -144,8 +163,28 @@ function attachEventListeners() {
     oneDriveSyncButton.addEventListener('click', handleOneDriveSyncClick);
   }
 
+  if (oneDriveResyncButton) {
+    oneDriveResyncButton.addEventListener('click', handleOneDriveFullResync);
+  }
+
   if (oneDriveClearButton) {
     oneDriveClearButton.addEventListener('click', handleOneDriveDisconnect);
+  }
+
+  if (gmailForm) {
+    gmailForm.addEventListener('submit', handleGmailSettingsSave);
+  }
+
+  if (gmailConnectButton) {
+    gmailConnectButton.addEventListener('click', handleGmailConnectClick);
+  }
+
+  if (gmailSyncButton) {
+    gmailSyncButton.addEventListener('click', handleGmailSyncClick);
+  }
+
+  if (gmailDisconnectButton) {
+    gmailDisconnectButton.addEventListener('click', handleGmailDisconnect);
   }
 
   if (importVendorDefaultsButton) {
@@ -214,21 +253,38 @@ function attachEventListeners() {
 
 function handleQuickBooksCallback() {
   const params = new URLSearchParams(window.location.search);
-  if (!params.has('quickbooks')) {
-    return;
+  let shouldClear = false;
+
+  if (params.has('quickbooks')) {
+    const status = params.get('quickbooks');
+    const companyName = params.get('company');
+    shouldClear = true;
+
+    if (status === 'connected') {
+      const name = companyName || 'QuickBooks company';
+      showStatus(globalStatus, `Connected to ${name}.`, 'success');
+    } else if (status === 'error') {
+      showStatus(globalStatus, 'QuickBooks connection failed. Please try again.', 'error');
+    }
   }
 
-  const status = params.get('quickbooks');
-  const companyName = params.get('company');
+  if (params.has('gmail')) {
+    const status = params.get('gmail');
+    const companyName = params.get('company');
+    const message = params.get('message');
+    shouldClear = true;
 
-  if (status === 'connected') {
-    const name = companyName || 'QuickBooks company';
-    showStatus(globalStatus, `Connected to ${name}.`, 'success');
-  } else if (status === 'error') {
-    showStatus(globalStatus, 'QuickBooks connection failed. Please try again.', 'error');
+    if (status === 'connected') {
+      const name = companyName || 'the selected company';
+      showStatus(globalStatus, `Gmail inbox connected for ${name}.`, 'success');
+    } else if (status === 'error') {
+      showStatus(globalStatus, message || 'Gmail connection failed. Please try again.', 'error');
+    }
   }
 
-  window.history.replaceState({}, document.title, window.location.pathname);
+  if (shouldClear) {
+    window.history.replaceState({}, document.title, window.location.pathname);
+  }
 }
 
 function handleDropZoneDragOver(event) {
@@ -325,11 +381,13 @@ function handleDocumentDragOver(event) {
   }
 
   const zone = findDropZoneFromEvent(event.target);
-  if (!zone) {
+  const withinBounds = zone || isEventWithinDropZone(event);
+  if (!withinBounds) {
     return;
   }
 
   event.preventDefault();
+  event.stopPropagation();
   if (event.dataTransfer) {
     try {
       event.dataTransfer.dropEffect = 'copy';
@@ -347,7 +405,8 @@ function handleDocumentDrop(event) {
   }
 
   const zone = findDropZoneFromEvent(event.target);
-  if (!zone) {
+  const withinBounds = zone || isEventWithinDropZone(event);
+  if (!withinBounds) {
     return;
   }
 
@@ -378,6 +437,26 @@ function findDropZoneFromEvent(target) {
   }
 
   return null;
+}
+
+function isEventWithinDropZone(event) {
+  if (!dropZone) {
+    return false;
+  }
+
+  const { clientX, clientY } = event;
+  if (typeof clientX !== 'number' || typeof clientY !== 'number') {
+    return false;
+  }
+
+  const rect = dropZone.getBoundingClientRect();
+  if (!rect) {
+    return false;
+  }
+
+  const withinHorizontalBounds = clientX >= rect.left && clientX <= rect.right;
+  const withinVerticalBounds = clientY >= rect.top && clientY <= rect.bottom;
+  return withinHorizontalBounds && withinVerticalBounds;
 }
 
 function isAddInvoicesPanelActive() {
@@ -606,6 +685,7 @@ function resetCompanyPanels() {
   renderAccountList(null, 'Select a company to load account details.');
   renderBusinessProfile();
   renderOneDriveSettings();
+  renderGmailSettings();
 }
 
 function activateCompanyTab(targetId) {
@@ -646,6 +726,8 @@ function renderCompanySettings() {
   if (!company) {
     connectionStatus.textContent = 'Select a company to view connection details.';
     renderBusinessProfile();
+    renderOneDriveSettings();
+    renderGmailSettings();
     return;
   }
 
@@ -686,6 +768,7 @@ function renderCompanySettings() {
   connectionStatus.textContent = lines.join('\n');
   renderBusinessProfile();
   renderOneDriveSettings();
+  renderGmailSettings();
 }
 
 function renderBusinessProfile() {
@@ -737,8 +820,14 @@ function renderOneDriveSettings() {
     if (oneDriveStatusContainer) {
       oneDriveStatusContainer.hidden = true;
     }
+    if (oneDriveStatusLog) {
+      oneDriveStatusLog.textContent = '—';
+    }
     if (oneDriveSyncButton) {
       oneDriveSyncButton.disabled = true;
+    }
+    if (oneDriveResyncButton) {
+      oneDriveResyncButton.disabled = true;
     }
     if (oneDriveClearButton) {
       oneDriveClearButton.disabled = true;
@@ -767,6 +856,9 @@ function renderOneDriveSettings() {
   if (oneDriveSyncButton) {
     oneDriveSyncButton.disabled = !config || !isEnabled || !config.driveId || !config.folderId;
   }
+  if (oneDriveResyncButton) {
+    oneDriveResyncButton.disabled = !config || !isEnabled || !config.driveId || !config.folderId;
+  }
   if (oneDriveClearButton) {
     oneDriveClearButton.disabled = !config;
   }
@@ -777,6 +869,9 @@ function renderOneDriveSettings() {
 
   if (!config) {
     oneDriveStatusContainer.hidden = true;
+    if (oneDriveStatusLog) {
+      oneDriveStatusLog.textContent = '—';
+    }
     return;
   }
 
@@ -815,6 +910,141 @@ function renderOneDriveSettings() {
 
   if (oneDriveStatusResult) {
     oneDriveStatusResult.textContent = buildOneDriveResultText(config, { enabled: isEnabled });
+  }
+
+  if (oneDriveStatusLog) {
+    const entries = Array.isArray(config.lastSyncLog)
+      ? config.lastSyncLog
+          .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+          .filter(Boolean)
+      : [];
+
+    if (!entries.length) {
+      oneDriveStatusLog.textContent = isEnabled
+        ? 'No recent sync activity details.'
+        : 'Not available while disabled.';
+    } else {
+      oneDriveStatusLog.textContent = entries.join('\n');
+    }
+  }
+}
+
+function renderGmailSettings() {
+  if (!gmailForm || !gmailEnabledInput) {
+    return;
+  }
+
+  const company = getSelectedCompany();
+  const hasCompany = Boolean(company);
+
+  const inputs = [
+    gmailEmailInput,
+    gmailSearchInput,
+    gmailLabelIdsInput,
+    gmailMimeTypesInput,
+    gmailPollIntervalInput,
+    gmailEnabledInput,
+  ];
+
+  inputs.forEach((input) => {
+    if (input) {
+      input.disabled = !hasCompany;
+    }
+  });
+
+  if (gmailSaveButton) {
+    gmailSaveButton.disabled = !hasCompany;
+  }
+
+  if (gmailConnectButton) {
+    gmailConnectButton.disabled = !hasCompany;
+  }
+
+  if (!hasCompany) {
+    gmailForm.reset();
+    if (gmailStatusContainer) {
+      gmailStatusContainer.hidden = true;
+    }
+    if (gmailSyncButton) {
+      gmailSyncButton.disabled = true;
+    }
+    if (gmailDisconnectButton) {
+      gmailDisconnectButton.disabled = true;
+    }
+    return;
+  }
+
+  const config = company.gmail || null;
+
+  if (gmailEmailInput) {
+    gmailEmailInput.value = config?.email || '';
+  }
+
+  if (gmailSearchInput) {
+    gmailSearchInput.value = config?.searchQuery || '';
+  }
+
+  if (gmailLabelIdsInput) {
+    const labels = Array.isArray(config?.labelIds) ? config.labelIds : [];
+    gmailLabelIdsInput.value = labels.length ? labels.join(', ') : '';
+  }
+
+  if (gmailMimeTypesInput) {
+    const allowed = Array.isArray(config?.allowedMimeTypes) ? config.allowedMimeTypes : [];
+    gmailMimeTypesInput.value = allowed.length ? allowed.join(', ') : '';
+  }
+
+  if (gmailPollIntervalInput) {
+    const seconds = config?.pollIntervalMs ? Math.round(config.pollIntervalMs / 1000) : '';
+    gmailPollIntervalInput.value = seconds;
+  }
+
+  const isEnabled = config ? config.enabled !== false : false;
+  gmailEnabledInput.checked = isEnabled;
+
+  if (gmailConnectButton) {
+    gmailConnectButton.textContent = config ? 'Reconnect Gmail inbox' : 'Connect Gmail inbox';
+  }
+
+  if (gmailSyncButton) {
+    gmailSyncButton.disabled = !config || !isEnabled;
+  }
+
+  if (gmailDisconnectButton) {
+    gmailDisconnectButton.disabled = !config;
+  }
+
+  if (!gmailStatusContainer) {
+    return;
+  }
+
+  if (!config) {
+    gmailStatusContainer.hidden = true;
+    return;
+  }
+
+  gmailStatusContainer.hidden = false;
+
+  if (gmailStatusState) {
+    gmailStatusState.textContent = formatStatusLabel(config.status, isEnabled ? 'Connected' : 'Disabled');
+  }
+
+  if (gmailStatusEmail) {
+    gmailStatusEmail.textContent = config.email || 'Not specified';
+  }
+
+  if (gmailStatusLastSync) {
+    if (config.lastSyncAt) {
+      gmailStatusLastSync.textContent = formatTimestamp(config.lastSyncAt);
+    } else if (isEnabled) {
+      gmailStatusLastSync.textContent = 'Not run yet';
+    } else {
+      gmailStatusLastSync.textContent = 'Disabled';
+    }
+  }
+
+  if (gmailStatusResult) {
+    gmailStatusResult.textContent = buildGmailResultText(config, { enabled: isEnabled });
   }
 }
 
@@ -1018,7 +1248,14 @@ async function handleOneDriveSyncClick() {
       throw new Error(message);
     }
 
+    if (payload?.oneDrive !== undefined) {
+      updateLocalCompanyOneDrive(selectedRealmId, payload.oneDrive);
+    } else {
+      await refreshQuickBooksCompanies(selectedRealmId);
+    }
+
     showStatus(globalStatus, 'OneDrive sync queued. This may take a minute to complete.', 'success');
+    scheduleOneDriveStatusRefresh();
   } catch (error) {
     console.error(error);
     showStatus(globalStatus, error.message || 'Failed to start OneDrive sync.', 'error');
@@ -1029,6 +1266,76 @@ async function handleOneDriveSyncClick() {
     }
     renderOneDriveSettings();
   }
+}
+
+async function handleOneDriveFullResync() {
+  if (!selectedRealmId) {
+    showStatus(globalStatus, 'Select a company before requesting a full OneDrive resync.', 'error');
+    return;
+  }
+
+  if (!oneDriveResyncButton || oneDriveResyncButton.disabled) {
+    return;
+  }
+
+  const originalLabel = oneDriveResyncButton.textContent;
+  oneDriveResyncButton.disabled = true;
+  oneDriveResyncButton.textContent = 'Resyncing…';
+
+  try {
+    const response = await fetch(`/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/onedrive/sync`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ forceFull: true }),
+    });
+
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      payload = null;
+    }
+
+    if (!response.ok) {
+      const message = payload?.error || 'Failed to start OneDrive full resync.';
+      throw new Error(message);
+    }
+
+    if (payload?.oneDrive !== undefined) {
+      updateLocalCompanyOneDrive(selectedRealmId, payload.oneDrive);
+    } else {
+      await refreshQuickBooksCompanies(selectedRealmId);
+    }
+
+    showStatus(globalStatus, 'OneDrive full resync queued. This may take a few minutes to capture every file.', 'success');
+    scheduleOneDriveStatusRefresh();
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, error.message || 'Failed to start OneDrive full resync.', 'error');
+  } finally {
+    if (oneDriveResyncButton) {
+      oneDriveResyncButton.textContent = originalLabel || 'Full resync';
+      oneDriveResyncButton.disabled = false;
+    }
+    renderOneDriveSettings();
+  }
+}
+
+function scheduleOneDriveStatusRefresh() {
+  if (!selectedRealmId) {
+    return;
+  }
+
+  const delays = [2000, 5000, 10000];
+  delays.forEach((delay) => {
+    window.setTimeout(() => {
+      if (selectedRealmId) {
+        refreshQuickBooksCompanies(selectedRealmId);
+      }
+    }, delay);
+  });
 }
 
 async function handleOneDriveDisconnect() {
@@ -1078,6 +1385,221 @@ async function handleOneDriveDisconnect() {
       oneDriveClearButton.disabled = !selectedRealmId;
     }
     renderOneDriveSettings();
+  }
+}
+
+async function handleGmailSettingsSave(event) {
+  event.preventDefault();
+
+  if (!selectedRealmId) {
+    showStatus(globalStatus, 'Select a company before updating Gmail settings.', 'error');
+    return;
+  }
+
+  const email = normaliseTextInput(gmailEmailInput?.value);
+  const searchQuery = normaliseTextInput(gmailSearchInput?.value);
+  const labelIds = parseCommaSeparatedList(gmailLabelIdsInput?.value);
+  const allowedMimeTypes = parseCommaSeparatedList(gmailMimeTypesInput?.value);
+  const pollIntervalSeconds = gmailPollIntervalInput?.value
+    ? Number.parseInt(gmailPollIntervalInput.value, 10)
+    : NaN;
+  const enabled = gmailEnabledInput ? gmailEnabledInput.checked : false;
+
+  const payload = { enabled };
+
+  payload.email = email || null;
+  payload.searchQuery = searchQuery || null;
+  payload.labelIds = labelIds;
+  payload.allowedMimeTypes = allowedMimeTypes;
+
+  if (Number.isFinite(pollIntervalSeconds) && pollIntervalSeconds > 0) {
+    payload.pollIntervalMs = pollIntervalSeconds * 1000;
+  }
+
+  const endpoint = `/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/gmail`;
+  const originalLabel = gmailSaveButton ? gmailSaveButton.textContent : '';
+
+  if (gmailSaveButton) {
+    gmailSaveButton.disabled = true;
+    gmailSaveButton.textContent = 'Saving…';
+  }
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    let body = null;
+    try {
+      body = await response.json();
+    } catch (error) {
+      body = null;
+    }
+
+    if (!response.ok) {
+      const message = body?.error || 'Failed to update Gmail settings.';
+      throw new Error(message);
+    }
+
+    if (body?.gmail !== undefined) {
+      updateLocalCompanyGmail(selectedRealmId, body.gmail);
+    } else {
+      await refreshQuickBooksCompanies(selectedRealmId);
+    }
+
+    showStatus(
+      globalStatus,
+      enabled ? 'Gmail settings saved. Sync will run shortly.' : 'Gmail monitoring disabled.',
+      'success'
+    );
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, error.message || 'Failed to update Gmail settings.', 'error');
+  } finally {
+    if (gmailSaveButton) {
+      gmailSaveButton.disabled = !selectedRealmId;
+      gmailSaveButton.textContent = originalLabel || 'Save Gmail settings';
+    }
+    renderGmailSettings();
+  }
+}
+
+async function handleGmailConnectClick() {
+  if (!selectedRealmId) {
+    showStatus(globalStatus, 'Select a company before connecting Gmail.', 'error');
+    return;
+  }
+
+  if (!gmailConnectButton || gmailConnectButton.disabled) {
+    return;
+  }
+
+  const email = normaliseTextInput(gmailEmailInput?.value);
+  const originalLabel = gmailConnectButton.textContent;
+  gmailConnectButton.disabled = true;
+  gmailConnectButton.textContent = 'Preparing…';
+
+  try {
+    const response = await fetch(
+      `/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/gmail/auth-url`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email: email || null }),
+      }
+    );
+
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      const message = payload?.error || 'Failed to start Gmail authorization.';
+      throw new Error(message);
+    }
+
+    if (!payload?.url) {
+      throw new Error('Server did not return a Gmail authorization URL.');
+    }
+
+    window.location.href = payload.url;
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, error.message || 'Failed to start Gmail authorization.', 'error');
+  } finally {
+    if (gmailConnectButton) {
+      gmailConnectButton.disabled = !selectedRealmId;
+      gmailConnectButton.textContent = originalLabel || 'Connect Gmail inbox';
+    }
+  }
+}
+
+async function handleGmailSyncClick() {
+  if (!selectedRealmId) {
+    showStatus(globalStatus, 'Select a company before triggering a Gmail sync.', 'error');
+    return;
+  }
+
+  if (!gmailSyncButton || gmailSyncButton.disabled) {
+    return;
+  }
+
+  const originalLabel = gmailSyncButton.textContent;
+  gmailSyncButton.disabled = true;
+  gmailSyncButton.textContent = 'Syncing…';
+
+  try {
+    const response = await fetch(`/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/gmail/sync`, {
+      method: 'POST',
+    });
+
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      const message = payload?.error || 'Failed to start Gmail sync.';
+      throw new Error(message);
+    }
+
+    if (payload?.gmail !== undefined) {
+      updateLocalCompanyGmail(selectedRealmId, payload.gmail);
+    }
+
+    showStatus(globalStatus, 'Gmail sync queued. Check the status card for updates.', 'success');
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, error.message || 'Failed to start Gmail sync.', 'error');
+  } finally {
+    if (gmailSyncButton) {
+      gmailSyncButton.textContent = originalLabel || 'Sync now';
+      gmailSyncButton.disabled = false;
+    }
+    renderGmailSettings();
+  }
+}
+
+async function handleGmailDisconnect() {
+  if (!selectedRealmId) {
+    showStatus(globalStatus, 'Select a company before disconnecting Gmail.', 'error');
+    return;
+  }
+
+  if (!gmailDisconnectButton || gmailDisconnectButton.disabled) {
+    return;
+  }
+
+  const confirmed = window.confirm('Disconnect the Gmail mailbox from this company?');
+  if (!confirmed) {
+    return;
+  }
+
+  const originalLabel = gmailDisconnectButton.textContent;
+  gmailDisconnectButton.disabled = true;
+  gmailDisconnectButton.textContent = 'Disconnecting…';
+
+  try {
+    const response = await fetch(`/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/gmail`, {
+      method: 'DELETE',
+    });
+
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      const message = payload?.error || 'Failed to disconnect Gmail.';
+      throw new Error(message);
+    }
+
+    updateLocalCompanyGmail(selectedRealmId, null);
+    showStatus(globalStatus, 'Disconnected the Gmail inbox for this company.', 'success');
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, error.message || 'Failed to disconnect Gmail.', 'error');
+  } finally {
+    if (gmailDisconnectButton) {
+      gmailDisconnectButton.textContent = originalLabel || 'Disconnect';
+      gmailDisconnectButton.disabled = !selectedRealmId;
+    }
+    renderGmailSettings();
   }
 }
 
@@ -3484,6 +4006,21 @@ function normaliseTextInput(value) {
   return value.trim();
 }
 
+function parseCommaSeparatedList(value) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => normaliseTextInput(entry)).filter(Boolean);
+  }
+
+  if (typeof value !== 'string') {
+    return [];
+  }
+
+  return value
+    .split(',')
+    .map((entry) => normaliseTextInput(entry))
+    .filter(Boolean);
+}
+
 function updateLocalCompanyOneDrive(realmId, state) {
   if (!realmId) {
     return;
@@ -3501,6 +4038,26 @@ function updateLocalCompanyOneDrive(realmId, state) {
 
   if (selectedRealmId === realmId) {
     renderOneDriveSettings();
+  }
+}
+
+function updateLocalCompanyGmail(realmId, state) {
+  if (!realmId) {
+    return;
+  }
+
+  const index = quickBooksCompanies.findIndex((entry) => entry.realmId === realmId);
+  if (index === -1) {
+    return;
+  }
+
+  quickBooksCompanies[index] = {
+    ...quickBooksCompanies[index],
+    gmail: state || null,
+  };
+
+  if (selectedRealmId === realmId) {
+    renderGmailSettings();
   }
 }
 
@@ -3542,6 +4099,64 @@ function buildOneDriveResultText(config, { enabled = true } = {}) {
     if (!parts.length || metrics.processedItems !== metrics.createdCount) {
       parts.push(`${metrics.processedItems} file${metrics.processedItems === 1 ? '' : 's'} processed`);
     }
+  }
+
+  if (typeof metrics.duplicateCount === 'number' && metrics.duplicateCount > 0) {
+    parts.push(`${metrics.duplicateCount} duplicate${metrics.duplicateCount === 1 ? '' : 's'} skipped`);
+  }
+
+  const moveTarget = config.processedFolderPath || config.processedFolderName;
+  if (moveTarget) {
+    let label = config.processedFolderName || moveTarget;
+    if (config.processedFolderPath) {
+      const cleaned = config.processedFolderPath
+        .replace(/^drive\/?root:?/i, '')
+        .replace(/^:+/, '')
+        .replace(/^[\/]+/, '');
+      label = cleaned || label;
+    }
+    parts.push(`Moved to ${label}`);
+  }
+
+  if (!parts.length && config.lastSyncStatus === 'success') {
+    parts.push('Completed without errors');
+  }
+
+  const label = formatStatusLabel(config.lastSyncStatus, enabled ? 'Success' : 'Disabled');
+  return parts.length ? `${label} • ${parts.join(', ')}` : label;
+}
+
+function buildGmailResultText(config, { enabled = true } = {}) {
+  if (!config) {
+    return enabled ? 'Not connected.' : 'Disabled.';
+  }
+
+  if (config.lastSyncError?.message) {
+    const label = config.lastSyncStatus ? formatStatusLabel(config.lastSyncStatus, 'Error') : 'Error';
+    return `${label} • ${config.lastSyncError.message}`;
+  }
+
+  if (!config.lastSyncStatus) {
+    return enabled ? 'No syncs yet.' : 'Disabled.';
+  }
+
+  const metrics = config.lastSyncMetrics || {};
+  const parts = [];
+
+  if (typeof metrics.processedAttachments === 'number' && metrics.processedAttachments > 0) {
+    parts.push(`${metrics.processedAttachments} attachment${metrics.processedAttachments === 1 ? '' : 's'} imported`);
+  }
+
+  if (typeof metrics.processedMessages === 'number' && metrics.processedMessages > 0) {
+    parts.push(`${metrics.processedMessages} message${metrics.processedMessages === 1 ? '' : 's'} processed`);
+  }
+
+  if (typeof metrics.skippedAttachments === 'number' && metrics.skippedAttachments > 0) {
+    parts.push(`${metrics.skippedAttachments} skipped`);
+  }
+
+  if (typeof metrics.errorCount === 'number' && metrics.errorCount > 0) {
+    parts.push(`${metrics.errorCount} error${metrics.errorCount === 1 ? '' : 's'}`);
   }
 
   if (!parts.length && config.lastSyncStatus === 'success') {

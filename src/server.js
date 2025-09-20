@@ -20,7 +20,7 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 }, // Limit uploads to 10MB
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5000;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'models/gemini-2.5-flash';
 const GEMINI_API_BASE_URL = process.env.GEMINI_API_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta';
@@ -54,15 +54,9 @@ const ONEDRIVE_MAX_FILE_SIZE_BYTES = Math.max(
   1024
 );
 const ONEDRIVE_MAX_DELTA_PAGES = Math.max(parseInt(process.env.ONEDRIVE_MAX_DELTA_PAGES || '5', 10), 1);
+const ONEDRIVE_PROCESSED_FOLDER_NAME = (process.env.ONEDRIVE_PROCESSED_FOLDER_NAME || 'Synced').trim() || 'Synced';
 
 const ONEDRIVE_SYNC_ENABLED = Boolean(MS_GRAPH_CLIENT_ID && MS_GRAPH_CLIENT_SECRET && MS_GRAPH_TENANT_ID);
-
-let graphTokenCache = { token: null, expiresAt: 0 };
-const activeOneDrivePolls = new Map();
-let oneDrivePollingTimer = null;
-
-const quickBooksStates = new Map();
-const quickBooksCallbackPaths = getQuickBooksCallbackPaths();
 
 const OCR_IMAGE_MIME_TYPES = new Set([
   'image/png',
@@ -73,6 +67,54 @@ const OCR_IMAGE_MIME_TYPES = new Set([
   'image/tiff',
   'image/webp',
 ]);
+
+const GMAIL_CLIENT_ID = process.env.GMAIL_CLIENT_ID || '';
+const GMAIL_CLIENT_SECRET = process.env.GMAIL_CLIENT_SECRET || '';
+const GMAIL_API_BASE_URL = 'https://gmail.googleapis.com/gmail/v1';
+const GMAIL_TOKEN_URL = 'https://oauth2.googleapis.com/token';
+const GMAIL_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
+const GMAIL_SCOPES = process.env.GMAIL_SCOPES || 'https://www.googleapis.com/auth/gmail.readonly';
+const GMAIL_DEFAULT_CALLBACK_PATH = '/api/gmail/callback';
+const GMAIL_DEFAULT_REDIRECT_URI = `http://localhost:${PORT}${GMAIL_DEFAULT_CALLBACK_PATH}`;
+const GMAIL_REDIRECT_URI = process.env.GMAIL_REDIRECT_URI || GMAIL_DEFAULT_REDIRECT_URI;
+const GMAIL_STATE_TTL_MS = 10 * 60 * 1000;
+const GMAIL_DEFAULT_POLL_INTERVAL_MS = Math.max(parseInt(process.env.GMAIL_POLL_INTERVAL_MS || '120000', 10), 15000);
+const GMAIL_DEFAULT_MAX_RESULTS = Math.max(parseInt(process.env.GMAIL_MAX_RESULTS || '25', 10), 1);
+const GMAIL_DEFAULT_SEARCH_QUERY = process.env.GMAIL_SEARCH_QUERY || 'in:inbox has:attachment';
+const GMAIL_DEFAULT_LABEL_IDS = parseDelimitedList(process.env.GMAIL_LABEL_IDS);
+const GMAIL_DEFAULT_MAX_ATTACHMENT_BYTES = Math.max(
+  parseInt(process.env.GMAIL_MAX_ATTACHMENT_BYTES || `${10 * 1024 * 1024}`, 10),
+  1024
+);
+const GMAIL_DEFAULT_ALLOWED_MIME_TYPES = (() => {
+  const envValues = parseDelimitedList(process.env.GMAIL_ALLOWED_MIME_TYPES);
+  if (envValues?.length) {
+    return envValues.map((value) => value.toLowerCase());
+  }
+  const defaults = ['application/pdf'];
+  for (const mime of OCR_IMAGE_MIME_TYPES) {
+    defaults.push(mime.toLowerCase());
+  }
+  return defaults;
+})();
+const GMAIL_DEFAULT_BUSINESS_TYPE = (process.env.GMAIL_DEFAULT_BUSINESS_TYPE || '').trim();
+const GMAIL_POLL_MIN_INTERVAL_MS = 15000;
+const GMAIL_CLIENT_CONFIGURED = Boolean(GMAIL_CLIENT_ID && GMAIL_CLIENT_SECRET);
+
+let graphTokenCache = { token: null, expiresAt: 0 };
+const activeOneDrivePolls = new Map();
+const oneDriveProcessedFolderCache = new Map();
+let oneDrivePollingTimer = null;
+
+const gmailTokenCache = new Map();
+const gmailStateCache = new Map();
+const activeGmailPolls = new Map();
+let gmailPollingTimer = null;
+
+const quickBooksStates = new Map();
+const quickBooksCallbackPaths = getQuickBooksCallbackPaths();
+const gmailStates = new Map();
+const gmailCallbackPaths = getGmailCallbackPaths();
 
 const GEMINI_TEXT_LIMIT = 60000;
 const VENDOR_VAT_TREATMENTS = new Set(['inclusive', 'exclusive', 'no_vat']);
@@ -125,6 +167,15 @@ function getQuickBooksCallbackPaths() {
   return Array.from(paths);
 }
 
+function getGmailCallbackPaths() {
+  const paths = new Set([GMAIL_DEFAULT_CALLBACK_PATH]);
+  const derived = derivePathFromUrl(GMAIL_REDIRECT_URI);
+  if (derived) {
+    paths.add(derived);
+  }
+  return Array.from(paths);
+}
+
 function derivePathFromUrl(urlValue) {
   if (!urlValue) {
     return null;
@@ -132,7 +183,7 @@ function derivePathFromUrl(urlValue) {
   try {
     return new URL(urlValue, `http://localhost:${PORT}`).pathname;
   } catch (error) {
-    console.warn('Unable to determine QuickBooks callback path from QUICKBOOKS_REDIRECT_URI', error);
+    console.warn('Unable to determine callback path from redirect URI', error);
     return null;
   }
 }
@@ -147,6 +198,7 @@ async function ingestInvoiceFromSource({
   realmId,
   businessType,
   remoteSource,
+  defaultStatus = 'archive',
 } = {}) {
   if (!buffer) {
     throw new Error('Invoice buffer is required.');
@@ -267,10 +319,13 @@ async function ingestInvoiceFromSource({
       ? 'File contents match an existing invoice (checksum)'
       : null;
 
+  const resolvedDefaultStatus = defaultStatus === 'review' ? 'review' : 'archive';
+  const storageStatus = duplicateMatch ? 'archive' : resolvedDefaultStatus;
+
   const storagePayload = {
     ...enrichedInvoice,
     duplicateOf: duplicateMatch?.metadata?.checksum || null,
-    status: 'archive',
+    status: storageStatus,
   };
 
   await ensureInvoiceFileStored(metadata, storageBuffer);
@@ -516,7 +571,7 @@ async function pollAllOneDriveCompanies() {
   }
 }
 
-async function queueOneDrivePoll(realmId, { reason = 'manual' } = {}) {
+async function queueOneDrivePoll(realmId, { reason = 'manual', forceFull = false } = {}) {
   if (!isOneDriveSyncConfigured() || !realmId) {
     return null;
   }
@@ -531,7 +586,7 @@ async function queueOneDrivePoll(realmId, { reason = 'manual' } = {}) {
       if (!company) {
         return;
       }
-      await pollOneDriveForCompany(company, { reason });
+      await pollOneDriveForCompany(company, { reason, forceFull });
     } catch (error) {
       console.error(`OneDrive sync failed for realm ${realmId}`, error);
       const timestamp = new Date().toISOString();
@@ -556,7 +611,7 @@ async function queueOneDrivePoll(realmId, { reason = 'manual' } = {}) {
   return task;
 }
 
-async function pollOneDriveForCompany(company, { reason = 'manual' } = {}) {
+async function pollOneDriveForCompany(company, { reason = 'manual', forceFull = false } = {}) {
   const config = ensureOneDriveStateDefaults(company.oneDrive);
   if (!config || config.enabled === false) {
     return;
@@ -575,23 +630,44 @@ async function pollOneDriveForCompany(company, { reason = 'manual' } = {}) {
     return;
   }
 
+  let syncReason = reason;
   const startedAt = Date.now();
-  let nextLink = config.deltaLink
-    ? config.deltaLink
+  const useDeltaLink = forceFull ? null : config.deltaLink;
+  let nextLink = useDeltaLink
+    ? useDeltaLink
     : `${GRAPH_API_BASE_URL.replace(/\/+$/, '')}/drives/${encodeURIComponent(config.driveId)}/items/${encodeURIComponent(config.folderId)}/delta`;
-  let latestDelta = config.deltaLink || null;
+  let latestDelta = forceFull ? null : config.deltaLink || null;
   let processedItems = 0;
   let createdCount = 0;
   let skippedCount = 0;
+  let duplicateCount = 0;
   let pages = 0;
   const errors = [];
+  const activityLog = [];
 
   while (nextLink && pages < ONEDRIVE_MAX_DELTA_PAGES) {
     let response;
     try {
       response = await graphFetch(nextLink, { responseType: 'json' });
     } catch (error) {
-      errors.push(error);
+      if (isOneDriveDeltaResetError(error)) {
+        const wasForceFull = forceFull;
+        activityLog.push(
+          wasForceFull
+            ? 'Change feed token expired during full resync; performing snapshot crawl.'
+            : 'Change feed token expired; resetting stored token and switching to a full snapshot crawl.'
+        );
+        latestDelta = null;
+        nextLink = null;
+        forceFull = true;
+        if (!wasForceFull && syncReason !== 'full-resync') {
+          syncReason = 'auto-resync';
+        }
+      } else {
+        errors.push(error);
+        const message = error?.message || 'Failed to fetch OneDrive change feed.';
+        activityLog.push(`Error fetching OneDrive changes: ${message}`);
+      }
       break;
     }
 
@@ -602,14 +678,36 @@ async function pollOneDriveForCompany(company, { reason = 'manual' } = {}) {
       }
       processedItems += 1;
       try {
-        const result = await processOneDriveItem(company, config, item, { reason });
+        const result = await processOneDriveItem(company, config, item, { reason: syncReason });
+        const displayName = result?.originalName || item.name || item.id;
+
         if (result?.skipped) {
           skippedCount += 1;
+          const skipReason = result?.skipReason || result?.reason || 'Skipped file.';
+          activityLog.push(`Skipped ${displayName}: ${skipReason}`);
+        } else if (result?.duplicate) {
+          duplicateCount += 1;
+          const duplicateReason = result?.duplicateReason || 'Duplicate invoice detected.';
+          activityLog.push(`Duplicate ${displayName}: ${duplicateReason}`);
         } else if (result?.stored) {
           createdCount += 1;
+          let message = `Imported ${displayName}`;
+          if (result?.checksum) {
+            message += ` (${result.checksum.slice(0, 8)})`;
+          }
+          if (result?.movedTo) {
+            message += ` \u2192 ${result.movedTo}`;
+          }
+          activityLog.push(message);
+        }
+
+        if (result?.moveError) {
+          activityLog.push(`Move failed for ${displayName}: ${result.moveError}`);
         }
       } catch (error) {
         errors.push(error);
+        const message = error?.message || 'Unknown error ingesting file.';
+        activityLog.push(`Error processing ${item?.name || item?.id || 'file'}: ${message}`);
       }
     }
 
@@ -625,6 +723,22 @@ async function pollOneDriveForCompany(company, { reason = 'manual' } = {}) {
     }
   }
 
+  if (processedItems === 0 && forceFull) {
+    activityLog.push('Delta feed returned no files; performing snapshot crawl of the folder.');
+    try {
+      const snapshot = await ingestOneDriveFolderSnapshot(company, config, { reason: syncReason });
+      processedItems += snapshot.processed;
+      createdCount += snapshot.created;
+      skippedCount += snapshot.skipped;
+      duplicateCount += snapshot.duplicates;
+      snapshot.errors.forEach((error) => errors.push(error));
+      activityLog.push(...snapshot.logEntries);
+    } catch (error) {
+      errors.push(error);
+      activityLog.push(`Snapshot crawl failed: ${error.message || error}`);
+    }
+  }
+
   const completedAt = new Date().toISOString();
   const status = errors.length ? 'warning' : 'connected';
   const lastSyncStatus = errors.length ? 'partial' : 'success';
@@ -635,22 +749,40 @@ async function pollOneDriveForCompany(company, { reason = 'manual' } = {}) {
       }
     : null;
 
+  if (processedItems === 0) {
+    activityLog.push(
+      forceFull
+        ? 'Full resync completed but OneDrive returned no files from the configured folder.'
+        : 'No files reported by OneDrive during this sync cycle.'
+    );
+  }
+
+  if (!activityLog.length) {
+    activityLog.push('Sync completed without importing any new invoices.');
+  }
+
   await updateQuickBooksCompanyOneDrive(company.realmId, {
     status,
     deltaLink: latestDelta,
     lastSyncAt: completedAt,
     lastSyncStatus,
-    lastSyncReason: reason,
+    lastSyncReason: syncReason,
     lastSyncDurationMs: Date.now() - startedAt,
     lastSyncError,
     lastSyncMetrics: {
       processedItems,
       createdCount,
       skippedCount,
+      duplicateCount,
       pages,
       errorCount: errors.length,
     },
+    lastSyncLog: activityLog.slice(-20),
   });
+
+  console.info(
+    `OneDrive sync summary for realm ${company.realmId}: ${createdCount} created, ${processedItems} processed, ${skippedCount} skipped, ${duplicateCount} duplicates, ${errors.length} errors.`
+  );
 }
 
 async function processOneDriveItem(company, config, item, { reason = 'manual' } = {}) {
@@ -673,10 +805,10 @@ async function processOneDriveItem(company, config, item, { reason = 'manual' } 
     console.warn(
       `Skipping OneDrive item ${item.id} for realm ${company.realmId} because it exceeds the configured size limit (${download.size} bytes).`
     );
-    return { skipped: true, reason: 'file-too-large' };
+    return { skipped: true, reason: 'File exceeds configured size limit.' };
   }
 
-  return ingestInvoiceFromSource({
+  const ingestion = await ingestInvoiceFromSource({
     buffer: download.buffer,
     mimeType: download.mimeType,
     originalName: download.originalName,
@@ -684,7 +816,36 @@ async function processOneDriveItem(company, config, item, { reason = 'manual' } 
     realmId: company.realmId,
     businessType: company.businessType || null,
     remoteSource,
+    defaultStatus: 'review',
   });
+
+  let movedTo = null;
+  let moveError = null;
+  if (ingestion?.stored && !ingestion.duplicate) {
+    try {
+      const destination = await moveProcessedOneDriveItem(company, config, item);
+      movedTo = destination?.name || destination?.path || config.processedFolderName || null;
+    } catch (error) {
+      moveError = error.message || error;
+      console.warn(
+        `Unable to relocate OneDrive item ${item.id} after ingestion for realm ${company.realmId}`,
+        moveError
+      );
+    }
+  }
+
+  return {
+    ...ingestion,
+    skipped: Boolean(ingestion?.skipped),
+    duplicate: Boolean(ingestion?.duplicate),
+    duplicateReason: ingestion?.duplicate?.reason || null,
+    originalName: download.originalName || item.name || null,
+    checksum:
+      ingestion?.stored?.metadata?.checksum || ingestion?.duplicate?.match?.metadata?.checksum || null,
+    movedTo,
+    moveError,
+    skipReason: ingestion?.skipped ? ingestion?.duplicate?.reason || 'Skipped by ingestion.' : null,
+  };
 }
 
 async function downloadOneDriveItem(driveId, itemId) {
@@ -695,22 +856,55 @@ async function downloadOneDriveItem(driveId, itemId) {
   });
 
   const downloadUrl = metadata?.['@microsoft.graph.downloadUrl'];
-  if (!downloadUrl) {
-    throw new Error('Download URL not available for OneDrive item.');
+  let response = null;
+
+  if (downloadUrl) {
+    response = await fetch(downloadUrl).catch((error) => {
+      console.warn(`Direct OneDrive download failed for item ${itemId}`, error?.message || error);
+      return null;
+    });
   }
 
-  const response = await fetch(downloadUrl);
-  if (!response.ok) {
-    const message = `OneDrive file download failed with status ${response.status}`;
+  if (!response || !response.ok) {
+    if (downloadUrl && response) {
+      console.warn(
+        `OneDrive download URL returned status ${response.status} for item ${itemId}; falling back to Graph content endpoint.`
+      );
+    } else if (!downloadUrl) {
+      console.warn(
+        `OneDrive item ${itemId} is missing @microsoft.graph.downloadUrl; using Graph content endpoint for download.`
+      );
+    }
+
+    response = await graphFetch(
+      `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}/content`,
+      {
+        responseType: 'response',
+      }
+    );
+  }
+
+  if (!response || !response.ok) {
+    const status = response?.status || 'unknown';
+    const message = `OneDrive file download failed with status ${status}`;
     const error = new Error(message);
-    error.status = response.status;
+    if (response?.status) {
+      error.status = response.status;
+    }
     throw error;
   }
 
   const arrayBuffer = await response.arrayBuffer();
   const buffer = Buffer.from(arrayBuffer);
-  const mimeType = response.headers.get('content-type') || metadata?.file?.mimeType || 'application/octet-stream';
-  const size = typeof metadata?.size === 'number' ? metadata.size : buffer.length;
+  const contentLengthHeader = response.headers?.get?.('content-length');
+  const mimeType = response.headers?.get?.('content-type') || metadata?.file?.mimeType || 'application/octet-stream';
+  const sizeFromHeader = contentLengthHeader ? Number.parseInt(contentLengthHeader, 10) : null;
+  const size =
+    typeof metadata?.size === 'number'
+      ? metadata.size
+      : Number.isFinite(sizeFromHeader)
+      ? sizeFromHeader
+      : buffer.length;
 
   return {
     buffer,
@@ -718,6 +912,258 @@ async function downloadOneDriveItem(driveId, itemId) {
     size,
     originalName: metadata?.name || `${itemId}.bin`,
   };
+}
+
+async function moveProcessedOneDriveItem(company, config, item) {
+  const driveId = config.driveId;
+  if (!driveId || !item?.id) {
+    return;
+  }
+
+  const folder = await ensureOneDriveProcessedFolder(company, config);
+  if (!folder || !folder.id) {
+    return;
+  }
+
+  if (item.parentReference?.id === folder.id) {
+    return folder;
+  }
+
+  await graphFetch(`/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(item.id)}`, {
+    method: 'PATCH',
+    body: {
+      parentReference: { id: folder.id },
+    },
+  });
+
+  return folder;
+}
+
+async function ingestOneDriveFolderSnapshot(company, config, { reason = 'manual' } = {}) {
+  const logEntries = [];
+  const errors = [];
+  let processed = 0;
+  let created = 0;
+  let skipped = 0;
+  let duplicates = 0;
+  let pages = 0;
+
+  let nextLink = `/drives/${encodeURIComponent(config.driveId)}/items/${encodeURIComponent(config.folderId)}/children`;
+  let initial = true;
+
+  while (nextLink && pages < ONEDRIVE_MAX_DELTA_PAGES) {
+    let response;
+    try {
+      if (initial) {
+        response = await graphFetch(nextLink, {
+          query: {
+            $select: 'id,name,parentReference,webUrl,file,eTag,lastModifiedDateTime',
+            $top: 200,
+          },
+          responseType: 'json',
+        });
+        initial = false;
+      } else {
+        response = await graphFetch(nextLink, { responseType: 'json' });
+      }
+    } catch (error) {
+      errors.push(error);
+      logEntries.push(`Snapshot fetch failed: ${error.message || error}`);
+      break;
+    }
+
+    const entries = Array.isArray(response?.value) ? response.value : [];
+
+    for (const item of entries) {
+      if (!item || item.deleted || !item.file) {
+        continue;
+      }
+      processed += 1;
+      try {
+        const result = await processOneDriveItem(company, config, item, { reason: reason === 'full-resync' ? 'full-resync-snapshot' : reason });
+        const displayName = result?.originalName || item.name || item.id;
+
+        if (result?.skipped) {
+          skipped += 1;
+          const skipReason = result?.skipReason || result?.reason || 'Skipped file.';
+          logEntries.push(`Skipped ${displayName}: ${skipReason}`);
+        } else if (result?.duplicate) {
+          duplicates += 1;
+          const duplicateReason = result?.duplicateReason || 'Duplicate invoice detected.';
+          logEntries.push(`Duplicate ${displayName}: ${duplicateReason}`);
+        } else if (result?.stored) {
+          created += 1;
+          let message = `Imported ${displayName}`;
+          if (result?.checksum) {
+            message += ` (${result.checksum.slice(0, 8)})`;
+          }
+          if (result?.movedTo) {
+            message += ` → ${result.movedTo}`;
+          }
+          logEntries.push(message);
+        }
+
+        if (result?.moveError) {
+          logEntries.push(`Move failed for ${displayName}: ${result.moveError}`);
+        }
+      } catch (error) {
+        errors.push(error);
+        const message = error?.message || 'Unknown error ingesting file.';
+        logEntries.push(`Error processing ${item?.name || item?.id || 'file'}: ${message}`);
+      }
+    }
+
+    pages += 1;
+
+    if (response['@odata.nextLink']) {
+      nextLink = response['@odata.nextLink'];
+    } else {
+      nextLink = null;
+    }
+  }
+
+  if (processed === 0) {
+    logEntries.push('Snapshot crawl found no files in the folder.');
+  }
+
+  return {
+    processed,
+    created,
+    skipped,
+    duplicates,
+    errors,
+    logEntries,
+  };
+}
+
+async function ensureOneDriveProcessedFolder(company, config) {
+  const driveId = config.driveId;
+  const sourceFolderId = config.folderId;
+  if (!driveId || !sourceFolderId) {
+    return null;
+  }
+
+  const cacheKey = `${company.realmId || 'unknown'}:${driveId}:${sourceFolderId}`;
+  const cached = oneDriveProcessedFolderCache.get(cacheKey);
+  if (cached && cached.promise) {
+    return cached.promise;
+  }
+  if (cached && !cached.promise) {
+    return cached;
+  }
+
+  const resolver = (async () => {
+    let metadata = null;
+
+    if (config.processedFolderId) {
+      metadata = await fetchOneDriveFolderMetadata(driveId, config.processedFolderId).catch(() => null);
+    }
+
+    if (!metadata) {
+      metadata = await locateExistingProcessedFolder(driveId, sourceFolderId).catch(() => null);
+    }
+
+    if (!metadata) {
+      metadata = await createProcessedFolder(driveId, sourceFolderId);
+    }
+
+    if (!metadata) {
+      return null;
+    }
+
+    const folderDetails = {
+      id: metadata.id,
+      name: metadata.name || ONEDRIVE_PROCESSED_FOLDER_NAME,
+      path: buildDriveItemPath(metadata),
+    };
+
+    const previousId = config.processedFolderId || null;
+    const previousName = config.processedFolderName || null;
+    const previousPath = config.processedFolderPath || null;
+
+    config.processedFolderId = folderDetails.id;
+    config.processedFolderName = folderDetails.name;
+    config.processedFolderPath = folderDetails.path;
+
+    if (
+      folderDetails.id &&
+      (folderDetails.id !== previousId || folderDetails.name !== previousName || folderDetails.path !== previousPath)
+    ) {
+      await updateQuickBooksCompanyOneDrive(company.realmId, {
+        processedFolderId: folderDetails.id,
+        processedFolderName: folderDetails.name,
+        processedFolderPath: folderDetails.path,
+      }).catch((error) => {
+        console.warn(
+          `Unable to persist processed folder details for realm ${company.realmId}`,
+          error.message || error
+        );
+      });
+    }
+
+    return folderDetails;
+  })();
+
+  oneDriveProcessedFolderCache.set(cacheKey, { promise: resolver });
+  try {
+    const result = await resolver;
+    oneDriveProcessedFolderCache.set(cacheKey, result);
+    return result;
+  } finally {
+    const entry = oneDriveProcessedFolderCache.get(cacheKey);
+    if (entry && entry.promise) {
+      oneDriveProcessedFolderCache.delete(cacheKey);
+    }
+  }
+}
+
+async function fetchOneDriveFolderMetadata(driveId, folderId) {
+  if (!driveId || !folderId) {
+    return null;
+  }
+  const item = await graphFetch(`/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(folderId)}`, {
+    query: {
+      $select: 'id,name,folder,parentReference',
+    },
+  });
+  if (!item?.folder) {
+    return null;
+  }
+  return item;
+}
+
+async function locateExistingProcessedFolder(driveId, folderId) {
+  const response = await graphFetch(`/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(folderId)}/children`, {
+    query: {
+      $select: 'id,name,folder,parentReference',
+      $top: 200,
+    },
+  });
+
+  const entries = Array.isArray(response?.value) ? response.value : [];
+  const match = entries.find((entry) => entry?.folder && entry.name && entry.name.toLowerCase() === ONEDRIVE_PROCESSED_FOLDER_NAME.toLowerCase());
+  if (match) {
+    return match;
+  }
+
+  return null;
+}
+
+async function createProcessedFolder(driveId, parentFolderId) {
+  const created = await graphFetch(`/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(parentFolderId)}/children`, {
+    method: 'POST',
+    body: {
+      name: ONEDRIVE_PROCESSED_FOLDER_NAME,
+      folder: {},
+      '@microsoft.graph.conflictBehavior': 'rename',
+    },
+  });
+
+  if (!created?.folder) {
+    return null;
+  }
+
+  return created;
 }
 
 function buildDriveItemPath(item) {
@@ -750,6 +1196,691 @@ function startOneDriveSyncScheduler() {
   oneDrivePollingTimer = setInterval(tick, ONEDRIVE_POLL_INTERVAL_MS);
   console.log(
     `OneDrive folder polling enabled (interval ${Math.max(Math.round(ONEDRIVE_POLL_INTERVAL_MS / 1000), 1)}s)`
+  );
+}
+
+
+function isGmailMonitoringConfigured() {
+  return GMAIL_CLIENT_CONFIGURED;
+}
+
+function getGmailStatePath(realmId) {
+  return path.join(__dirname, '..', 'data', 'gmail', `${realmId}.json`);
+}
+
+async function readCompanyGmailState(realmId) {
+  if (!realmId) {
+    return ensureGmailRuntimeStateDefaults(null);
+  }
+
+  if (gmailStateCache.has(realmId)) {
+    return gmailStateCache.get(realmId);
+  }
+
+  try {
+    const contents = await fs.readFile(getGmailStatePath(realmId), 'utf-8');
+    const parsed = JSON.parse(contents);
+    const state = ensureGmailRuntimeStateDefaults(parsed);
+    gmailStateCache.set(realmId, state);
+    return state;
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      const state = ensureGmailRuntimeStateDefaults(null);
+      gmailStateCache.set(realmId, state);
+      return state;
+    }
+    throw error;
+  }
+}
+
+function ensureGmailRuntimeStateDefaults(state) {
+  const base = state && typeof state === 'object' ? state : {};
+  return {
+    lastPollAt: typeof base.lastPollAt === 'string' ? base.lastPollAt : null,
+    lastHistoryId: typeof base.lastHistoryId === 'string' ? base.lastHistoryId : null,
+    processedMessages:
+      base.processedMessages && typeof base.processedMessages === 'object' && !Array.isArray(base.processedMessages)
+        ? { ...base.processedMessages }
+        : {},
+  };
+}
+
+async function persistCompanyGmailState(realmId, nextState) {
+  const normalised = ensureGmailRuntimeStateDefaults(nextState);
+  normalised.processedMessages = pruneGmailProcessedMessages(normalised.processedMessages, 500);
+  gmailStateCache.set(realmId, normalised);
+
+  const statePath = getGmailStatePath(realmId);
+  await fs.mkdir(path.dirname(statePath), { recursive: true });
+  await fs.writeFile(statePath, JSON.stringify(normalised, null, 2));
+  return normalised;
+}
+
+async function deleteCompanyGmailState(realmId) {
+  gmailStateCache.delete(realmId);
+  if (!realmId) {
+    return;
+  }
+
+  const statePath = getGmailStatePath(realmId);
+  try {
+    await fs.unlink(statePath);
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      throw error;
+    }
+  }
+}
+
+function getGmailPollInterval(config) {
+  const interval = Number.parseInt(config?.pollIntervalMs, 10);
+  if (!Number.isFinite(interval) || interval <= 0) {
+    return GMAIL_DEFAULT_POLL_INTERVAL_MS;
+  }
+  return Math.max(interval, GMAIL_POLL_MIN_INTERVAL_MS);
+}
+
+function getGmailAllowedMimeTypes(config) {
+  const values = Array.isArray(config?.allowedMimeTypes)
+    ? config.allowedMimeTypes
+    : parseDelimitedList(config?.allowedMimeTypes);
+  const base = values.length ? values : GMAIL_DEFAULT_ALLOWED_MIME_TYPES;
+  const set = new Set();
+  for (const value of base) {
+    if (typeof value === 'string' && value.trim()) {
+      set.add(value.trim().toLowerCase());
+    }
+  }
+  return set;
+}
+
+async function pollAllGmailCompanies() {
+  if (!isGmailMonitoringConfigured()) {
+    return;
+  }
+
+  const companies = await readQuickBooksCompanies();
+  const now = Date.now();
+
+  for (const company of companies) {
+    const realmId = company?.realmId;
+    if (!realmId) {
+      continue;
+    }
+
+    const gmailConfig = ensureGmailConfigDefaults(company.gmail);
+    if (!gmailConfig || gmailConfig.enabled === false || !gmailConfig.refreshToken) {
+      continue;
+    }
+
+    let state;
+    try {
+      state = await readCompanyGmailState(realmId);
+    } catch (error) {
+      console.warn(`Unable to read Gmail state for realm ${realmId}`, error.message || error);
+      state = ensureGmailRuntimeStateDefaults(null);
+    }
+
+    const lastPollMs = state.lastPollAt ? new Date(state.lastPollAt).getTime() : 0;
+    const interval = getGmailPollInterval(gmailConfig);
+    if (lastPollMs && now - lastPollMs < interval) {
+      continue;
+    }
+
+    queueGmailPoll(realmId, { reason: 'interval' }).catch((error) => {
+      console.error(`Scheduled Gmail poll failed for realm ${realmId}`, error);
+    });
+  }
+}
+
+async function queueGmailPoll(realmId, { reason = 'manual' } = {}) {
+  if (!isGmailMonitoringConfigured() || !realmId) {
+    return null;
+  }
+
+  if (activeGmailPolls.has(realmId)) {
+    return activeGmailPolls.get(realmId);
+  }
+
+  const task = (async () => {
+    try {
+      const company = await getQuickBooksCompanyRecord(realmId);
+      if (!company) {
+        const error = new Error('QuickBooks company not found.');
+        error.code = 'NOT_FOUND';
+        throw error;
+      }
+
+      const gmailConfig = ensureGmailConfigDefaults(company.gmail);
+      if (!gmailConfig?.enabled) {
+        return null;
+      }
+
+      if (!gmailConfig.refreshToken) {
+        const error = new Error('Gmail refresh token is not configured. Connect the mailbox again.');
+        error.code = 'GMAIL_REFRESH_TOKEN_MISSING';
+        throw error;
+      }
+
+      const result = await pollGmailForCompany(company, gmailConfig, { reason });
+
+      const statusUpdate = {
+        status: result.warning ? 'warning' : 'connected',
+        lastSyncStatus: result.warning ? 'partial' : 'success',
+        lastSyncReason: reason,
+        lastSyncAt: result.lastSyncAt,
+        lastSyncMetrics: result.metrics,
+        lastSyncError: result.warning ? result.lastSyncError : null,
+        historyId: result.historyId || null,
+      };
+
+      await updateQuickBooksCompanyGmail(realmId, statusUpdate);
+      return result;
+    } catch (error) {
+      console.error(`Gmail sync failed for realm ${realmId}`, error);
+      try {
+        await updateQuickBooksCompanyGmail(realmId, {
+          status: 'error',
+          lastSyncStatus: 'error',
+          lastSyncReason: reason,
+          lastSyncAt: new Date().toISOString(),
+          lastSyncError: { message: error.message || 'Gmail poll failed.' },
+        });
+      } catch (updateError) {
+        console.warn(`Unable to persist Gmail error state for ${realmId}`, updateError.message || updateError);
+      }
+      gmailTokenCache.delete(realmId);
+      throw error;
+    } finally {
+      activeGmailPolls.delete(realmId);
+    }
+  })();
+
+  activeGmailPolls.set(realmId, task);
+  return task;
+}
+
+async function pollGmailForCompany(company, gmailConfig, { reason = 'manual' } = {}) {
+  const realmId = company.realmId;
+  const startedAt = Date.now();
+  const state = await readCompanyGmailState(realmId);
+  const accessToken = await acquireGmailAccessToken(realmId, gmailConfig);
+
+  const maxResults = Number.isFinite(gmailConfig.maxResults) && gmailConfig.maxResults > 0
+    ? Math.min(Math.floor(gmailConfig.maxResults), 100)
+    : GMAIL_DEFAULT_MAX_RESULTS;
+
+  const query = {
+    maxResults,
+    q: gmailConfig.searchQuery || undefined,
+  };
+
+  if (Array.isArray(gmailConfig.labelIds) && gmailConfig.labelIds.length) {
+    query.labelIds = gmailConfig.labelIds;
+  }
+
+  const listResponse = await gmailApiRequest('/users/me/messages', { query }, accessToken);
+  const messages = Array.isArray(listResponse?.messages) ? listResponse.messages : [];
+
+  if (typeof listResponse?.historyId === 'string') {
+    state.lastHistoryId = listResponse.historyId;
+  }
+
+  let processedMessages = 0;
+  let processedAttachments = 0;
+  let skippedAttachments = 0;
+  const attachmentErrors = [];
+
+  const allowedMimeTypes = getGmailAllowedMimeTypes(gmailConfig);
+  const maxAttachmentBytes = Math.max(
+    Number.parseInt(gmailConfig.maxAttachmentBytes, 10) || GMAIL_DEFAULT_MAX_ATTACHMENT_BYTES,
+    1024
+  );
+
+  for (const messageSummary of messages) {
+    const messageId = messageSummary?.id;
+    if (!messageId) {
+      continue;
+    }
+
+    if (state.processedMessages[messageId]?.processedAt) {
+      continue;
+    }
+
+    let message;
+    try {
+      message = await gmailApiRequest(`/users/me/messages/${encodeURIComponent(messageId)}`, {
+        query: { format: 'full' },
+      }, accessToken);
+    } catch (error) {
+      console.warn(`Failed to load Gmail message ${messageId} for realm ${realmId}`, error.message || error);
+      attachmentErrors.push({ messageId, error: error.message || 'Unable to load message.' });
+      state.processedMessages[messageId] = {
+        processedAt: new Date().toISOString(),
+        attachments: [],
+        status: 'error',
+        reason,
+        snippet: messageSummary?.snippet || null,
+        historyId: messageSummary?.historyId || null,
+      };
+      continue;
+    }
+
+    const attachments = collectGmailAttachments(message?.payload);
+    if (!attachments.length) {
+      state.processedMessages[messageId] = {
+        processedAt: new Date().toISOString(),
+        attachments: [],
+        status: 'no-attachments',
+        reason,
+        snippet: message?.snippet || null,
+        historyId: message?.historyId || null,
+      };
+      continue;
+    }
+
+    const processedAttachmentKeys = [];
+    let messageHandled = false;
+
+    for (const attachment of attachments) {
+      const filename = attachment.filename || `${messageId}.bin`;
+      const extension = path.extname(filename);
+      const declaredMime = attachment.mimeType || deriveMimeTypeFromExtension(extension);
+      const mimeType = (declaredMime || 'application/octet-stream').toLowerCase();
+
+      if (allowedMimeTypes.size && !allowedMimeTypes.has(mimeType)) {
+        skippedAttachments += 1;
+        continue;
+      }
+
+      const declaredSize = typeof attachment.size === 'number' && Number.isFinite(attachment.size)
+        ? attachment.size
+        : null;
+
+      if (declaredSize && declaredSize > maxAttachmentBytes) {
+        console.warn(
+          `Skipping Gmail attachment ${attachment.attachmentId || attachment.partId || 'unknown'} on ${messageId} for realm ${realmId} because it exceeds the size limit (${declaredSize} bytes).`
+        );
+        skippedAttachments += 1;
+        continue;
+      }
+
+      let buffer;
+      try {
+        buffer = await fetchGmailAttachment(messageId, attachment, accessToken);
+      } catch (error) {
+        console.warn(
+          `Failed to download Gmail attachment ${attachment.attachmentId || attachment.partId || 'unknown'} from ${messageId} (realm ${realmId})`,
+          error.message || error
+        );
+        attachmentErrors.push({
+          messageId,
+          attachmentId: attachment.attachmentId || attachment.partId || null,
+          error: error.message || 'Unknown error downloading attachment.',
+        });
+        continue;
+      }
+
+      if (buffer.length > maxAttachmentBytes) {
+        console.warn(
+          `Skipping Gmail attachment ${attachment.attachmentId || attachment.partId || 'unknown'} for realm ${realmId} because the downloaded size exceeds the limit (${buffer.length} bytes).`
+        );
+        skippedAttachments += 1;
+        continue;
+      }
+
+      const businessType = gmailConfig.businessType || company.businessType || GMAIL_DEFAULT_BUSINESS_TYPE || null;
+
+      const remoteSource = buildGmailRemoteSource({
+        message,
+        attachment,
+        buffer,
+        mimeType,
+        reason,
+        email: gmailConfig.email || null,
+      });
+
+      try {
+        await ingestInvoiceFromSource({
+          buffer,
+          mimeType,
+          originalName: filename,
+          fileSize: buffer.length,
+          realmId: company.realmId,
+          businessType,
+          remoteSource,
+          defaultStatus: 'review',
+        });
+        processedAttachments += 1;
+        messageHandled = true;
+        processedAttachmentKeys.push(gmailAttachmentKey(messageId, attachment));
+      } catch (error) {
+        console.error(
+          `Failed to ingest Gmail attachment ${attachment.attachmentId || attachment.partId || 'unknown'} from ${messageId} (realm ${realmId})`,
+          error.message || error
+        );
+        attachmentErrors.push({
+          messageId,
+          attachmentId: attachment.attachmentId || attachment.partId || null,
+          error: error.message || 'Unknown error ingesting attachment.',
+        });
+      }
+    }
+
+    if (messageHandled) {
+      processedMessages += 1;
+    }
+
+    state.processedMessages[messageId] = {
+      processedAt: new Date().toISOString(),
+      attachments: processedAttachmentKeys,
+      status: messageHandled ? 'processed' : 'skipped',
+      reason,
+      snippet: message?.snippet || null,
+      historyId: message?.historyId || null,
+    };
+  }
+
+  state.lastPollAt = new Date().toISOString();
+  await persistCompanyGmailState(realmId, state);
+
+  const durationMs = Date.now() - startedAt;
+  const metrics = {
+    processedMessages,
+    processedAttachments,
+    skippedAttachments,
+    errorCount: attachmentErrors.length,
+    durationMs,
+  };
+
+  const warning = attachmentErrors.length > 0;
+  const lastSyncError = warning
+    ? {
+        message:
+          attachmentErrors[0]?.error ||
+          `${attachmentErrors.length} Gmail attachment error${attachmentErrors.length === 1 ? '' : 's'} encountered.`,
+        at: state.lastPollAt,
+      }
+    : null;
+
+  return {
+    metrics,
+    warning,
+    lastSyncError,
+    lastSyncAt: state.lastPollAt,
+    historyId: state.lastHistoryId || null,
+  };
+}
+
+async function acquireGmailAccessToken(realmId, gmailConfig) {
+  if (!isGmailMonitoringConfigured()) {
+    throw new Error('Gmail OAuth client is not configured.');
+  }
+
+  const now = Date.now();
+  const cached = gmailTokenCache.get(realmId);
+  if (cached && cached.expiresAt - 60000 > now) {
+    return cached.token;
+  }
+
+  const refreshToken = gmailConfig?.refreshToken;
+  if (!refreshToken) {
+    const error = new Error('Gmail refresh token is not configured. Connect the mailbox again.');
+    error.code = 'GMAIL_REFRESH_TOKEN_MISSING';
+    throw error;
+  }
+
+  const params = new URLSearchParams();
+  params.set('client_id', GMAIL_CLIENT_ID);
+  params.set('client_secret', GMAIL_CLIENT_SECRET);
+  params.set('grant_type', 'refresh_token');
+  params.set('refresh_token', refreshToken);
+
+  const response = await fetch(GMAIL_TOKEN_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: params.toString(),
+  });
+
+  if (!response.ok) {
+    const errorBody = await safeReadJson(response);
+    const message =
+      errorBody?.error_description ||
+      errorBody?.error ||
+      `Gmail token request failed with status ${response.status}`;
+    const error = new Error(message);
+    error.status = response.status;
+    error.body = errorBody;
+    throw error;
+  }
+
+  const data = await response.json();
+  const expiresIn = typeof data.expires_in === 'number' ? data.expires_in : Number.parseInt(data.expires_in, 10) || 3600;
+  const expiresAt = now + Math.max(expiresIn - 60, 60) * 1000;
+
+  gmailTokenCache.set(realmId, {
+    token: data.access_token,
+    expiresAt,
+  });
+
+  if (typeof data.refresh_token === 'string' && data.refresh_token && data.refresh_token !== refreshToken) {
+    try {
+      await updateQuickBooksCompanyGmail(realmId, {
+        refreshToken: data.refresh_token,
+        lastConnectedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.warn(`Failed to persist updated Gmail refresh token for realm ${realmId}`, error.message || error);
+    }
+  }
+
+  return data.access_token;
+}
+
+async function gmailApiRequest(endpoint, { method = 'GET', query, headers, body } = {}, accessToken) {
+  const pathWithSlash = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  const url = new URL(`${GMAIL_API_BASE_URL}${pathWithSlash}`);
+
+  if (query && typeof query === 'object') {
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined || value === null) {
+        continue;
+      }
+
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          url.searchParams.append(key, item);
+        }
+      } else {
+        url.searchParams.set(key, value);
+      }
+    }
+  }
+
+  const init = {
+    method,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/json',
+      ...(headers || {}),
+    },
+  };
+
+  if (body !== undefined && body !== null) {
+    init.body = typeof body === 'string' ? body : JSON.stringify(body);
+    if (!init.headers['Content-Type']) {
+      init.headers['Content-Type'] = 'application/json';
+    }
+  }
+
+  const response = await fetch(url.toString(), init);
+  if (!response.ok) {
+    const errorBody = await safeReadJson(response);
+    const message =
+      errorBody?.error?.message ||
+      errorBody?.error_description ||
+      `Gmail API request failed (${method || 'GET'} ${endpoint}) with status ${response.status}`;
+    const error = new Error(message);
+    error.status = response.status;
+    error.body = errorBody;
+    throw error;
+  }
+
+  if (response.status === 204) {
+    return null;
+  }
+
+  return response.json();
+}
+
+function collectGmailAttachments(payload, parentMimeType = null, pathPrefix = []) {
+  if (!payload || typeof payload !== 'object') {
+    return [];
+  }
+
+  const results = [];
+  const { filename, mimeType, body, parts, partId, headers } = payload;
+  const resolvedMime = mimeType || parentMimeType || null;
+
+  const hasAttachmentData = Boolean(body?.attachmentId || body?.data);
+  const hasFilename = typeof filename === 'string' && filename.trim().length > 0;
+  const disposition = extractEmailHeader(headers, 'Content-Disposition') || '';
+  const isInline = disposition.toLowerCase().includes('inline');
+  const size = typeof body?.size === 'number' ? body.size : null;
+
+  if (hasFilename || hasAttachmentData) {
+    results.push({
+      filename: hasFilename ? filename.trim() : null,
+      mimeType: resolvedMime,
+      attachmentId: body?.attachmentId || null,
+      data: body?.data || null,
+      size,
+      partId: partId || pathPrefix.join('.'),
+      isInline,
+    });
+  }
+
+  if (Array.isArray(parts) && parts.length) {
+    const nextPrefix = partId ? [...pathPrefix, partId] : pathPrefix;
+    for (const child of parts) {
+      results.push(...collectGmailAttachments(child, resolvedMime, nextPrefix));
+    }
+  }
+
+  return results;
+}
+
+async function fetchGmailAttachment(messageId, attachment, accessToken) {
+  if (attachment?.data) {
+    return decodeBase64Url(attachment.data);
+  }
+
+  if (!attachment?.attachmentId) {
+    throw new Error('Gmail attachment is missing attachmentId and inline data.');
+  }
+
+  const attachmentPath = `/users/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachment.attachmentId)}`;
+  const response = await gmailApiRequest(attachmentPath, {}, accessToken);
+  if (!response?.data) {
+    throw new Error('Gmail attachment download did not include data.');
+  }
+
+  return decodeBase64Url(response.data);
+}
+
+function buildGmailRemoteSource({ message, attachment, buffer, mimeType, reason, email }) {
+  if (!message) {
+    return null;
+  }
+
+  const messageId = message.id || null;
+  const threadId = message.threadId || null;
+  const historyId = message.historyId || null;
+  const subject = extractEmailHeader(message.payload?.headers, 'Subject');
+  const from = extractEmailHeader(message.payload?.headers, 'From');
+  const internalDate = message.internalDate ? new Date(Number(message.internalDate)).toISOString() : null;
+  const attachmentKey = gmailAttachmentKey(messageId, attachment);
+
+  return {
+    provider: 'gmail',
+    email: email || null,
+    itemId: attachmentKey,
+    messageId,
+    threadId,
+    attachmentId: attachment?.attachmentId || null,
+    attachmentSize: buffer?.length || attachment?.size || null,
+    mimeType,
+    filename: attachment?.filename || null,
+    labelIds: Array.isArray(message.labelIds) ? message.labelIds : null,
+    subject: subject || null,
+    from: from || null,
+    historyId: historyId || null,
+    snippet: message?.snippet || null,
+    receivedAt: internalDate,
+    webUrl: messageId ? `https://mail.google.com/mail/u/0/#inbox/${messageId}` : null,
+    syncedAt: new Date().toISOString(),
+    reason,
+  };
+}
+
+function extractEmailHeader(headers, name) {
+  if (!Array.isArray(headers)) {
+    return null;
+  }
+  const target = name.toLowerCase();
+  const entry = headers.find((header) => typeof header?.name === 'string' && header.name.toLowerCase() === target);
+  if (!entry || typeof entry.value !== 'string') {
+    return null;
+  }
+  return entry.value.trim() || null;
+}
+
+function gmailAttachmentKey(messageId, attachment) {
+  const attachmentId = attachment?.attachmentId || attachment?.partId || 'attachment';
+  return [messageId || 'message', attachmentId].join('::');
+}
+
+function pruneGmailProcessedMessages(processedMap, limit = 500) {
+  if (!processedMap || typeof processedMap !== 'object') {
+    return {};
+  }
+
+  const entries = Object.entries(processedMap);
+  if (entries.length <= limit) {
+    return processedMap;
+  }
+
+  entries.sort(([, a], [, b]) => {
+    const timeA = new Date(a?.processedAt || 0).getTime();
+    const timeB = new Date(b?.processedAt || 0).getTime();
+    return timeB - timeA;
+  });
+
+  const trimmed = entries.slice(0, limit);
+  return Object.fromEntries(trimmed);
+}
+
+function startGmailMonitor() {
+  if (!isGmailMonitoringConfigured()) {
+    return;
+  }
+
+  if (gmailPollingTimer) {
+    clearInterval(gmailPollingTimer);
+  }
+
+  const tick = () => {
+    pollAllGmailCompanies().catch((error) => {
+      console.error('Scheduled Gmail polling failed', error);
+    });
+  };
+
+  tick();
+  gmailPollingTimer = setInterval(tick, GMAIL_DEFAULT_POLL_INTERVAL_MS);
+  console.log(
+    `Gmail inbox monitoring enabled (base interval ${Math.max(Math.round(GMAIL_DEFAULT_POLL_INTERVAL_MS / 1000), 1)}s)`
   );
 }
 
@@ -950,7 +2081,7 @@ app.delete('/api/quickbooks/companies/:realmId/onedrive', async (req, res) => {
   }
 });
 
-app.post('/api/quickbooks/companies/:realmId/onedrive/sync', async (req, res) => {
+async function handleOneDriveSyncRequest(req, res, { forceFullDefault = false } = {}) {
   const realmId = req.params.realmId;
   if (!realmId) {
     return res.status(400).json({ error: 'Realm ID is required.' });
@@ -960,23 +2091,289 @@ app.post('/api/quickbooks/companies/:realmId/onedrive/sync', async (req, res) =>
     return res.status(503).json({ error: 'OneDrive integration is not configured on the server.' });
   }
 
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const query = req.query || {};
+  const forceIndicators = [body.forceFull, query.forceFull];
+  const wantsFullResync =
+    forceFullDefault || forceIndicators.some((value) => value === true || value === 'true' || value === '1');
+
   try {
     const company = await getQuickBooksCompanyRecord(realmId);
     if (!company) {
       return res.status(404).json({ error: 'QuickBooks company not found.' });
     }
 
-    queueOneDrivePoll(realmId, { reason: 'manual' }).catch((error) => {
-      console.warn(`Unable to trigger manual OneDrive sync for ${realmId}`, error.message || error);
+    const state = ensureOneDriveStateDefaults(company.oneDrive);
+    let responseCompany = company;
+
+    if (wantsFullResync) {
+      if (!state || state.enabled === false || !state.driveId || !state.folderId) {
+        return res
+          .status(409)
+          .json({ error: 'Configure an active OneDrive folder before requesting a full resync.' });
+      }
+
+      responseCompany = await updateQuickBooksCompanyOneDrive(realmId, {
+        deltaLink: null,
+        lastSyncStatus: null,
+        lastSyncError: null,
+        lastSyncMetrics: null,
+        lastSyncReason: 'full-resync',
+      });
+    }
+
+    const syncReason = wantsFullResync ? 'full-resync' : 'manual';
+    const failureLabel = wantsFullResync ? 'full OneDrive resync' : 'manual OneDrive sync';
+
+    queueOneDrivePoll(realmId, { reason: syncReason, forceFull: wantsFullResync }).catch((error) => {
+      console.warn(`Unable to trigger ${failureLabel} for ${realmId}`, error.message || error);
     });
 
-    return res.status(202).json({ accepted: true, oneDrive: sanitizeOneDriveSettings(company.oneDrive) });
+    return res
+      .status(202)
+      .json({ accepted: true, oneDrive: sanitizeOneDriveSettings(responseCompany?.oneDrive) });
   } catch (error) {
     if (error.code === 'NOT_FOUND') {
       return res.status(404).json({ error: 'QuickBooks company not found.' });
     }
-    console.error('Failed to schedule OneDrive sync', error);
-    return res.status(500).json({ error: 'Failed to schedule OneDrive sync.' });
+    console.error(
+      wantsFullResync ? 'Failed to schedule OneDrive full resync' : 'Failed to schedule OneDrive sync',
+      error
+    );
+    return res.status(500).json({
+      error: wantsFullResync ? 'Failed to schedule OneDrive full resync.' : 'Failed to schedule OneDrive sync.',
+    });
+  }
+}
+
+app.post('/api/quickbooks/companies/:realmId/onedrive/sync', (req, res) =>
+  handleOneDriveSyncRequest(req, res)
+);
+
+app.post('/api/quickbooks/companies/:realmId/onedrive/resync', (req, res) =>
+  handleOneDriveSyncRequest(req, res, { forceFullDefault: true })
+);
+
+app.post('/api/quickbooks/companies/:realmId/gmail/auth-url', async (req, res) => {
+  if (!isGmailMonitoringConfigured()) {
+    return res.status(503).json({ error: 'Gmail OAuth client is not configured on the server.' });
+  }
+
+  const realmId = req.params.realmId;
+  if (!realmId) {
+    return res.status(400).json({ error: 'Realm ID is required.' });
+  }
+
+  const company = await getQuickBooksCompanyRecord(realmId);
+  if (!company) {
+    return res.status(404).json({ error: 'QuickBooks company not found.' });
+  }
+
+  const emailInput = typeof req.body?.email === 'string' ? req.body.email.trim() : '';
+  const state = createGmailOAuthState(realmId, { email: emailInput });
+
+  const authorizeUrl = new URL(GMAIL_AUTH_URL);
+  authorizeUrl.searchParams.set('client_id', GMAIL_CLIENT_ID);
+  authorizeUrl.searchParams.set('response_type', 'code');
+  authorizeUrl.searchParams.set('scope', GMAIL_SCOPES);
+  authorizeUrl.searchParams.set('redirect_uri', GMAIL_REDIRECT_URI);
+  authorizeUrl.searchParams.set('state', state);
+  authorizeUrl.searchParams.set('access_type', 'offline');
+  authorizeUrl.searchParams.set('prompt', 'consent');
+  authorizeUrl.searchParams.set('include_granted_scopes', 'true');
+  if (emailInput) {
+    authorizeUrl.searchParams.set('login_hint', emailInput);
+  }
+
+  res.json({ url: authorizeUrl.toString(), state });
+});
+
+app.patch('/api/quickbooks/companies/:realmId/gmail', async (req, res) => {
+  if (!isGmailMonitoringConfigured()) {
+    return res.status(503).json({ error: 'Gmail OAuth client is not configured on the server.' });
+  }
+
+  const realmId = req.params.realmId;
+  if (!realmId) {
+    return res.status(400).json({ error: 'Realm ID is required.' });
+  }
+
+  const company = await getQuickBooksCompanyRecord(realmId);
+  if (!company) {
+    return res.status(404).json({ error: 'QuickBooks company not found.' });
+  }
+
+  const body = req.body || {};
+  const updates = {};
+
+  if (body.email !== undefined) {
+    if (body.email === null) {
+      updates.email = null;
+    } else if (typeof body.email === 'string' && body.email.trim()) {
+      updates.email = body.email.trim();
+    } else {
+      return res.status(400).json({ error: 'Email must be a non-empty string when provided.' });
+    }
+  }
+
+  if (body.enabled !== undefined) {
+    updates.enabled = body.enabled !== false;
+  }
+
+  if (body.searchQuery !== undefined) {
+    if (body.searchQuery === null) {
+      updates.searchQuery = null;
+    } else if (typeof body.searchQuery === 'string') {
+      updates.searchQuery = body.searchQuery.trim();
+    } else {
+      return res.status(400).json({ error: 'searchQuery must be a string when provided.' });
+    }
+  }
+
+  if (body.labelIds !== undefined) {
+    let labels;
+    if (Array.isArray(body.labelIds)) {
+      labels = body.labelIds;
+    } else if (typeof body.labelIds === 'string') {
+      labels = parseDelimitedList(body.labelIds);
+    } else {
+      return res.status(400).json({ error: 'labelIds must be a string or array of labels.' });
+    }
+    updates.labelIds = labels;
+  }
+
+  if (body.allowedMimeTypes !== undefined) {
+    let allowed;
+    if (Array.isArray(body.allowedMimeTypes)) {
+      allowed = body.allowedMimeTypes;
+    } else if (typeof body.allowedMimeTypes === 'string') {
+      allowed = parseDelimitedList(body.allowedMimeTypes);
+    } else {
+      return res.status(400).json({ error: 'allowedMimeTypes must be a string or array of MIME types.' });
+    }
+    updates.allowedMimeTypes = allowed;
+  }
+
+  if (body.pollIntervalMs !== undefined) {
+    const interval = Number.parseInt(body.pollIntervalMs, 10);
+    if (!Number.isFinite(interval) || interval < GMAIL_POLL_MIN_INTERVAL_MS) {
+      return res
+        .status(400)
+        .json({ error: `pollIntervalMs must be a number greater than or equal to ${GMAIL_POLL_MIN_INTERVAL_MS}.` });
+    }
+    updates.pollIntervalMs = interval;
+  }
+
+  if (body.maxAttachmentBytes !== undefined) {
+    const maxBytes = Number.parseInt(body.maxAttachmentBytes, 10);
+    if (!Number.isFinite(maxBytes) || maxBytes < 1024) {
+      return res.status(400).json({ error: 'maxAttachmentBytes must be a number >= 1024.' });
+    }
+    updates.maxAttachmentBytes = maxBytes;
+  }
+
+  if (body.maxResults !== undefined) {
+    const maxResults = Number.parseInt(body.maxResults, 10);
+    if (!Number.isFinite(maxResults) || maxResults <= 0) {
+      return res.status(400).json({ error: 'maxResults must be a positive number.' });
+    }
+    updates.maxResults = maxResults;
+  }
+
+  if (body.businessType !== undefined) {
+    if (body.businessType === null) {
+      updates.businessType = null;
+    } else if (typeof body.businessType === 'string') {
+      updates.businessType = body.businessType.trim().slice(0, 120) || null;
+    } else {
+      return res.status(400).json({ error: 'businessType must be a string when provided.' });
+    }
+  }
+
+  const currentConfig = ensureGmailConfigDefaults(company.gmail);
+  const willEnable = updates.enabled !== undefined
+    ? updates.enabled
+    : currentConfig
+      ? currentConfig.enabled !== false
+      : false;
+  if (willEnable && !(currentConfig?.refreshToken || updates.refreshToken)) {
+    return res.status(409).json({ error: 'Connect Gmail before enabling inbox monitoring.' });
+  }
+
+  try {
+    const updated = await updateQuickBooksCompanyGmail(realmId, updates);
+    const gmailConfig = ensureGmailConfigDefaults(updated.gmail);
+    if (gmailConfig?.enabled && gmailConfig.refreshToken) {
+      queueGmailPoll(realmId, { reason: 'configuration' }).catch((error) => {
+        console.warn(`Unable to trigger Gmail sync for ${realmId}`, error.message || error);
+      });
+    }
+    res.json({ gmail: sanitizeGmailSettings(updated.gmail) });
+  } catch (error) {
+    if (error.code === 'NOT_FOUND') {
+      return res.status(404).json({ error: 'QuickBooks company not found.' });
+    }
+    console.error('Failed to update Gmail settings', error);
+    res.status(500).json({ error: 'Failed to update Gmail settings.' });
+  }
+});
+
+app.delete('/api/quickbooks/companies/:realmId/gmail', async (req, res) => {
+  const realmId = req.params.realmId;
+  if (!realmId) {
+    return res.status(400).json({ error: 'Realm ID is required.' });
+  }
+
+  try {
+    await updateQuickBooksCompanyGmail(realmId, null, { replace: true });
+    gmailTokenCache.delete(realmId);
+    try {
+      await deleteCompanyGmailState(realmId);
+    } catch (stateError) {
+      console.warn(`Unable to remove Gmail polling state for ${realmId}`, stateError.message || stateError);
+    }
+    res.json({ gmail: null });
+  } catch (error) {
+    if (error.code === 'NOT_FOUND') {
+      return res.status(404).json({ error: 'QuickBooks company not found.' });
+    }
+    console.error('Failed to remove Gmail settings', error);
+    res.status(500).json({ error: 'Failed to remove Gmail settings.' });
+  }
+});
+
+app.post('/api/quickbooks/companies/:realmId/gmail/sync', async (req, res) => {
+  if (!isGmailMonitoringConfigured()) {
+    return res.status(503).json({ error: 'Gmail OAuth client is not configured on the server.' });
+  }
+
+  const realmId = req.params.realmId;
+  if (!realmId) {
+    return res.status(400).json({ error: 'Realm ID is required.' });
+  }
+
+  const company = await getQuickBooksCompanyRecord(realmId);
+  if (!company) {
+    return res.status(404).json({ error: 'QuickBooks company not found.' });
+  }
+
+  const gmailConfig = ensureGmailConfigDefaults(company.gmail);
+  if (!gmailConfig?.enabled) {
+    return res.status(400).json({ error: 'Enable Gmail monitoring before requesting a manual sync.' });
+  }
+
+  if (!gmailConfig.refreshToken) {
+    return res.status(409).json({ error: 'Connect Gmail to obtain a refresh token before syncing.' });
+  }
+
+  try {
+    queueGmailPoll(realmId, { reason: 'manual' }).catch((error) => {
+      console.warn(`Unable to trigger manual Gmail sync for ${realmId}`, error.message || error);
+    });
+    res.status(202).json({ accepted: true, gmail: sanitizeGmailSettings(gmailConfig) });
+  } catch (error) {
+    console.error('Failed to schedule Gmail sync', error);
+    res.status(500).json({ error: 'Failed to schedule Gmail sync.' });
   }
 });
 
@@ -1558,6 +2955,10 @@ quickBooksCallbackPaths.forEach((callbackPath) => {
   app.get(callbackPath, handleQuickBooksCallback);
 });
 
+gmailCallbackPaths.forEach((callbackPath) => {
+  app.get(callbackPath, handleGmailCallback);
+});
+
 async function handleQuickBooksCallback(req, res) {
   const { code, state, realmId } = req.query;
   if (!code || !state || !realmId) {
@@ -1610,6 +3011,87 @@ async function handleQuickBooksCallback(req, res) {
   }
 }
 
+function createGmailOAuthState(realmId, payload = {}) {
+  const state = crypto.randomBytes(16).toString('hex');
+  const now = Date.now();
+  gmailStates.set(state, { realmId, createdAt: now, ...payload });
+  for (const [key, entry] of gmailStates.entries()) {
+    if (now - entry.createdAt > GMAIL_STATE_TTL_MS) {
+      gmailStates.delete(key);
+    }
+  }
+  return state;
+}
+
+function consumeGmailOAuthState(state) {
+  if (!state) {
+    return null;
+  }
+
+  const entry = gmailStates.get(state);
+  if (!entry) {
+    return null;
+  }
+
+  gmailStates.delete(state);
+  if (Date.now() - entry.createdAt > GMAIL_STATE_TTL_MS) {
+    return null;
+  }
+
+  return entry;
+}
+
+async function handleGmailCallback(req, res) {
+  const { code, state } = req.query;
+  if (!code || !state) {
+    return res.status(400).send('Missing required parameters from Gmail.');
+  }
+
+  const entry = consumeGmailOAuthState(state);
+  if (!entry?.realmId) {
+    return res.status(400).send('Gmail authorization state is invalid or has expired. Please try again.');
+  }
+
+  const realmId = entry.realmId;
+
+  try {
+    const tokenSet = await exchangeGmailCode(code);
+    if (!tokenSet.refreshToken) {
+      throw new Error('Gmail authorization did not return a refresh token. Ensure offline access is granted.');
+    }
+
+    const updatePayload = {
+      refreshToken: tokenSet.refreshToken,
+      enabled: true,
+      status: 'connected',
+      lastSyncStatus: null,
+      lastSyncError: null,
+      lastSyncAt: null,
+      lastSyncMetrics: null,
+      lastSyncReason: 'oauth',
+      lastConnectedAt: new Date().toISOString(),
+      email: entry.email ? entry.email.trim() : null,
+      historyId: null,
+    };
+
+    const updated = await updateQuickBooksCompanyGmail(realmId, updatePayload);
+    gmailTokenCache.delete(realmId);
+    try {
+      await deleteCompanyGmailState(realmId);
+    } catch (stateError) {
+      console.warn(`Unable to reset Gmail polling state for ${realmId}`, stateError.message || stateError);
+    }
+
+    const companyName = updated?.companyName || updated?.legalName || realmId;
+    return res.redirect(
+      `/?gmail=connected&realmId=${encodeURIComponent(realmId)}&company=${encodeURIComponent(companyName)}`
+    );
+  } catch (error) {
+    console.error('Gmail OAuth callback failed', error);
+    return res.redirect(`/?gmail=error&message=${encodeURIComponent('Failed to connect Gmail inbox.')}`);
+  }
+}
+
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found' });
 });
@@ -1626,6 +3108,14 @@ if (isOneDriveSyncConfigured()) {
   startOneDriveSyncScheduler();
 } else if (process.env.MS_GRAPH_CLIENT_ID || process.env.MS_GRAPH_CLIENT_SECRET || process.env.MS_GRAPH_TENANT_ID) {
   console.warn('OneDrive sync is not enabled. Provide MS_GRAPH_CLIENT_ID, MS_GRAPH_CLIENT_SECRET, and MS_GRAPH_TENANT_ID to activate folder monitoring.');
+}
+
+if (isGmailMonitoringConfigured()) {
+  startGmailMonitor();
+} else if (GMAIL_CLIENT_ID || GMAIL_CLIENT_SECRET) {
+  console.warn(
+    'Gmail monitoring is not enabled. Provide both GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET to activate inbox polling.'
+  );
 }
 
 async function exchangeQuickBooksCode(code) {
@@ -1673,6 +3163,51 @@ async function exchangeQuickBooksCode(code) {
     refreshTokenExpiresAt: data.refresh_token_expires_in
       ? new Date(now + data.refresh_token_expires_in * 1000).toISOString()
       : null,
+  };
+}
+
+async function exchangeGmailCode(code) {
+  if (!isGmailMonitoringConfigured()) {
+    throw new Error('Gmail OAuth client is not configured.');
+  }
+
+  const params = new URLSearchParams({
+    code,
+    client_id: GMAIL_CLIENT_ID,
+    client_secret: GMAIL_CLIENT_SECRET,
+    redirect_uri: GMAIL_REDIRECT_URI,
+    grant_type: 'authorization_code',
+  });
+
+  const response = await fetch(GMAIL_TOKEN_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: params.toString(),
+  });
+
+  if (!response.ok) {
+    const errorBody = await safeReadJson(response);
+    const message =
+      errorBody?.error_description ||
+      errorBody?.error ||
+      `Gmail token exchange failed with status ${response.status}`;
+    const error = new Error(message);
+    error.body = errorBody;
+    error.status = response.status;
+    throw error;
+  }
+
+  const data = await response.json();
+  const now = Date.now();
+
+  return {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token || null,
+    scope: data.scope || null,
+    tokenType: data.token_type || null,
+    expiresAt: data.expires_in ? new Date(now + data.expires_in * 1000).toISOString() : null,
   };
 }
 
@@ -1737,6 +3272,7 @@ async function storeQuickBooksCompany({ realmId, companyName, legalName, tokens 
   };
 
   record.oneDrive = ensureOneDriveStateDefaults(record.oneDrive || existing.oneDrive || null);
+  record.gmail = ensureGmailConfigDefaults(record.gmail || existing.gmail || null);
 
   if (existingIndex >= 0) {
     companies[existingIndex] = record;
@@ -1771,6 +3307,7 @@ async function updateQuickBooksCompanyFields(realmId, updates) {
   };
 
   next.oneDrive = ensureOneDriveStateDefaults(next.oneDrive || companies[index].oneDrive || null);
+  next.gmail = ensureGmailConfigDefaults(next.gmail || companies[index].gmail || null);
 
   companies[index] = next;
   await persistQuickBooksCompanies(companies);
@@ -1825,6 +3362,70 @@ async function updateQuickBooksCompanyOneDrive(realmId, updates, { replace = fal
     updatedAt: now,
   };
 
+  companies[index].gmail = ensureGmailConfigDefaults(companies[index].gmail || null);
+
+  await persistQuickBooksCompanies(companies);
+  return companies[index];
+}
+
+async function updateQuickBooksCompanyGmail(realmId, updates, { replace = false } = {}) {
+  const companies = await readQuickBooksCompanies();
+  const index = companies.findIndex((entry) => entry.realmId === realmId);
+
+  if (index < 0) {
+    const error = new Error('QuickBooks company not found.');
+    error.code = 'NOT_FOUND';
+    throw error;
+  }
+
+  const now = new Date().toISOString();
+  const currentNormalised = normalizeGmailConfig(companies[index].gmail || null);
+  const current = ensureGmailConfigDefaults(currentNormalised);
+  let nextState = null;
+
+  if (replace) {
+    const replacement = normalizeGmailConfig(updates);
+    nextState = replacement ? ensureGmailConfigDefaults(replacement) : null;
+    if (nextState) {
+      nextState.updatedAt = now;
+      if (!nextState.createdAt) {
+        nextState.createdAt = now;
+      }
+      if (nextState.refreshToken) {
+        nextState.lastConnectedAt = nextState.lastConnectedAt || now;
+      }
+    }
+  } else {
+    const updateFragment = normalizeGmailConfig(updates || {});
+    if (current || (updateFragment && Object.keys(updateFragment).length)) {
+      const merged = {
+        ...(current || {}),
+        ...(updateFragment || {}),
+        updatedAt: now,
+      };
+
+      if (!updateFragment?.refreshToken && current?.refreshToken) {
+        merged.refreshToken = current.refreshToken;
+      }
+
+      if (!merged.createdAt) {
+        merged.createdAt = current?.createdAt || now;
+      }
+
+      if (updateFragment?.refreshToken) {
+        merged.lastConnectedAt = now;
+      }
+
+      nextState = ensureGmailConfigDefaults(merged);
+    }
+  }
+
+  companies[index] = {
+    ...companies[index],
+    gmail: nextState,
+    updatedAt: now,
+  };
+
   await persistQuickBooksCompanies(companies);
   return companies[index];
 }
@@ -1850,6 +3451,7 @@ async function updateQuickBooksCompanyTokens(realmId, tokens) {
   };
 
   companies[index].oneDrive = ensureOneDriveStateDefaults(companies[index].oneDrive || null);
+  companies[index].gmail = ensureGmailConfigDefaults(companies[index].gmail || null);
 
   await persistQuickBooksCompanies(companies);
   return companies[index];
@@ -2666,11 +4268,12 @@ function sanitizeQuickBooksCompany(company) {
     return company;
   }
 
-  const { tokens, oneDrive, ...rest } = company;
+  const { tokens, oneDrive, gmail, ...rest } = company;
   return {
     ...rest,
     businessType: rest.businessType ?? null,
     oneDrive: sanitizeOneDriveSettings(oneDrive),
+    gmail: sanitizeGmailSettings(gmail),
   };
 }
 
@@ -2681,6 +4284,16 @@ function sanitizeOneDriveSettings(config) {
   }
 
   const { deltaLink, clientState, ...rest } = normalized;
+  return rest;
+}
+
+function sanitizeGmailSettings(config) {
+  const normalized = ensureGmailConfigDefaults(config);
+  if (!normalized) {
+    return null;
+  }
+
+  const { refreshToken, ...rest } = normalized;
   return rest;
 }
 
@@ -2759,8 +4372,24 @@ function normalizeOneDriveState(config) {
     result.parentId = sanitiseOptionalString(config.parentId);
   }
 
+  if (Object.prototype.hasOwnProperty.call(config, 'processedFolderId')) {
+    result.processedFolderId = sanitiseOptionalString(config.processedFolderId);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'processedFolderName')) {
+    result.processedFolderName = sanitiseOptionalString(config.processedFolderName);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'processedFolderPath')) {
+    result.processedFolderPath = sanitiseOptionalString(config.processedFolderPath);
+  }
+
   if (Object.prototype.hasOwnProperty.call(config, 'deltaLink')) {
     result.deltaLink = sanitiseOptionalString(config.deltaLink);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'lastSyncLog')) {
+    result.lastSyncLog = normalizeOneDriveSyncLog(config.lastSyncLog);
   }
 
   if (Object.prototype.hasOwnProperty.call(config, 'lastSyncAt')) {
@@ -2841,6 +4470,7 @@ function normalizeOneDriveMetrics(metrics) {
   const processedItems = Number.isFinite(metrics.processedItems) ? Number(metrics.processedItems) : 0;
   const createdCount = Number.isFinite(metrics.createdCount) ? Number(metrics.createdCount) : 0;
   const skippedCount = Number.isFinite(metrics.skippedCount) ? Number(metrics.skippedCount) : 0;
+  const duplicateCount = Number.isFinite(metrics.duplicateCount) ? Number(metrics.duplicateCount) : 0;
   const pages = Number.isFinite(metrics.pages) ? Number(metrics.pages) : 0;
   const errorCount = Number.isFinite(metrics.errorCount) ? Number(metrics.errorCount) : 0;
 
@@ -2848,8 +4478,194 @@ function normalizeOneDriveMetrics(metrics) {
     processedItems,
     createdCount,
     skippedCount,
+    duplicateCount,
     pages,
     errorCount,
+  };
+}
+
+function normalizeOneDriveSyncLog(log) {
+  if (!Array.isArray(log)) {
+    return null;
+  }
+
+  const entries = log
+    .map((entry) => sanitiseOptionalString(entry))
+    .filter(Boolean);
+
+  if (!entries.length) {
+    return null;
+  }
+
+  return entries.slice(-20);
+}
+
+function isOneDriveDeltaResetError(error) {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+
+  if (error.status === 410) {
+    return true;
+  }
+
+  const code = sanitiseOptionalString(error?.body?.error?.code)?.toLowerCase();
+  if (code && code.includes('resyncrequired')) {
+    return true;
+  }
+
+  const message = sanitiseOptionalString(error.message)?.toLowerCase();
+  return Boolean(message && message.includes('resync required'));
+}
+
+function ensureGmailConfigDefaults(config) {
+  const normalized = normalizeGmailConfig(config);
+  if (!normalized) {
+    return null;
+  }
+
+  const result = { ...normalized };
+  result.enabled = result.enabled !== false;
+  result.searchQuery = result.searchQuery || GMAIL_DEFAULT_SEARCH_QUERY;
+  result.labelIds = Array.isArray(result.labelIds) ? result.labelIds : [];
+  result.pollIntervalMs = Math.max(
+    Number.isFinite(result.pollIntervalMs) ? result.pollIntervalMs : GMAIL_DEFAULT_POLL_INTERVAL_MS,
+    GMAIL_POLL_MIN_INTERVAL_MS
+  );
+  result.maxResults = Number.isFinite(result.maxResults) && result.maxResults > 0
+    ? Math.floor(result.maxResults)
+    : GMAIL_DEFAULT_MAX_RESULTS;
+  result.maxAttachmentBytes = Math.max(
+    Number.isFinite(result.maxAttachmentBytes) ? result.maxAttachmentBytes : GMAIL_DEFAULT_MAX_ATTACHMENT_BYTES,
+    1024
+  );
+
+  const allowed = Array.isArray(result.allowedMimeTypes) && result.allowedMimeTypes.length
+    ? result.allowedMimeTypes
+    : GMAIL_DEFAULT_ALLOWED_MIME_TYPES.slice();
+  result.allowedMimeTypes = Array.from(
+    new Set(
+      allowed
+        .map((value) => (typeof value === 'string' ? value.trim().toLowerCase() : ''))
+        .filter(Boolean)
+    )
+  );
+
+  result.lastSyncError = normalizeGmailSyncError(result.lastSyncError);
+  result.lastSyncMetrics = normalizeGmailMetrics(result.lastSyncMetrics);
+
+  if (!result.createdAt) {
+    result.createdAt = new Date().toISOString();
+  }
+
+  if (!result.updatedAt) {
+    result.updatedAt = result.createdAt;
+  }
+
+  return result;
+}
+
+function normalizeGmailConfig(config) {
+  if (!config || typeof config !== 'object') {
+    return null;
+  }
+
+  const result = {};
+
+  if (Object.prototype.hasOwnProperty.call(config, 'enabled')) {
+    result.enabled = config.enabled === false ? false : true;
+  }
+
+  result.email = sanitiseOptionalString(config.email);
+
+  if (Object.prototype.hasOwnProperty.call(config, 'refreshToken')) {
+    const token = sanitiseOptionalString(config.refreshToken);
+    result.refreshToken = token;
+  }
+
+  result.searchQuery = sanitiseOptionalString(config.searchQuery);
+
+  if (Object.prototype.hasOwnProperty.call(config, 'labelIds')) {
+    const labels = Array.isArray(config.labelIds)
+      ? config.labelIds
+      : parseDelimitedList(config.labelIds);
+    result.labelIds = labels.map((value) => sanitiseOptionalString(value)).filter(Boolean);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'pollIntervalMs')) {
+    const interval = Number.parseInt(config.pollIntervalMs, 10);
+    result.pollIntervalMs = Number.isFinite(interval) ? interval : null;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'maxResults')) {
+    const maxResults = Number.parseInt(config.maxResults, 10);
+    result.maxResults = Number.isFinite(maxResults) ? maxResults : null;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'maxAttachmentBytes')) {
+    const maxBytes = Number.parseInt(config.maxAttachmentBytes, 10);
+    result.maxAttachmentBytes = Number.isFinite(maxBytes) ? maxBytes : null;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'allowedMimeTypes')) {
+    const allowed = Array.isArray(config.allowedMimeTypes)
+      ? config.allowedMimeTypes
+      : parseDelimitedList(config.allowedMimeTypes);
+    result.allowedMimeTypes = allowed.map((value) => sanitiseOptionalString(value)).filter(Boolean);
+  }
+
+  result.status = sanitiseOptionalString(config.status);
+  result.lastSyncAt = sanitiseIsoString(config.lastSyncAt);
+  result.lastSyncStatus = sanitiseOptionalString(config.lastSyncStatus);
+  result.lastSyncReason = sanitiseOptionalString(config.lastSyncReason);
+  result.lastSyncError = normalizeGmailSyncError(config.lastSyncError);
+  result.lastSyncMetrics = normalizeGmailMetrics(config.lastSyncMetrics);
+  result.historyId = sanitiseOptionalString(config.historyId);
+  result.createdAt = sanitiseIsoString(config.createdAt);
+  result.updatedAt = sanitiseIsoString(config.updatedAt);
+  result.lastConnectedAt = sanitiseIsoString(config.lastConnectedAt);
+  result.businessType = sanitiseOptionalString(config.businessType);
+
+  return result;
+}
+
+function normalizeGmailSyncError(error) {
+  if (!error || typeof error !== 'object') {
+    return null;
+  }
+
+  const message = sanitiseOptionalString(error.message);
+  if (!message) {
+    return null;
+  }
+
+  const at = sanitiseIsoString(error.at || error.timestamp) || new Date().toISOString();
+  const code = sanitiseOptionalString(error.code);
+
+  return {
+    message,
+    at,
+    code: code || null,
+  };
+}
+
+function normalizeGmailMetrics(metrics) {
+  if (!metrics || typeof metrics !== 'object') {
+    return null;
+  }
+
+  const processedMessages = Number.isFinite(metrics.processedMessages) ? Number(metrics.processedMessages) : 0;
+  const processedAttachments = Number.isFinite(metrics.processedAttachments) ? Number(metrics.processedAttachments) : 0;
+  const skippedAttachments = Number.isFinite(metrics.skippedAttachments) ? Number(metrics.skippedAttachments) : 0;
+  const errorCount = Number.isFinite(metrics.errorCount) ? Number(metrics.errorCount) : 0;
+  const durationMs = Number.isFinite(metrics.durationMs) ? Number(metrics.durationMs) : null;
+
+  return {
+    processedMessages,
+    processedAttachments,
+    skippedAttachments,
+    errorCount,
+    durationMs,
   };
 }
 
@@ -3320,9 +5136,39 @@ function normalizeRemoteSourceMetadata(remoteSource) {
     eTag: sanitiseOptionalString(remoteSource.eTag || remoteSource.etag),
     lastModifiedDateTime: sanitiseOptionalString(remoteSource.lastModifiedDateTime),
     syncedAt,
+    reason: sanitiseOptionalString(remoteSource.reason),
   };
 
-  if (!entry.itemId && !entry.webUrl && !entry.path) {
+  if (provider === 'gmail') {
+    entry.messageId = sanitiseOptionalString(remoteSource.messageId);
+    entry.threadId = sanitiseOptionalString(remoteSource.threadId);
+    entry.attachmentId = sanitiseOptionalString(remoteSource.attachmentId);
+    entry.filename = sanitiseOptionalString(remoteSource.filename);
+    entry.mimeType = sanitiseOptionalString(remoteSource.mimeType);
+    entry.historyId = sanitiseOptionalString(remoteSource.historyId);
+    entry.subject = sanitiseOptionalString(remoteSource.subject);
+    entry.from = sanitiseOptionalString(remoteSource.from);
+    entry.snippet = sanitiseOptionalString(remoteSource.snippet);
+    entry.receivedAt = sanitiseOptionalString(remoteSource.receivedAt);
+    entry.email = sanitiseOptionalString(remoteSource.email);
+    const attachmentSize = remoteSource.attachmentSize;
+    entry.attachmentSize = typeof attachmentSize === 'number' && Number.isFinite(attachmentSize) ? attachmentSize : null;
+
+    if (Array.isArray(remoteSource.labelIds)) {
+      const labels = remoteSource.labelIds
+        .map((value) => sanitiseOptionalString(value))
+        .filter(Boolean);
+      entry.labelIds = labels.length ? labels : null;
+    } else {
+      entry.labelIds = null;
+    }
+
+    if (!entry.itemId && entry.messageId && entry.attachmentId) {
+      entry.itemId = `${entry.messageId}::${entry.attachmentId}`;
+    }
+  }
+
+  if (!entry.itemId && !entry.webUrl && !entry.path && !entry.messageId) {
     return null;
   }
 
@@ -3348,6 +5194,19 @@ function isSameRemoteSource(existing, candidate) {
     }
     if (existing.webUrl && candidate.webUrl && existing.webUrl === candidate.webUrl) {
       return true;
+    }
+    return false;
+  }
+
+  if (existing.provider === 'gmail') {
+    if (existing.itemId && candidate.itemId && existing.itemId === candidate.itemId) {
+      return true;
+    }
+    if (existing.messageId && candidate.messageId && existing.messageId === candidate.messageId) {
+      if (!existing.attachmentId || !candidate.attachmentId) {
+        return true;
+      }
+      return existing.attachmentId === candidate.attachmentId;
     }
     return false;
   }
@@ -4173,6 +6032,40 @@ function deriveMimeTypeFromExtension(extension) {
     '.xml': 'application/xml',
   };
   return map[extension?.toLowerCase?.()] || 'application/octet-stream';
+}
+
+function decodeBase64Url(value) {
+  if (typeof value !== 'string' || !value) {
+    return Buffer.alloc(0);
+  }
+
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+  const padLength = normalized.length % 4;
+  const padded = padLength ? normalized + '='.repeat(4 - padLength) : normalized;
+  return Buffer.from(padded, 'base64');
+}
+
+function parseDelimitedList(value) {
+  if (value === undefined || value === null) {
+    return [];
+  }
+
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => {
+        if (typeof entry === 'string') {
+          return entry.trim();
+        }
+        return String(entry || '').trim();
+      })
+      .filter(Boolean);
+  }
+
+  const text = String(value).replace(/[;\r\n]+/g, ',');
+  return text
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 }
 
 async function findStoredInvoiceByChecksum(checksum) {

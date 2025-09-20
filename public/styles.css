@@ -968,7 +968,8 @@ pre {
   color: rgba(232, 237, 245, 0.8);
 }
 
-.onedrive-form {
+.onedrive-form,
+.gmail-form {
   display: flex;
   flex-direction: column;
   gap: 1rem;
@@ -993,14 +994,16 @@ pre {
   background: rgba(88, 132, 255, 0.2);
 }
 
-.onedrive-actions {
+.onedrive-actions,
+.gmail-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
   margin-top: 1rem;
 }
 
-.onedrive-status {
+.onedrive-status,
+.gmail-status {
   margin-top: 1.25rem;
   border-top: 1px solid rgba(88, 132, 255, 0.18);
   padding-top: 1.25rem;
@@ -1009,13 +1012,15 @@ pre {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
-.onedrive-status div {
+.onedrive-status div,
+.gmail-status div {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
 }
 
-.onedrive-status dt {
+.onedrive-status dt,
+.gmail-status dt {
   margin: 0;
   font-size: 0.75rem;
   letter-spacing: 0.06em;
@@ -1023,11 +1028,16 @@ pre {
   color: rgba(232, 237, 245, 0.55);
 }
 
-.onedrive-status dd {
+.onedrive-status dd,
+.gmail-status dd {
   margin: 0;
   font-size: 0.95rem;
   color: rgba(232, 237, 245, 0.88);
   word-break: break-word;
+}
+
+#onedrive-status-log {
+  white-space: pre-line;
 }
 
 .matcher-actions {
