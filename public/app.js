@@ -24,10 +24,12 @@ const dropZone = document.getElementById('invoice-drop-zone');
 const uploadInput = document.getElementById('invoice-upload-input');
 const uploadStatusList = document.getElementById('upload-status-list');
 const oneDriveForm = document.getElementById('onedrive-settings-form');
-const oneDriveShareInput = document.getElementById('onedrive-share-url');
-const oneDriveDriveIdInput = document.getElementById('onedrive-drive-id');
+const oneDriveSharedSummaryText = document.getElementById('onedrive-shared-summary-text');
 const oneDriveFolderIdInput = document.getElementById('onedrive-folder-id');
 const oneDriveFolderPathInput = document.getElementById('onedrive-folder-path');
+const oneDriveFolderNameInput = document.getElementById('onedrive-folder-name');
+const oneDriveFolderWebUrlInput = document.getElementById('onedrive-folder-weburl');
+const oneDriveFolderParentIdInput = document.getElementById('onedrive-folder-parent-id');
 const oneDriveEnabledInput = document.getElementById('onedrive-enabled');
 const oneDriveStatusContainer = document.getElementById('onedrive-status');
 const oneDriveStatusState = document.getElementById('onedrive-status-state');
@@ -39,6 +41,27 @@ const oneDriveSyncButton = document.getElementById('onedrive-sync-now');
 const oneDriveResyncButton = document.getElementById('onedrive-resync');
 const oneDriveClearButton = document.getElementById('onedrive-clear');
 const oneDriveSaveButton = document.getElementById('onedrive-save');
+const oneDriveBrowseMonitoredButton = document.getElementById('onedrive-browse-monitored');
+const oneDriveBrowseProcessedButton = document.getElementById('onedrive-browse-processed');
+const oneDriveProcessedClearButton = document.getElementById('onedrive-processed-clear');
+const oneDriveMonitoredSummary = document.getElementById('onedrive-monitored-summary');
+const oneDriveProcessedSummary = document.getElementById('onedrive-processed-summary');
+const oneDriveProcessedFolderIdInput = document.getElementById('onedrive-processed-folder-id');
+const oneDriveProcessedFolderPathInput = document.getElementById('onedrive-processed-folder-path');
+const oneDriveProcessedFolderNameInput = document.getElementById('onedrive-processed-folder-name');
+const oneDriveProcessedFolderWebUrlInput = document.getElementById('onedrive-processed-folder-weburl');
+const oneDriveProcessedFolderParentIdInput = document.getElementById('onedrive-processed-folder-parent-id');
+const oneDriveBrowseModal = document.getElementById('onedrive-browse-modal');
+const oneDriveBrowseList = document.getElementById('onedrive-browse-list');
+const oneDriveBrowseBackButton = document.getElementById('onedrive-browse-back');
+const oneDriveBrowseConfirmButton = document.getElementById('onedrive-browse-confirm');
+const oneDriveBrowseCancelButton = document.getElementById('onedrive-browse-cancel');
+const oneDriveBrowseCloseButton = document.getElementById('onedrive-browse-close');
+const oneDriveBrowseWarning = document.getElementById('onedrive-browse-warning');
+const oneDriveBrowseStatus = document.getElementById('onedrive-browse-status');
+const oneDriveBrowsePath = document.getElementById('onedrive-browse-path');
+const oneDriveBrowseTitle = document.getElementById('onedrive-browse-title');
+const oneDriveBrowseModalOverlay = oneDriveBrowseModal?.querySelector('[data-modal-dismiss]') || null;
 const gmailForm = document.getElementById('gmail-settings-form');
 const gmailEmailInput = document.getElementById('gmail-email');
 const gmailSearchInput = document.getElementById('gmail-search-query');
@@ -73,6 +96,13 @@ const reviewSelectedChecksums = new Set();
 let lastQuickBooksPreviewPayload = '';
 let quickBooksPreviewEscapeHandler = null;
 let invoicePreviewWindow = null;
+const MONITORED_DEFAULT_SUMMARY = 'No folder selected.';
+const PROCESSED_DEFAULT_SUMMARY =
+  'Processed invoices will move into a “Synced” folder inside the monitored location.';
+let oneDriveBrowseState = null;
+let lastOneDriveBrowseTrigger = null;
+let oneDriveBrowseEscapeHandler = null;
+let sharedOneDriveSettings = null;
 
 const MATCH_BADGE_LABELS = {
   exact: 'Exact match',
@@ -124,11 +154,66 @@ bootstrap();
 function bootstrap() {
   attachEventListeners();
   handleQuickBooksCallback();
+  refreshSharedOneDriveSettings();
   renderBusinessProfile();
   renderOneDriveSettings();
   renderGmailSettings();
   refreshQuickBooksCompanies();
   loadStoredInvoices();
+}
+
+async function refreshSharedOneDriveSettings() {
+  if (!oneDriveSharedSummaryText) {
+    sharedOneDriveSettings = null;
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/onedrive/settings');
+    if (!response.ok) {
+      throw new Error('Unable to load shared settings.');
+    }
+    const payload = await response.json().catch(() => ({}));
+    sharedOneDriveSettings = payload?.settings || null;
+  } catch (error) {
+    console.error('Failed to load shared OneDrive settings', error);
+    sharedOneDriveSettings = null;
+  } finally {
+    renderSharedOneDriveSummary();
+  }
+}
+
+function renderSharedOneDriveSummary() {
+  if (!oneDriveSharedSummaryText) {
+    return;
+  }
+
+  const element = oneDriveSharedSummaryText;
+  element.textContent = '';
+
+  const settings = sharedOneDriveSettings;
+  if (!settings || !settings.driveId) {
+    element.textContent = 'Shared OneDrive drive is not configured yet.';
+    return;
+  }
+
+  const label = settings.driveName || settings.driveId;
+  element.appendChild(document.createTextNode(`Using shared drive: ${label}.`));
+
+  const targetUrl = settings.driveWebUrl || settings.shareUrl;
+  if (targetUrl) {
+    const link = document.createElement('a');
+    link.href = targetUrl;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = 'Open drive';
+    element.appendChild(document.createTextNode(' '));
+    element.appendChild(link);
+  }
+
+  if (settings.status && settings.status !== 'ready') {
+    element.appendChild(document.createTextNode(` Status: ${settings.status}.`));
+  }
 }
 
 function attachEventListeners() {
@@ -168,6 +253,52 @@ function attachEventListeners() {
 
   if (oneDriveForm) {
     oneDriveForm.addEventListener('submit', handleOneDriveSettingsSave);
+  }
+
+  if (oneDriveBrowseMonitoredButton) {
+    oneDriveBrowseMonitoredButton.addEventListener('click', () => {
+      if (!oneDriveBrowseMonitoredButton.disabled) {
+        openOneDriveBrowser('monitored');
+      }
+    });
+  }
+
+  if (oneDriveBrowseProcessedButton) {
+    oneDriveBrowseProcessedButton.addEventListener('click', () => {
+      if (!oneDriveBrowseProcessedButton.disabled) {
+        openOneDriveBrowser('processed');
+      }
+    });
+  }
+
+  if (oneDriveProcessedClearButton) {
+    oneDriveProcessedClearButton.addEventListener('click', handleOneDriveProcessedClear);
+  }
+
+  if (oneDriveBrowseConfirmButton) {
+    oneDriveBrowseConfirmButton.addEventListener('click', applyOneDriveBrowserSelection);
+  }
+
+  if (oneDriveBrowseCancelButton) {
+    oneDriveBrowseCancelButton.addEventListener('click', closeOneDriveBrowser);
+  }
+
+  if (oneDriveBrowseCloseButton) {
+    oneDriveBrowseCloseButton.addEventListener('click', closeOneDriveBrowser);
+  }
+
+  if (oneDriveBrowseModalOverlay) {
+    oneDriveBrowseModalOverlay.addEventListener('click', closeOneDriveBrowser);
+  }
+
+  if (oneDriveBrowseBackButton) {
+    oneDriveBrowseBackButton.addEventListener('click', handleOneDriveBrowseBack);
+  }
+
+  if (oneDriveBrowseList) {
+    oneDriveBrowseList.addEventListener('click', handleOneDriveBrowseListClick);
+    oneDriveBrowseList.addEventListener('dblclick', handleOneDriveBrowseListDoubleClick);
+    oneDriveBrowseList.addEventListener('keydown', handleOneDriveBrowseListKeydown);
   }
 
   if (oneDriveSyncButton) {
@@ -611,24 +742,27 @@ async function refreshQuickBooksCompanies(preferredRealmId = selectedRealmId) {
   try {
     const response = await fetch('/api/quickbooks/companies');
     let payload = null;
-    let responseText = '';
+    const responseText = await response.text();
+    console.debug('[QuickBooks] /api/quickbooks/companies raw response', responseText);
 
-    try {
-      responseText = await response.text();
-      if (responseText && responseText.trim()) {
+    if (responseText && responseText.trim()) {
+      try {
         payload = JSON.parse(responseText);
-      } else {
-        payload = null;
+      } catch (parseError) {
+        console.warn('Failed to parse response from /api/quickbooks/companies', parseError);
+        const message = 'The QuickBooks companies response could not be parsed.';
+        const error = new Error(message);
+        error.cause = parseError;
+        throw error;
       }
-    } catch (parseError) {
-      console.warn('Failed to parse response from /api/quickbooks/companies', parseError);
-      payload = null;
     }
 
     if (!response.ok) {
       const message = (payload && typeof payload.error === 'string' && payload.error.trim())
         ? payload.error.trim()
-        : 'Unable to load QuickBooks companies.';
+        : responseText && responseText.trim()
+          ? responseText.trim()
+          : 'Unable to load QuickBooks companies.';
       const error = new Error(message);
       if (payload && typeof payload.code === 'string') {
         error.code = payload.code;
@@ -640,9 +774,12 @@ async function refreshQuickBooksCompanies(preferredRealmId = selectedRealmId) {
     }
 
     if (!payload || typeof payload !== 'object') {
-      payload = {};
+      throw new Error('QuickBooks companies response was empty.');
     }
-    quickBooksCompanies = Array.isArray(payload?.companies) ? payload.companies : [];
+    if (!Array.isArray(payload?.companies)) {
+      throw new Error('QuickBooks companies response did not include any connections.');
+    }
+    quickBooksCompanies = payload.companies;
 
     const activeRealms = new Set(quickBooksCompanies.map((company) => company.realmId));
     Array.from(companyMetadataCache.keys()).forEach((realmId) => {
@@ -844,6 +981,7 @@ function renderBusinessProfile() {
 }
 
 function renderOneDriveSettings() {
+  renderSharedOneDriveSummary();
   if (!oneDriveEnabledInput || !oneDriveForm) {
     return;
   }
@@ -851,26 +989,48 @@ function renderOneDriveSettings() {
   const company = getSelectedCompany();
   const hasCompany = Boolean(company);
 
-  const inputs = [
-    oneDriveShareInput,
-    oneDriveDriveIdInput,
-    oneDriveFolderIdInput,
-    oneDriveFolderPathInput,
-    oneDriveEnabledInput,
-  ];
+  oneDriveEnabledInput.disabled = !hasCompany;
 
-  inputs.forEach((input) => {
-    if (input) {
-      input.disabled = !hasCompany;
-    }
-  });
-
+  if (oneDriveBrowseMonitoredButton) {
+    oneDriveBrowseMonitoredButton.disabled = !hasCompany;
+  }
+  if (oneDriveBrowseProcessedButton) {
+    oneDriveBrowseProcessedButton.disabled = !hasCompany;
+  }
+  if (oneDriveProcessedClearButton) {
+    oneDriveProcessedClearButton.disabled = !hasCompany;
+  }
   if (oneDriveSaveButton) {
     oneDriveSaveButton.disabled = !hasCompany;
   }
 
   if (!hasCompany) {
-    oneDriveForm.reset();
+    if (oneDriveForm) {
+      oneDriveForm.reset();
+    }
+    [
+      oneDriveFolderIdInput,
+      oneDriveFolderPathInput,
+      oneDriveFolderNameInput,
+      oneDriveFolderWebUrlInput,
+      oneDriveFolderParentIdInput,
+      oneDriveProcessedFolderIdInput,
+      oneDriveProcessedFolderPathInput,
+      oneDriveProcessedFolderNameInput,
+      oneDriveProcessedFolderWebUrlInput,
+      oneDriveProcessedFolderParentIdInput,
+    ].forEach((input) => {
+      if (input) {
+        input.value = '';
+        if (input.dataset) {
+          delete input.dataset.cleared;
+        }
+      }
+    });
+    setOneDriveInputBreadcrumb(oneDriveFolderPathInput, '');
+    setOneDriveInputBreadcrumb(oneDriveProcessedFolderPathInput, '');
+    updateOneDriveSelectionPreviewFromInputs();
+    updateOneDriveProcessedSummaryFromInputs();
     if (oneDriveStatusContainer) {
       oneDriveStatusContainer.hidden = true;
     }
@@ -890,34 +1050,54 @@ function renderOneDriveSettings() {
   }
 
   const config = company.oneDrive || null;
+  const monitored = config?.monitoredFolder || null;
+  const processed = config?.processedFolder || null;
 
-  if (oneDriveShareInput) {
-    oneDriveShareInput.value = config?.shareUrl || '';
-  }
-  if (oneDriveDriveIdInput) {
-    oneDriveDriveIdInput.value = config?.driveId || '';
-  }
-  if (oneDriveFolderIdInput) {
-    oneDriveFolderIdInput.value = config?.folderId || '';
-  }
-  if (oneDriveFolderPathInput) {
-    oneDriveFolderPathInput.value = config?.folderPath || '';
+  const assignValue = (input, value) => {
+    if (input) {
+      input.value = value || '';
+    }
+  };
+
+  assignValue(oneDriveFolderIdInput, monitored?.id);
+  assignValue(oneDriveFolderPathInput, monitored?.path);
+  assignValue(oneDriveFolderNameInput, monitored?.name);
+  assignValue(oneDriveFolderWebUrlInput, monitored?.webUrl);
+  assignValue(oneDriveFolderParentIdInput, monitored?.parentId);
+  setOneDriveInputBreadcrumb(
+    oneDriveFolderPathInput,
+    deriveOneDriveBreadcrumbFromPath(monitored?.path || '')
+  );
+
+  assignValue(oneDriveProcessedFolderIdInput, processed?.id);
+  assignValue(oneDriveProcessedFolderPathInput, processed?.path);
+  assignValue(oneDriveProcessedFolderNameInput, processed?.name);
+  assignValue(oneDriveProcessedFolderWebUrlInput, processed?.webUrl);
+  assignValue(oneDriveProcessedFolderParentIdInput, processed?.parentId);
+  setOneDriveInputBreadcrumb(
+    oneDriveProcessedFolderPathInput,
+    deriveOneDriveBreadcrumbFromPath(processed?.path || '')
+  );
+  if (oneDriveProcessedFolderIdInput?.dataset) {
+    delete oneDriveProcessedFolderIdInput.dataset.cleared;
   }
 
   const isEnabled = config ? config.enabled !== false : false;
   oneDriveEnabledInput.checked = isEnabled;
 
   if (oneDriveSyncButton) {
-    oneDriveSyncButton.disabled = !config || !isEnabled || !config.driveId || !config.folderId;
+    oneDriveSyncButton.disabled = !config || !isEnabled || !monitored?.id;
   }
   if (oneDriveResyncButton) {
-    oneDriveResyncButton.disabled = !config || !isEnabled || !config.driveId || !config.folderId;
+    oneDriveResyncButton.disabled = !config || !isEnabled || !monitored?.id;
   }
   if (oneDriveClearButton) {
     oneDriveClearButton.disabled = !config;
   }
 
   if (!oneDriveStatusContainer) {
+    updateOneDriveSelectionPreviewFromInputs();
+    updateOneDriveProcessedSummaryFromInputs();
     return;
   }
 
@@ -926,6 +1106,8 @@ function renderOneDriveSettings() {
     if (oneDriveStatusLog) {
       oneDriveStatusLog.textContent = '—';
     }
+    updateOneDriveSelectionPreviewFromInputs();
+    updateOneDriveProcessedSummaryFromInputs();
     return;
   }
 
@@ -937,17 +1119,17 @@ function renderOneDriveSettings() {
 
   if (oneDriveStatusFolder) {
     const folderParts = [];
-    if (config.folderName) {
-      folderParts.push(config.folderName);
+    if (monitored?.name) {
+      folderParts.push(monitored.name);
     }
-    if (config.folderPath) {
-      folderParts.push(config.folderPath);
+    if (monitored?.path) {
+      const friendlyPath = formatOneDriveBreadcrumb(
+        deriveOneDriveBreadcrumbFromPath(monitored.path)
+      );
+      folderParts.push(friendlyPath || monitored.path);
     }
-    if (!folderParts.length && config.webUrl) {
-      folderParts.push(config.webUrl);
-    }
-    if (!folderParts.length && config.shareUrl) {
-      folderParts.push(config.shareUrl);
+    if (!folderParts.length && monitored?.webUrl) {
+      folderParts.push(monitored.webUrl);
     }
     oneDriveStatusFolder.textContent = folderParts.length ? folderParts.join(' • ') : 'Not specified';
   }
@@ -981,6 +1163,855 @@ function renderOneDriveSettings() {
       oneDriveStatusLog.textContent = entries.join('\n');
     }
   }
+
+  updateOneDriveSelectionPreviewFromInputs();
+  updateOneDriveProcessedSummaryFromInputs();
+}
+function updateOneDriveSelectionPreviewFromInputs() {
+  if (!oneDriveMonitoredSummary) {
+    return;
+  }
+
+  const folder = {
+    id: normaliseTextInput(oneDriveFolderIdInput?.value),
+    name: normaliseTextInput(oneDriveFolderNameInput?.value),
+    path: normaliseTextInput(oneDriveFolderPathInput?.value),
+    webUrl: normaliseTextInput(oneDriveFolderWebUrlInput?.value),
+  };
+  const breadcrumb = getOneDriveInputBreadcrumb(oneDriveFolderPathInput);
+
+  let summary = MONITORED_DEFAULT_SUMMARY;
+  if (folder.name || folder.path || breadcrumb) {
+    summary = buildOneDriveFolderSummary(folder.name, folder.path, folder.webUrl, MONITORED_DEFAULT_SUMMARY, breadcrumb);
+  } else if (folder.id) {
+    summary = `Folder ${folder.id}`;
+  }
+
+  oneDriveMonitoredSummary.textContent = summary;
+}
+
+function updateOneDriveProcessedSummaryFromInputs() {
+  if (!oneDriveProcessedSummary) {
+    return;
+  }
+
+  const folder = {
+    id: normaliseTextInput(oneDriveProcessedFolderIdInput?.value),
+    name: normaliseTextInput(oneDriveProcessedFolderNameInput?.value),
+    path: normaliseTextInput(oneDriveProcessedFolderPathInput?.value),
+    webUrl: normaliseTextInput(oneDriveProcessedFolderWebUrlInput?.value),
+  };
+  const breadcrumb = getOneDriveInputBreadcrumb(oneDriveProcessedFolderPathInput);
+
+  let summary = buildOneDriveFolderSummary(folder.name, folder.path, folder.webUrl, PROCESSED_DEFAULT_SUMMARY, breadcrumb);
+
+  if (!summary && folder.id) {
+    summary = `Folder ${folder.id}`;
+  }
+
+  oneDriveProcessedSummary.textContent = summary || PROCESSED_DEFAULT_SUMMARY;
+}
+
+function collectMonitoredFolderFromInputs() {
+  const id = normaliseTextInput(oneDriveFolderIdInput?.value);
+  const path = normaliseTextInput(oneDriveFolderPathInput?.value);
+  const name = normaliseTextInput(oneDriveFolderNameInput?.value);
+  const webUrl = normaliseTextInput(oneDriveFolderWebUrlInput?.value);
+  const parentId = normaliseTextInput(oneDriveFolderParentIdInput?.value);
+
+  if (!id && !path) {
+    return null;
+  }
+
+  const folder = {};
+  if (id) {
+    folder.id = id;
+  }
+  if (path) {
+    folder.path = path;
+  }
+  if (name) {
+    folder.name = name;
+  }
+  if (webUrl) {
+    folder.webUrl = webUrl;
+  }
+  if (parentId) {
+    folder.parentId = parentId;
+  }
+  return folder;
+}
+
+function collectProcessedFolderFromInputs() {
+  const id = normaliseTextInput(oneDriveProcessedFolderIdInput?.value);
+  const path = normaliseTextInput(oneDriveProcessedFolderPathInput?.value);
+  const name = normaliseTextInput(oneDriveProcessedFolderNameInput?.value);
+  const webUrl = normaliseTextInput(oneDriveProcessedFolderWebUrlInput?.value);
+  const parentId = normaliseTextInput(oneDriveProcessedFolderParentIdInput?.value);
+
+  if (!id && !path) {
+    return null;
+  }
+
+  const folder = {};
+  if (id) {
+    folder.id = id;
+  }
+  if (path) {
+    folder.path = path;
+  }
+  if (name) {
+    folder.name = name;
+  }
+  if (webUrl) {
+    folder.webUrl = webUrl;
+  }
+  if (parentId) {
+    folder.parentId = parentId;
+  }
+  return folder;
+}
+
+function deriveOneDriveBreadcrumbFromPath(rawPath) {
+  const value = typeof rawPath === 'string' ? rawPath.trim() : '';
+  if (!value) {
+    return '';
+  }
+
+  let remainder = value;
+  const drivePrefix = remainder.match(/^\/?drives\/[^/]+\/root:(.*)$/i);
+  if (drivePrefix) {
+    remainder = drivePrefix[1] || '';
+  } else {
+    const rootPrefix = remainder.match(/^\/?drive\/root:(.*)$/i);
+    if (rootPrefix) {
+      remainder = rootPrefix[1] || '';
+    }
+  }
+
+  if (remainder.startsWith('/')) {
+    remainder = remainder.slice(1);
+  }
+
+  if (!remainder) {
+    return '';
+  }
+
+  const parts = remainder.split('/').map((part) => {
+    if (!part) {
+      return part;
+    }
+    try {
+      return decodeURIComponent(part);
+    } catch (error) {
+      return part;
+    }
+  });
+
+  return parts.filter(Boolean).join('/');
+}
+
+function deriveOneDriveItemBreadcrumb(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return '';
+  }
+  const fromDisplay = typeof entry.displayPath === 'string' ? entry.displayPath.trim() : '';
+  if (fromDisplay) {
+    return fromDisplay;
+  }
+  return deriveOneDriveBreadcrumbFromPath(entry.path || '');
+}
+
+function formatOneDriveBreadcrumb(breadcrumb) {
+  const value = typeof breadcrumb === 'string' ? breadcrumb.trim() : '';
+  if (!value) {
+    return '';
+  }
+
+  return value
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(' › ');
+}
+
+function setOneDriveInputBreadcrumb(input, breadcrumb) {
+  if (!input) {
+    return;
+  }
+
+  const value = typeof breadcrumb === 'string' ? breadcrumb.trim() : '';
+  if (value) {
+    input.dataset.breadcrumb = value;
+  } else if (input.dataset && Object.prototype.hasOwnProperty.call(input.dataset, 'breadcrumb')) {
+    delete input.dataset.breadcrumb;
+  }
+}
+
+function getOneDriveInputBreadcrumb(input) {
+  if (!input) {
+    return '';
+  }
+
+  const stored = typeof input.dataset?.breadcrumb === 'string' ? input.dataset.breadcrumb.trim() : '';
+  if (stored) {
+    return stored;
+  }
+
+  return deriveOneDriveBreadcrumbFromPath(input.value);
+}
+
+function buildOneDriveFolderSummary(name, path, webUrl, fallback = '', breadcrumb = '') {
+  const parts = [];
+  if (name) {
+    parts.push(name);
+  }
+
+  const friendlyPath = formatOneDriveBreadcrumb(breadcrumb || deriveOneDriveBreadcrumbFromPath(path));
+  if (friendlyPath) {
+    parts.push(friendlyPath);
+  } else if (path) {
+    parts.push(path);
+  }
+
+  if (!parts.length && webUrl) {
+    parts.push(webUrl);
+  }
+
+  if (!parts.length) {
+    return fallback || '';
+  }
+
+  return parts.join(' • ');
+}
+
+function handleOneDriveProcessedClear() {
+  if (oneDriveProcessedClearButton?.disabled) {
+    return;
+  }
+
+  if (oneDriveProcessedFolderIdInput) {
+    oneDriveProcessedFolderIdInput.value = '';
+    if (oneDriveProcessedFolderIdInput.dataset) {
+      oneDriveProcessedFolderIdInput.dataset.cleared = 'true';
+    }
+  }
+  if (oneDriveProcessedFolderPathInput) {
+    oneDriveProcessedFolderPathInput.value = '';
+    setOneDriveInputBreadcrumb(oneDriveProcessedFolderPathInput, '');
+  }
+  if (oneDriveProcessedFolderNameInput) {
+    oneDriveProcessedFolderNameInput.value = '';
+  }
+  if (oneDriveProcessedFolderWebUrlInput) {
+    oneDriveProcessedFolderWebUrlInput.value = '';
+  }
+  if (oneDriveProcessedFolderParentIdInput) {
+    oneDriveProcessedFolderParentIdInput.value = '';
+  }
+
+  updateOneDriveProcessedSummaryFromInputs();
+}
+
+function openOneDriveBrowser(target) {
+  if (!oneDriveBrowseModal) {
+    return;
+  }
+
+  oneDriveBrowseState = {
+    target,
+    stack: [],
+    items: [],
+    selectedIndex: -1,
+    currentDriveId: null,
+    loading: false,
+    requestToken: null,
+  };
+
+  lastOneDriveBrowseTrigger =
+    target === 'processed' ? oneDriveBrowseProcessedButton || null : oneDriveBrowseMonitoredButton || null;
+
+  if (oneDriveBrowseConfirmButton) {
+    oneDriveBrowseConfirmButton.disabled = true;
+    oneDriveBrowseConfirmButton.textContent =
+      target === 'processed' ? 'Select processed folder' : 'Select folder';
+  }
+
+  if (oneDriveBrowseTitle) {
+    oneDriveBrowseTitle.textContent =
+      target === 'processed' ? 'Choose processed OneDrive folder' : 'Choose OneDrive folder';
+  }
+
+  setOneDriveBrowseWarning('');
+  setOneDriveBrowseStatus('');
+  renderOneDriveBrowserBreadcrumb();
+  renderOneDriveBrowserList([]);
+
+  oneDriveBrowseModal.hidden = false;
+  oneDriveBrowseModal.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('modal-open');
+  setOneDriveBrowseEscapeHandler(true);
+
+  if (oneDriveBrowseBackButton) {
+    oneDriveBrowseBackButton.disabled = true;
+  }
+
+  loadOneDriveDrives();
+}
+
+function closeOneDriveBrowser() {
+  if (!oneDriveBrowseModal || oneDriveBrowseModal.hidden) {
+    return;
+  }
+
+  oneDriveBrowseModal.hidden = true;
+  oneDriveBrowseModal.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('modal-open');
+  setOneDriveBrowseEscapeHandler(false);
+  setOneDriveBrowseWarning('');
+  setOneDriveBrowseStatus('');
+  if (oneDriveBrowseList) {
+    oneDriveBrowseList.innerHTML = '';
+  }
+  oneDriveBrowseState = null;
+  if (lastOneDriveBrowseTrigger) {
+    lastOneDriveBrowseTrigger.focus();
+  }
+  lastOneDriveBrowseTrigger = null;
+}
+
+function setOneDriveBrowseEscapeHandler(active) {
+  if (active) {
+    if (oneDriveBrowseEscapeHandler) {
+      return;
+    }
+    oneDriveBrowseEscapeHandler = (event) => {
+      if (event.key === 'Escape') {
+        closeOneDriveBrowser();
+      }
+    };
+    window.addEventListener('keydown', oneDriveBrowseEscapeHandler);
+  } else if (oneDriveBrowseEscapeHandler) {
+    window.removeEventListener('keydown', oneDriveBrowseEscapeHandler);
+    oneDriveBrowseEscapeHandler = null;
+  }
+}
+
+function setOneDriveBrowseWarning(message) {
+  if (!oneDriveBrowseWarning) {
+    return;
+  }
+
+  const text = typeof message === 'string' ? message.trim() : '';
+  if (!text) {
+    oneDriveBrowseWarning.hidden = true;
+    oneDriveBrowseWarning.textContent = '';
+  } else {
+    oneDriveBrowseWarning.hidden = false;
+    oneDriveBrowseWarning.textContent = text;
+  }
+}
+
+function setOneDriveBrowseStatus(message, { tone = 'info' } = {}) {
+  if (!oneDriveBrowseStatus) {
+    return;
+  }
+
+  const text = typeof message === 'string' ? message.trim() : '';
+  if (!text) {
+    oneDriveBrowseStatus.hidden = true;
+    oneDriveBrowseStatus.textContent = '';
+    oneDriveBrowseStatus.classList.remove('is-error');
+    return;
+  }
+
+  oneDriveBrowseStatus.hidden = false;
+  oneDriveBrowseStatus.textContent = text;
+  oneDriveBrowseStatus.classList.toggle('is-error', tone === 'error');
+}
+
+function setOneDriveBrowseLoading(isLoading, message) {
+  if (!oneDriveBrowseState) {
+    return;
+  }
+
+  oneDriveBrowseState.loading = Boolean(isLoading);
+
+  if (isLoading) {
+    setOneDriveBrowseStatus(message || 'Loading…');
+    if (oneDriveBrowseConfirmButton) {
+      oneDriveBrowseConfirmButton.disabled = true;
+    }
+  } else if (typeof message === 'string') {
+    setOneDriveBrowseStatus(message);
+  }
+}
+
+function renderOneDriveBrowserBreadcrumb() {
+  if (!oneDriveBrowsePath) {
+    return;
+  }
+
+  if (!oneDriveBrowseState || !Array.isArray(oneDriveBrowseState.stack) || !oneDriveBrowseState.stack.length) {
+    oneDriveBrowsePath.textContent = 'All drives';
+    return;
+  }
+
+  const parts = oneDriveBrowseState.stack
+    .map((entry) => entry?.name || entry?.id)
+    .filter((part) => typeof part === 'string' && part.trim());
+
+  oneDriveBrowsePath.textContent = parts.length ? parts.join(' / ') : 'All drives';
+}
+
+function renderOneDriveBrowserList(items) {
+  if (!oneDriveBrowseList) {
+    return;
+  }
+
+  oneDriveBrowseList.innerHTML = '';
+
+  if (!Array.isArray(items) || !items.length) {
+    const empty = document.createElement('li');
+    empty.className = 'onedrive-browser-empty';
+    const message = oneDriveBrowseState?.stack?.length
+      ? 'No subfolders found.'
+      : 'No drives available for browsing.';
+    empty.textContent = message;
+    oneDriveBrowseList.appendChild(empty);
+    if (oneDriveBrowseConfirmButton) {
+      oneDriveBrowseConfirmButton.disabled = true;
+    }
+    return;
+  }
+
+  items.forEach((item, index) => {
+    const li = document.createElement('li');
+    li.className = 'onedrive-browser-item';
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'onedrive-browser-entry';
+    button.dataset.index = String(index);
+    button.dataset.kind = item.kind;
+
+    const name = document.createElement('span');
+    name.className = 'onedrive-entry-name';
+    name.textContent = item.name || item.id;
+    button.appendChild(name);
+
+    const meta = document.createElement('span');
+    meta.className = 'onedrive-entry-meta';
+
+    if (item.kind === 'drive') {
+      const details = [item.owner, item.driveType].filter(Boolean);
+      meta.textContent = details.join(' • ');
+    } else if (item.kind === 'folder') {
+      const friendlyBreadcrumb = formatOneDriveBreadcrumb(item.breadcrumb);
+      meta.textContent =
+        friendlyBreadcrumb || (typeof item.childCount === 'number' ? `${item.childCount} items` : 'Folder');
+    }
+
+    if (meta.textContent) {
+      button.appendChild(meta);
+    }
+
+    if (oneDriveBrowseState?.selectedIndex === index) {
+      button.classList.add('is-selected');
+    }
+
+    li.appendChild(button);
+    oneDriveBrowseList.appendChild(li);
+  });
+
+  if (oneDriveBrowseConfirmButton) {
+    const selected =
+      typeof oneDriveBrowseState?.selectedIndex === 'number'
+        ? items[oneDriveBrowseState.selectedIndex] || null
+        : null;
+    oneDriveBrowseConfirmButton.disabled = !selected || selected.kind !== 'folder';
+  }
+}
+
+function selectOneDriveBrowserItem(index) {
+  if (!oneDriveBrowseState || !Array.isArray(oneDriveBrowseState.items)) {
+    return;
+  }
+
+  if (index < 0 || index >= oneDriveBrowseState.items.length) {
+    return;
+  }
+
+  const item = oneDriveBrowseState.items[index];
+  if (!item) {
+    return;
+  }
+
+  oneDriveBrowseState.selectedIndex = index;
+
+  if (oneDriveBrowseList) {
+    oneDriveBrowseList.querySelectorAll('.onedrive-browser-entry').forEach((entry, entryIndex) => {
+      if (entryIndex === index) {
+        entry.classList.add('is-selected');
+      } else {
+        entry.classList.remove('is-selected');
+      }
+    });
+  }
+
+  if (oneDriveBrowseConfirmButton) {
+    oneDriveBrowseConfirmButton.disabled = item.kind !== 'folder';
+  }
+}
+
+function handleOneDriveBrowseListClick(event) {
+  const button = event.target.closest('button.onedrive-browser-entry');
+  if (!button || !oneDriveBrowseState) {
+    return;
+  }
+
+  const index = Number.parseInt(button.dataset.index || '', 10);
+  if (!Number.isFinite(index)) {
+    return;
+  }
+
+  const item = oneDriveBrowseState.items[index];
+  if (!item) {
+    return;
+  }
+
+  if (item.kind === 'drive') {
+    enterOneDriveDrive(item);
+    return;
+  }
+
+  const wasSelected = oneDriveBrowseState.selectedIndex === index;
+  selectOneDriveBrowserItem(index);
+
+  if (item.kind === 'folder' && wasSelected) {
+    enterOneDriveFolder(item);
+  }
+}
+
+function handleOneDriveBrowseListDoubleClick(event) {
+  const button = event.target.closest('button.onedrive-browser-entry');
+  if (!button || !oneDriveBrowseState) {
+    return;
+  }
+
+  const index = Number.parseInt(button.dataset.index || '', 10);
+  if (!Number.isFinite(index)) {
+    return;
+  }
+
+  const item = oneDriveBrowseState.items[index];
+  if (!item) {
+    return;
+  }
+
+  if (item.kind === 'drive') {
+    enterOneDriveDrive(item);
+  } else if (item.kind === 'folder') {
+    enterOneDriveFolder(item);
+  }
+}
+
+function handleOneDriveBrowseListKeydown(event) {
+  if (!oneDriveBrowseState) {
+    return;
+  }
+
+  if (event.key !== 'Enter' && event.key !== 'ArrowRight') {
+    return;
+  }
+
+  const button = event.target.closest('button.onedrive-browser-entry');
+  if (!button) {
+    return;
+  }
+
+  const index = Number.parseInt(button.dataset.index || '', 10);
+  if (!Number.isFinite(index)) {
+    return;
+  }
+
+  const item = oneDriveBrowseState.items[index];
+  if (!item) {
+    return;
+  }
+
+  event.preventDefault();
+
+  if (item.kind === 'drive') {
+    enterOneDriveDrive(item);
+    return;
+  }
+
+  if (oneDriveBrowseState.selectedIndex !== index) {
+    selectOneDriveBrowserItem(index);
+    return;
+  }
+
+  if (item.kind === 'folder') {
+    enterOneDriveFolder(item);
+  }
+}
+
+function enterOneDriveDrive(item) {
+  if (!oneDriveBrowseState || !item?.id) {
+    return;
+  }
+
+  oneDriveBrowseState.stack = [
+    {
+      kind: 'drive',
+      id: item.id,
+      name: item.name || item.id,
+      driveId: item.id,
+    },
+  ];
+
+  oneDriveBrowseState.selectedIndex = -1;
+  renderOneDriveBrowserBreadcrumb();
+  if (oneDriveBrowseBackButton) {
+    oneDriveBrowseBackButton.disabled = false;
+  }
+  loadOneDriveChildren(item.id);
+}
+
+function enterOneDriveFolder(item) {
+  if (!oneDriveBrowseState || !item?.id) {
+    return;
+  }
+
+  const driveId = item.driveId || oneDriveBrowseState.currentDriveId;
+  if (!driveId) {
+    return;
+  }
+
+  oneDriveBrowseState.stack.push({
+    kind: 'folder',
+    id: item.id,
+    name: item.name || item.id,
+    driveId,
+    path: item.path || null,
+    parentId: item.parentId || null,
+    breadcrumb: item.breadcrumb || null,
+  });
+  oneDriveBrowseState.selectedIndex = -1;
+  renderOneDriveBrowserBreadcrumb();
+  loadOneDriveChildren(driveId, item.id, item.path || null);
+}
+
+async function loadOneDriveDrives() {
+  if (!oneDriveBrowseState) {
+    return;
+  }
+
+  const token = { type: 'drives', at: Date.now() };
+  oneDriveBrowseState.requestToken = token;
+  setOneDriveBrowseLoading(true, 'Loading drives…');
+
+  try {
+    const response = await fetch('/api/onedrive/drives');
+    const payload = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(payload?.error || 'Failed to load OneDrive drives.');
+    }
+
+    if (!oneDriveBrowseState || oneDriveBrowseState.requestToken !== token) {
+      return;
+    }
+
+    const drives = Array.isArray(payload?.drives) ? payload.drives : [];
+    const normalised = drives
+      .map((drive) => ({
+        kind: 'drive',
+        id: drive?.id,
+        name: drive?.name || drive?.id || 'Drive',
+        owner: drive?.owner || null,
+        driveType: drive?.driveType || null,
+      }))
+      .filter((drive) => drive.id)
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+
+    oneDriveBrowseState.stack = [];
+    oneDriveBrowseState.items = normalised;
+    oneDriveBrowseState.selectedIndex = -1;
+    oneDriveBrowseState.currentDriveId = null;
+    renderOneDriveBrowserBreadcrumb();
+    renderOneDriveBrowserList(normalised);
+    setOneDriveBrowseWarning(payload?.warning || '');
+
+    if (!normalised.length && !payload?.warning) {
+      setOneDriveBrowseStatus('No drives available for browsing.', { tone: 'info' });
+    } else if (!payload?.warning) {
+      setOneDriveBrowseStatus('');
+    }
+
+    if (oneDriveBrowseBackButton) {
+      oneDriveBrowseBackButton.disabled = true;
+    }
+  } catch (error) {
+    setOneDriveBrowseWarning('');
+    setOneDriveBrowseStatus(error.message || 'Failed to load OneDrive drives.', { tone: 'error' });
+    renderOneDriveBrowserList([]);
+  } finally {
+    if (oneDriveBrowseState && oneDriveBrowseState.requestToken === token) {
+      oneDriveBrowseState.requestToken = null;
+    }
+    setOneDriveBrowseLoading(false);
+  }
+}
+
+async function loadOneDriveChildren(driveId, itemId = null, path = null) {
+  if (!oneDriveBrowseState || !driveId) {
+    return;
+  }
+
+  const token = { type: 'children', at: Date.now(), driveId, itemId };
+  oneDriveBrowseState.requestToken = token;
+  setOneDriveBrowseLoading(true, 'Loading folders…');
+
+  const params = new URLSearchParams({ driveId });
+  if (itemId) {
+    params.set('itemId', itemId);
+  } else if (path) {
+    params.set('path', path);
+  }
+
+  try {
+    const response = await fetch(`/api/onedrive/children?${params.toString()}`);
+    const payload = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(payload?.error || 'Failed to load OneDrive folder.');
+    }
+
+    if (!oneDriveBrowseState || oneDriveBrowseState.requestToken !== token) {
+      return;
+    }
+
+    const items = Array.isArray(payload?.items) ? payload.items : [];
+    const folders = items
+      .filter((entry) => entry?.isFolder)
+      .map((entry) => ({
+        kind: 'folder',
+        id: entry.id,
+        name: entry.name || entry.id || 'Folder',
+        path: entry.path || null,
+        breadcrumb: deriveOneDriveItemBreadcrumb(entry) || null,
+        driveId: entry.driveId || driveId,
+        parentId: entry.parentId || null,
+        childCount: Number.isFinite(entry.childCount) ? Number(entry.childCount) : null,
+        webUrl: entry.webUrl || null,
+      }))
+      .filter((entry) => entry.id)
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+
+    oneDriveBrowseState.items = folders;
+    oneDriveBrowseState.selectedIndex = -1;
+    oneDriveBrowseState.currentDriveId = driveId;
+    renderOneDriveBrowserList(folders);
+
+    if (!folders.length) {
+      setOneDriveBrowseStatus('No subfolders found.', { tone: 'info' });
+    } else {
+      setOneDriveBrowseStatus('');
+    }
+
+    if (oneDriveBrowseBackButton) {
+      oneDriveBrowseBackButton.disabled = !oneDriveBrowseState.stack?.length;
+    }
+  } catch (error) {
+    setOneDriveBrowseStatus(error.message || 'Failed to load OneDrive folder.', { tone: 'error' });
+    renderOneDriveBrowserList([]);
+  } finally {
+    if (oneDriveBrowseState && oneDriveBrowseState.requestToken === token) {
+      oneDriveBrowseState.requestToken = null;
+    }
+    setOneDriveBrowseLoading(false);
+  }
+}
+
+function handleOneDriveBrowseBack() {
+  if (!oneDriveBrowseState || !Array.isArray(oneDriveBrowseState.stack) || !oneDriveBrowseState.stack.length) {
+    closeOneDriveBrowser();
+    return;
+  }
+
+  oneDriveBrowseState.stack.pop();
+  oneDriveBrowseState.selectedIndex = -1;
+
+  const previous = oneDriveBrowseState.stack[oneDriveBrowseState.stack.length - 1] || null;
+
+  if (!previous) {
+    renderOneDriveBrowserBreadcrumb();
+    loadOneDriveDrives();
+    return;
+  }
+
+  renderOneDriveBrowserBreadcrumb();
+  if (previous.kind === 'drive') {
+    loadOneDriveChildren(previous.driveId || previous.id);
+  } else {
+    loadOneDriveChildren(previous.driveId, previous.id, previous.path || null);
+  }
+}
+
+function applyOneDriveBrowserSelection() {
+  if (!oneDriveBrowseState || oneDriveBrowseState.selectedIndex < 0) {
+    return;
+  }
+
+  const item = oneDriveBrowseState.items[oneDriveBrowseState.selectedIndex];
+  if (!item || item.kind !== 'folder') {
+    return;
+  }
+
+  if (oneDriveBrowseState.target === 'processed') {
+    if (oneDriveProcessedFolderIdInput) {
+      oneDriveProcessedFolderIdInput.value = item.id || '';
+      if (oneDriveProcessedFolderIdInput.dataset) {
+        delete oneDriveProcessedFolderIdInput.dataset.cleared;
+      }
+    }
+    if (oneDriveProcessedFolderPathInput) {
+      oneDriveProcessedFolderPathInput.value = item.path || '';
+      setOneDriveInputBreadcrumb(oneDriveProcessedFolderPathInput, item.breadcrumb || '');
+    }
+    if (oneDriveProcessedFolderNameInput) {
+      oneDriveProcessedFolderNameInput.value = item.name || '';
+    }
+    if (oneDriveProcessedFolderWebUrlInput) {
+      oneDriveProcessedFolderWebUrlInput.value = item.webUrl || '';
+    }
+    if (oneDriveProcessedFolderParentIdInput) {
+      oneDriveProcessedFolderParentIdInput.value = item.parentId || '';
+    }
+    updateOneDriveProcessedSummaryFromInputs();
+  } else {
+    if (oneDriveFolderIdInput) {
+      oneDriveFolderIdInput.value = item.id || '';
+    }
+    if (oneDriveFolderPathInput) {
+      oneDriveFolderPathInput.value = item.path || '';
+      setOneDriveInputBreadcrumb(oneDriveFolderPathInput, item.breadcrumb || '');
+    }
+    if (oneDriveFolderNameInput) {
+      oneDriveFolderNameInput.value = item.name || '';
+    }
+    if (oneDriveFolderWebUrlInput) {
+      oneDriveFolderWebUrlInput.value = item.webUrl || '';
+    }
+    if (oneDriveFolderParentIdInput) {
+      oneDriveFolderParentIdInput.value = item.parentId || '';
+    }
+    updateOneDriveSelectionPreviewFromInputs();
+  }
+
+  closeOneDriveBrowser();
 }
 
 function renderGmailSettings() {
@@ -1190,33 +2221,24 @@ async function handleOneDriveSettingsSave(event) {
     return;
   }
 
-  const shareUrl = normaliseTextInput(oneDriveShareInput?.value);
-  const driveId = normaliseTextInput(oneDriveDriveIdInput?.value);
-  const folderId = normaliseTextInput(oneDriveFolderIdInput?.value);
-  const folderPath = normaliseTextInput(oneDriveFolderPathInput?.value);
   const enabled = oneDriveEnabledInput ? oneDriveEnabledInput.checked : false;
+  const monitoredFolder = collectMonitoredFolderFromInputs();
+  const processedFolderCleared = oneDriveProcessedFolderIdInput?.dataset?.cleared === 'true';
+  const processedFolder = collectProcessedFolderFromInputs();
 
-  if (enabled && !shareUrl && !(driveId && (folderId || folderPath))) {
-    showStatus(
-      globalStatus,
-      'Provide a sharing link or the drive and folder details before enabling OneDrive automation.',
-      'error'
-    );
+  if (enabled && (!monitoredFolder || (!monitoredFolder.id && !monitoredFolder.path))) {
+    showStatus(globalStatus, 'Choose a OneDrive folder before enabling automation.', 'error');
     return;
   }
 
   const payload = { enabled };
-  if (shareUrl) {
-    payload.shareUrl = shareUrl;
+  if (monitoredFolder && (monitoredFolder.id || monitoredFolder.path)) {
+    payload.monitoredFolder = monitoredFolder;
   }
-  if (driveId) {
-    payload.driveId = driveId;
-  }
-  if (folderId) {
-    payload.folderId = folderId;
-  }
-  if (folderPath) {
-    payload.folderPath = folderPath;
+  if (processedFolderCleared) {
+    payload.processedFolder = null;
+  } else if (processedFolder && (processedFolder.id || processedFolder.path)) {
+    payload.processedFolder = processedFolder;
   }
 
   const endpoint = `/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/onedrive`;
@@ -1252,6 +2274,10 @@ async function handleOneDriveSettingsSave(event) {
       updateLocalCompanyOneDrive(selectedRealmId, body.oneDrive);
     } else {
       await refreshQuickBooksCompanies(selectedRealmId);
+    }
+
+    if (processedFolderCleared && oneDriveProcessedFolderIdInput?.dataset) {
+      delete oneDriveProcessedFolderIdInput.dataset.cleared;
     }
 
     showStatus(
@@ -5223,15 +6249,15 @@ function buildOneDriveResultText(config, { enabled = true } = {}) {
     parts.push(`${metrics.duplicateCount} duplicate${metrics.duplicateCount === 1 ? '' : 's'} skipped`);
   }
 
-  const moveTarget = config.processedFolderPath || config.processedFolderName;
+  const processed = config.processedFolder || null;
+  const moveTarget = processed?.path || processed?.name;
   if (moveTarget) {
-    let label = config.processedFolderName || moveTarget;
-    if (config.processedFolderPath) {
-      const cleaned = config.processedFolderPath
-        .replace(/^drive\/?root:?/i, '')
-        .replace(/^:+/, '')
-        .replace(/^[\/]+/, '');
-      label = cleaned || label;
+    let label = processed?.name || moveTarget;
+    if (processed?.path) {
+      const friendly = formatOneDriveBreadcrumb(
+        deriveOneDriveBreadcrumbFromPath(processed.path)
+      );
+      label = friendly || processed.path;
     }
     parts.push(`Moved to ${label}`);
   }

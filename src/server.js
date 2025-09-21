@@ -69,6 +69,299 @@ function getHealthMetricHistory() {
   return QUICKBOOKS_HEALTH_METRICS.slice();
 }
 
+async function runWithOneDriveSettingsWriteLock(task) {
+  let release;
+  const next = new Promise((resolve) => {
+    release = resolve;
+  });
+
+  const previous = oneDriveSettingsWriteMutex;
+  oneDriveSettingsWriteMutex = next;
+
+  try {
+    await previous.catch(() => {});
+    return await task();
+  } finally {
+    release();
+  }
+}
+
+function cloneGlobalOneDriveConfig(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return JSON.parse(JSON.stringify(value));
+}
+
+function getDefaultGlobalOneDriveConfig() {
+  const now = new Date().toISOString();
+  return {
+    driveId: null,
+    driveName: null,
+    driveType: null,
+    driveWebUrl: null,
+    driveOwner: null,
+    shareUrl: null,
+    status: 'unconfigured',
+    lastValidatedAt: null,
+    lastValidationError: null,
+    lastSyncHealth: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function normalizeGlobalOneDriveSyncHealth(health) {
+  if (!health || typeof health !== 'object') {
+    return null;
+  }
+
+  const status = sanitiseOptionalString(health.status) || null;
+  const message = sanitiseOptionalString(health.message || health.reason) || null;
+  const at = sanitiseIsoString(health.at) || (status || message ? new Date().toISOString() : null);
+
+  if (!status && !message && !at) {
+    return null;
+  }
+
+  return {
+    status,
+    message,
+    at,
+  };
+}
+
+function normalizeGlobalOneDriveConfig(config) {
+  if (!config || typeof config !== 'object') {
+    return null;
+  }
+
+  const result = {};
+
+  if (Object.prototype.hasOwnProperty.call(config, 'driveId')) {
+    result.driveId = sanitiseOptionalString(config.driveId);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'driveName')) {
+    result.driveName = sanitiseOptionalString(config.driveName);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'driveType')) {
+    result.driveType = sanitiseOptionalString(config.driveType);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'driveWebUrl')) {
+    result.driveWebUrl = sanitiseOptionalString(config.driveWebUrl);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'driveOwner')) {
+    if (config.driveOwner && typeof config.driveOwner === 'object') {
+      const ownerName = sanitiseOptionalString(
+        config.driveOwner.name || config.driveOwner.displayName || config.driveOwner.email || config.driveOwner.principal
+      );
+      result.driveOwner = ownerName || null;
+    } else {
+      result.driveOwner = sanitiseOptionalString(config.driveOwner);
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'shareUrl')) {
+    result.shareUrl = sanitiseOptionalString(config.shareUrl);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'status')) {
+    result.status = sanitiseOptionalString(config.status) || null;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'lastValidatedAt')) {
+    result.lastValidatedAt = sanitiseIsoString(config.lastValidatedAt);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'lastValidationError')) {
+    result.lastValidationError = normalizeOneDriveSyncError(config.lastValidationError);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'lastSyncHealth')) {
+    result.lastSyncHealth = normalizeGlobalOneDriveSyncHealth(config.lastSyncHealth);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'createdAt')) {
+    result.createdAt = sanitiseIsoString(config.createdAt);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'updatedAt')) {
+    result.updatedAt = sanitiseIsoString(config.updatedAt);
+  }
+
+  return result;
+}
+
+function sanitizeGlobalOneDriveConfig(config) {
+  if (!config || typeof config !== 'object') {
+    return getDefaultGlobalOneDriveConfig();
+  }
+
+  const normalised = normalizeGlobalOneDriveConfig(config) || {};
+  const base = {
+    ...getDefaultGlobalOneDriveConfig(),
+    ...normalised,
+  };
+
+  if (!base.driveId) {
+    base.status = base.status || 'unconfigured';
+  }
+
+  return base;
+}
+
+function isGlobalOneDriveConfigured(config) {
+  return Boolean(config?.driveId);
+}
+
+async function persistGlobalOneDriveConfig(config) {
+  return runWithOneDriveSettingsWriteLock(async () => {
+    const dir = path.dirname(ONEDRIVE_SETTINGS_FILE);
+    const payload = `${JSON.stringify(config, null, 2)}\n`;
+    const tempPath = `${ONEDRIVE_SETTINGS_FILE}.tmp-${process.pid}-${Date.now()}`;
+
+    await fs.mkdir(dir, { recursive: true });
+
+    let handle;
+    try {
+      handle = await fs.open(tempPath, 'w', 0o600);
+      await handle.writeFile(payload);
+      await handle.sync();
+    } finally {
+      if (handle) {
+        await handle.close().catch(() => {});
+      }
+    }
+
+    try {
+      await fs.rename(tempPath, ONEDRIVE_SETTINGS_FILE);
+    } catch (err) {
+      await fs.unlink(tempPath).catch(() => {});
+      throw err;
+    }
+
+    let dirHandle;
+    try {
+      dirHandle = await fs.open(dir, 'r');
+      await dirHandle.sync();
+    } catch (dirErr) {
+      if (dirErr && dirErr.code !== 'EISDIR' && dirErr.code !== 'ENOENT') {
+        console.warn(`[OneDrive] Failed to fsync directory ${dir}: ${dirErr.message}`);
+      }
+    } finally {
+      if (dirHandle) {
+        await dirHandle.close().catch(() => {});
+      }
+    }
+  });
+}
+
+async function loadGlobalOneDriveConfig({ refresh = false } = {}) {
+  if (!hasLoadedOneDriveSettings || refresh) {
+    let contents = null;
+    try {
+      contents = await fs.readFile(ONEDRIVE_SETTINGS_FILE, 'utf-8');
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        throw error;
+      }
+    }
+
+    if (!contents) {
+      globalOneDriveConfigCache = getDefaultGlobalOneDriveConfig();
+      await persistGlobalOneDriveConfig(globalOneDriveConfigCache).catch((err) => {
+        console.warn('[OneDrive] Unable to seed default OneDrive settings file', err?.message || err);
+      });
+    } else {
+      try {
+        const parsed = JSON.parse(contents);
+        const normalised = sanitizeGlobalOneDriveConfig(parsed);
+        const now = new Date().toISOString();
+        if (!normalised.createdAt) {
+          normalised.createdAt = now;
+        }
+        if (!normalised.updatedAt) {
+          normalised.updatedAt = now;
+        }
+        globalOneDriveConfigCache = normalised;
+      } catch (error) {
+        console.error('[OneDrive] Failed to parse OneDrive settings file. Resetting to defaults.', error);
+        globalOneDriveConfigCache = getDefaultGlobalOneDriveConfig();
+        await persistGlobalOneDriveConfig(globalOneDriveConfigCache).catch((err) => {
+          console.warn('[OneDrive] Unable to persist reset OneDrive settings file', err?.message || err);
+        });
+      }
+    }
+
+    hasLoadedOneDriveSettings = true;
+  }
+
+  return cloneGlobalOneDriveConfig(globalOneDriveConfigCache);
+}
+
+async function updateGlobalOneDriveConfig(updates, { replace = false } = {}) {
+  const current = await loadGlobalOneDriveConfig();
+  const now = new Date().toISOString();
+
+  let next;
+  if (replace) {
+    next = sanitizeGlobalOneDriveConfig(updates);
+    next.updatedAt = now;
+    if (!next.createdAt) {
+      next.createdAt = now;
+    }
+  } else {
+    const normalisedUpdate = normalizeGlobalOneDriveConfig(updates) || {};
+    next = {
+      ...current,
+    };
+
+    for (const key of Object.keys(normalisedUpdate)) {
+      const value = normalisedUpdate[key];
+      if (value === undefined) {
+        continue;
+      }
+      if (value === null) {
+        if (next[key] !== null) {
+          next[key] = null;
+        }
+      } else if (typeof value === 'object' && value !== null) {
+        next[key] = cloneGlobalOneDriveConfig(value);
+      } else {
+        next[key] = value;
+      }
+    }
+
+    next.updatedAt = now;
+    if (!next.createdAt) {
+      next.createdAt = now;
+    }
+
+    if (!next.status) {
+      next.status = next.driveId ? 'ready' : 'unconfigured';
+    }
+  }
+
+  globalOneDriveConfigCache = sanitizeGlobalOneDriveConfig(next);
+  await persistGlobalOneDriveConfig(globalOneDriveConfigCache);
+  return cloneGlobalOneDriveConfig(globalOneDriveConfigCache);
+}
+
+async function ensureGlobalOneDriveDriveContext() {
+  const config = await loadGlobalOneDriveConfig();
+  const driveId = sanitiseOptionalString(config?.driveId);
+  if (!driveId) {
+    const error = new Error('Shared OneDrive drive is not configured.');
+    error.code = 'ONEDRIVE_GLOBAL_UNCONFIGURED';
+    throw error;
+  }
+  return { config, driveId };
+}
+
 async function runWithQuickBooksCompaniesWriteLock(task) {
   let release;
   const next = new Promise((resolve) => {
@@ -92,6 +385,8 @@ const MS_GRAPH_CLIENT_ID = process.env.MS_GRAPH_CLIENT_ID || '';
 const MS_GRAPH_CLIENT_SECRET = process.env.MS_GRAPH_CLIENT_SECRET || '';
 const MS_GRAPH_TENANT_ID = process.env.MS_GRAPH_TENANT_ID || '';
 const MS_GRAPH_SCOPE = process.env.MS_GRAPH_SCOPE || 'https://graph.microsoft.com/.default';
+const MS_GRAPH_SERVICE_USER_ID = (process.env.MS_GRAPH_SERVICE_USER_ID || '').trim();
+const MS_GRAPH_SHAREPOINT_SITE_ID = (process.env.MS_GRAPH_SHAREPOINT_SITE_ID || '').trim();
 const GRAPH_API_BASE_URL = 'https://graph.microsoft.com/v1.0';
 const GRAPH_AUTH_URL = MS_GRAPH_TENANT_ID
   ? `https://login.microsoftonline.com/${MS_GRAPH_TENANT_ID}/oauth2/v2.0/token`
@@ -105,6 +400,22 @@ const ONEDRIVE_MAX_DELTA_PAGES = Math.max(parseInt(process.env.ONEDRIVE_MAX_DELT
 const ONEDRIVE_PROCESSED_FOLDER_NAME = (process.env.ONEDRIVE_PROCESSED_FOLDER_NAME || 'Synced').trim() || 'Synced';
 
 const ONEDRIVE_SYNC_ENABLED = Boolean(MS_GRAPH_CLIENT_ID && MS_GRAPH_CLIENT_SECRET && MS_GRAPH_TENANT_ID);
+
+const ONEDRIVE_SETTINGS_FILE = process.env.ONEDRIVE_SETTINGS_FILE
+  ? path.resolve(process.env.ONEDRIVE_SETTINGS_FILE)
+  : path.join(__dirname, '..', 'data', 'onedrive_settings.json');
+
+let oneDriveSettingsWriteMutex = Promise.resolve();
+let globalOneDriveConfigCache = null;
+let hasLoadedOneDriveSettings = false;
+let hasAppliedOneDriveMigration = false;
+
+loadGlobalOneDriveConfig().catch((error) => {
+  console.error('[OneDrive] Failed to load global OneDrive settings', error);
+});
+
+let hasLoggedOneDriveServiceIdentityGuidance = false;
+let lastOneDriveServiceIdentityMessage = '';
 
 const OCR_IMAGE_MIME_TYPES = new Set([
   'image/png',
@@ -525,6 +836,196 @@ async function graphFetch(resource, { method = 'GET', headers = {}, body, query,
   return response;
 }
 
+function logOneDriveServiceIdentityWarning(message) {
+  const text = typeof message === 'string' ? message.trim() : '';
+  if (!text) {
+    return;
+  }
+
+  if (hasLoggedOneDriveServiceIdentityGuidance && lastOneDriveServiceIdentityMessage === text) {
+    return;
+  }
+
+  console.warn(`[OneDrive] ${text}`);
+  hasLoggedOneDriveServiceIdentityGuidance = true;
+  lastOneDriveServiceIdentityMessage = text;
+}
+
+function deriveGraphDriveOwner(owner) {
+  if (!owner || typeof owner !== 'object') {
+    return null;
+  }
+
+  const userOwner = owner.user || owner.application || owner.group || owner.site;
+  if (userOwner && typeof userOwner === 'object') {
+    const name = sanitiseOptionalString(userOwner.displayName);
+    if (name) {
+      return name;
+    }
+    const principal = sanitiseOptionalString(userOwner.userPrincipalName || userOwner.email);
+    if (principal) {
+      return principal;
+    }
+  }
+
+  const groupName = sanitiseOptionalString(owner.group?.displayName);
+  if (groupName) {
+    return groupName;
+  }
+
+  const applicationName = sanitiseOptionalString(owner.application?.displayName);
+  if (applicationName) {
+    return applicationName;
+  }
+
+  const siteDisplayName = sanitiseOptionalString(owner.site?.displayName);
+  if (siteDisplayName) {
+    return siteDisplayName;
+  }
+
+  return null;
+}
+
+function sanitiseGraphDrive(drive) {
+  if (!drive || typeof drive !== 'object') {
+    return null;
+  }
+
+  const id = sanitiseOptionalString(drive.id);
+  if (!id) {
+    return null;
+  }
+
+  return {
+    id,
+    name: sanitiseOptionalString(drive.name) || 'Drive',
+    driveType: sanitiseOptionalString(drive.driveType),
+    webUrl: sanitiseOptionalString(drive.webUrl),
+    owner: deriveGraphDriveOwner(drive.owner),
+  };
+}
+
+function sanitiseGraphDriveItem(item) {
+  if (!item || typeof item !== 'object') {
+    return null;
+  }
+
+  const id = sanitiseOptionalString(item.id);
+  if (!id) {
+    return null;
+  }
+
+  const path = buildDriveItemPath(item);
+
+  return {
+    id,
+    name: sanitiseOptionalString(item.name) || 'Item',
+    driveId: sanitiseOptionalString(item.parentReference?.driveId),
+    parentId: sanitiseOptionalString(item.parentReference?.id),
+    path,
+    displayPath: buildDriveItemDisplayPath(path),
+    webUrl: sanitiseOptionalString(item.webUrl),
+    isFolder: Boolean(item.folder),
+    childCount: Number.isFinite(item.folder?.childCount) ? Number(item.folder.childCount) : null,
+  };
+}
+
+async function graphListDrives({ driveId: requestedDriveId } = {}) {
+  if (!isOneDriveSyncConfigured()) {
+    throw new Error('OneDrive integration is not configured.');
+  }
+
+  const driveId = sanitiseOptionalString(requestedDriveId);
+  const drives = [];
+  const seen = new Set();
+  let warning = null;
+
+  const includeDrive = (drive) => {
+    const normalised = sanitiseGraphDrive(drive);
+    if (!normalised || seen.has(normalised.id)) {
+      return;
+    }
+    seen.add(normalised.id);
+    drives.push(normalised);
+  };
+
+  const serviceUserId = sanitiseOptionalString(MS_GRAPH_SERVICE_USER_ID);
+  const siteId = sanitiseOptionalString(MS_GRAPH_SHAREPOINT_SITE_ID);
+
+  if (!serviceUserId && !siteId && !driveId) {
+    warning = 'Set MS_GRAPH_SERVICE_USER_ID to enable OneDrive browsing.';
+    logOneDriveServiceIdentityWarning(warning);
+    return { drives: [], warning };
+  }
+
+  const selectFields = 'id,name,driveType,webUrl,owner';
+
+  if (serviceUserId) {
+    const response = await graphFetch(`/users/${encodeURIComponent(serviceUserId)}/drives`, {
+      query: { $select: selectFields },
+    });
+    const entries = Array.isArray(response?.value) ? response.value : [];
+    entries.forEach(includeDrive);
+  }
+
+  if (siteId) {
+    const response = await graphFetch(`/sites/${encodeURIComponent(siteId)}/drives`, {
+      query: { $select: selectFields },
+    });
+    const entries = Array.isArray(response?.value) ? response.value : [];
+    entries.forEach(includeDrive);
+  }
+
+  if (driveId && !seen.has(driveId)) {
+    try {
+      const drive = await graphFetch(`/drives/${encodeURIComponent(driveId)}`, {
+        query: { $select: selectFields },
+      });
+      includeDrive(drive);
+    } catch (error) {
+      if (error?.status !== 404) {
+        throw error;
+      }
+    }
+  }
+
+  return { drives, warning };
+}
+
+async function graphListDriveChildren({ driveId, itemId, path }) {
+  if (!isOneDriveSyncConfigured()) {
+    throw new Error('OneDrive integration is not configured.');
+  }
+
+  const resolvedDriveId = sanitiseOptionalString(driveId);
+  if (!resolvedDriveId) {
+    throw new Error('Drive ID is required.');
+  }
+
+  const resolvedItemId = sanitiseOptionalString(itemId);
+  const resolvedPath = sanitiseOptionalString(path);
+
+  let resource;
+  if (resolvedItemId) {
+    resource = `/drives/${encodeURIComponent(resolvedDriveId)}/items/${encodeURIComponent(resolvedItemId)}/children`;
+  } else if (resolvedPath) {
+    const normalisedPath = normaliseGraphFolderPath(resolvedPath);
+    resource = `/drives/${encodeURIComponent(resolvedDriveId)}/root:${normalisedPath}:/children`;
+  } else {
+    resource = `/drives/${encodeURIComponent(resolvedDriveId)}/root/children`;
+  }
+
+  const response = await graphFetch(resource, {
+    query: {
+      $select: 'id,name,parentReference,webUrl,folder',
+      $top: 200,
+    },
+  });
+
+  const entries = Array.isArray(response?.value) ? response.value : [];
+  return entries.map(sanitiseGraphDriveItem).filter(Boolean);
+}
+
 function encodeSharingUrl(shareUrl) {
   const trimmed = sanitiseOptionalString(shareUrl);
   if (!trimmed) {
@@ -541,7 +1042,7 @@ function normaliseGraphFolderPath(folderPath) {
   return normalised.replace(/\/+$/, '');
 }
 
-async function resolveOneDriveFolderReference({ shareUrl, driveId, folderId, folderPath }) {
+async function resolveOneDriveFolderReference({ shareUrl, driveId, folderId, folderPath }, { expectedDriveId = null } = {}) {
   if (!isOneDriveSyncConfigured()) {
     throw new Error('OneDrive integration is not configured.');
   }
@@ -549,6 +1050,7 @@ async function resolveOneDriveFolderReference({ shareUrl, driveId, folderId, fol
   let item;
   let resolvedDriveId = sanitiseOptionalString(driveId);
   const trimmedShareUrl = sanitiseOptionalString(shareUrl);
+  const enforcedDriveId = sanitiseOptionalString(expectedDriveId);
 
   if (trimmedShareUrl) {
     const encoded = encodeSharingUrl(trimmedShareUrl);
@@ -581,15 +1083,23 @@ async function resolveOneDriveFolderReference({ shareUrl, driveId, folderId, fol
 
   const parentPath = item.parentReference?.path || null;
   const displayPath = parentPath ? `${parentPath}/${item.name}` : item.name || null;
+  const itemDriveId = item.parentReference?.driveId || resolvedDriveId || null;
+
+  if (enforcedDriveId && itemDriveId && itemDriveId !== enforcedDriveId) {
+    const error = new Error('Selected OneDrive folder does not belong to the shared drive.');
+    error.code = 'ONEDRIVE_FOLDER_MISMATCH';
+    throw error;
+  }
 
   return {
     id: item.id,
-    driveId: item.parentReference?.driveId || resolvedDriveId || null,
+    driveId: itemDriveId,
     parentId: item.parentReference?.id || null,
     name: item.name || 'Folder',
     path: displayPath,
     webUrl: item.webUrl || null,
     shareUrl: trimmedShareUrl || null,
+    isFolder: true,
   };
 }
 
@@ -672,13 +1182,30 @@ async function pollOneDriveForCompany(company, { reason = 'manual', forceFull = 
     return;
   }
 
-  if (!config.driveId || !config.folderId) {
+  let driveContext;
+  try {
+    driveContext = await ensureGlobalOneDriveDriveContext();
+  } catch (error) {
     await updateQuickBooksCompanyOneDrive(company.realmId, {
       status: 'error',
       lastSyncStatus: 'error',
       lastSyncReason: reason,
       lastSyncError: {
-        message: 'OneDrive folder is not fully configured. Provide driveId and folderId.',
+        message: error.message || 'Shared OneDrive drive is not configured.',
+        at: new Date().toISOString(),
+      },
+    });
+    return;
+  }
+
+  const monitoredFolder = config.monitoredFolder || null;
+  if (!monitoredFolder?.id) {
+    await updateQuickBooksCompanyOneDrive(company.realmId, {
+      status: 'error',
+      lastSyncStatus: 'error',
+      lastSyncReason: reason,
+      lastSyncError: {
+        message: 'OneDrive folder is not fully configured. Choose a monitored folder from the shared drive.',
         at: new Date().toISOString(),
       },
     });
@@ -690,7 +1217,7 @@ async function pollOneDriveForCompany(company, { reason = 'manual', forceFull = 
   const useDeltaLink = forceFull ? null : config.deltaLink;
   let nextLink = useDeltaLink
     ? useDeltaLink
-    : `${GRAPH_API_BASE_URL.replace(/\/+$/, '')}/drives/${encodeURIComponent(config.driveId)}/items/${encodeURIComponent(config.folderId)}/delta`;
+    : `${GRAPH_API_BASE_URL.replace(/\/+$/, '')}/drives/${encodeURIComponent(driveContext.driveId)}/items/${encodeURIComponent(monitoredFolder.id)}/delta`;
   let latestDelta = forceFull ? null : config.deltaLink || null;
   let processedItems = 0;
   let createdCount = 0;
@@ -733,7 +1260,7 @@ async function pollOneDriveForCompany(company, { reason = 'manual', forceFull = 
       }
       processedItems += 1;
       try {
-        const result = await processOneDriveItem(company, config, item, { reason: syncReason });
+        const result = await processOneDriveItem(company, config, driveContext, item, { reason: syncReason });
         const displayName = result?.originalName || item.name || item.id;
 
         if (result?.skipped) {
@@ -751,7 +1278,7 @@ async function pollOneDriveForCompany(company, { reason = 'manual', forceFull = 
             message += ` (${result.checksum.slice(0, 8)})`;
           }
           if (result?.movedTo) {
-            message += ` \u2192 ${result.movedTo}`;
+            message += ` → ${result.movedTo}`;
           }
           activityLog.push(message);
         }
@@ -781,7 +1308,7 @@ async function pollOneDriveForCompany(company, { reason = 'manual', forceFull = 
   if (processedItems === 0 && forceFull) {
     activityLog.push('Delta feed returned no files; performing snapshot crawl of the folder.');
     try {
-      const snapshot = await ingestOneDriveFolderSnapshot(company, config, { reason: syncReason });
+      const snapshot = await ingestOneDriveFolderSnapshot(company, config, driveContext, { reason: syncReason });
       processedItems += snapshot.processed;
       createdCount += snapshot.created;
       skippedCount += snapshot.skipped;
@@ -840,12 +1367,13 @@ async function pollOneDriveForCompany(company, { reason = 'manual', forceFull = 
   );
 }
 
-async function processOneDriveItem(company, config, item, { reason = 'manual' } = {}) {
+async function processOneDriveItem(company, config, driveContext, item, { reason = 'manual' } = {}) {
+  const monitoredFolder = config.monitoredFolder || null;
   const remoteSource = {
     provider: 'onedrive',
-    driveId: config.driveId,
+    driveId: driveContext.driveId,
     itemId: item.id,
-    parentId: item.parentReference?.id || config.folderId || null,
+    parentId: item.parentReference?.id || monitoredFolder?.id || null,
     path: buildDriveItemPath(item),
     webUrl: item.webUrl || null,
     eTag: item.eTag || null,
@@ -854,7 +1382,7 @@ async function processOneDriveItem(company, config, item, { reason = 'manual' } 
     reason,
   };
 
-  const download = await downloadOneDriveItem(config.driveId, item.id);
+  const download = await downloadOneDriveItem(driveContext.driveId, item.id);
 
   if (download.size > ONEDRIVE_MAX_FILE_SIZE_BYTES) {
     console.warn(
@@ -878,8 +1406,8 @@ async function processOneDriveItem(company, config, item, { reason = 'manual' } 
   let moveError = null;
   if (ingestion?.stored && !ingestion.duplicate) {
     try {
-      const destination = await moveProcessedOneDriveItem(company, config, item);
-      movedTo = destination?.name || destination?.path || config.processedFolderName || null;
+      const destination = await moveProcessedOneDriveItem(company, config, driveContext, item);
+      movedTo = destination?.name || destination?.path || config.processedFolder?.name || null;
     } catch (error) {
       moveError = error.message || error;
       console.warn(
@@ -903,81 +1431,15 @@ async function processOneDriveItem(company, config, item, { reason = 'manual' } 
   };
 }
 
-async function downloadOneDriveItem(driveId, itemId) {
-  const metadata = await graphFetch(`/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}`, {
-    query: {
-      $select: 'id,name,size,file,@microsoft.graph.downloadUrl',
-    },
-  });
-
-  const downloadUrl = metadata?.['@microsoft.graph.downloadUrl'];
-  let response = null;
-
-  if (downloadUrl) {
-    response = await fetch(downloadUrl).catch((error) => {
-      console.warn(`Direct OneDrive download failed for item ${itemId}`, error?.message || error);
-      return null;
-    });
-  }
-
-  if (!response || !response.ok) {
-    if (downloadUrl && response) {
-      console.warn(
-        `OneDrive download URL returned status ${response.status} for item ${itemId}; falling back to Graph content endpoint.`
-      );
-    } else if (!downloadUrl) {
-      console.warn(
-        `OneDrive item ${itemId} is missing @microsoft.graph.downloadUrl; using Graph content endpoint for download.`
-      );
-    }
-
-    response = await graphFetch(
-      `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}/content`,
-      {
-        responseType: 'response',
-      }
-    );
-  }
-
-  if (!response || !response.ok) {
-    const status = response?.status || 'unknown';
-    const message = `OneDrive file download failed with status ${status}`;
-    const error = new Error(message);
-    if (response?.status) {
-      error.status = response.status;
-    }
-    throw error;
-  }
-
-  const arrayBuffer = await response.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
-  const contentLengthHeader = response.headers?.get?.('content-length');
-  const mimeType = response.headers?.get?.('content-type') || metadata?.file?.mimeType || 'application/octet-stream';
-  const sizeFromHeader = contentLengthHeader ? Number.parseInt(contentLengthHeader, 10) : null;
-  const size =
-    typeof metadata?.size === 'number'
-      ? metadata.size
-      : Number.isFinite(sizeFromHeader)
-      ? sizeFromHeader
-      : buffer.length;
-
-  return {
-    buffer,
-    mimeType,
-    size,
-    originalName: metadata?.name || `${itemId}.bin`,
-  };
-}
-
-async function moveProcessedOneDriveItem(company, config, item) {
-  const driveId = config.driveId;
+async function moveProcessedOneDriveItem(company, config, driveContext, item) {
+  const driveId = driveContext.driveId;
   if (!driveId || !item?.id) {
-    return;
+    return null;
   }
 
-  const folder = await ensureOneDriveProcessedFolder(company, config);
+  const folder = await ensureOneDriveProcessedFolder(company, config, driveContext);
   if (!folder || !folder.id) {
-    return;
+    return null;
   }
 
   if (item.parentReference?.id === folder.id) {
@@ -994,7 +1456,8 @@ async function moveProcessedOneDriveItem(company, config, item) {
   return folder;
 }
 
-async function ingestOneDriveFolderSnapshot(company, config, { reason = 'manual' } = {}) {
+async function ingestOneDriveFolderSnapshot(company, config, driveContext, { reason = 'manual' } = {}) {
+  const monitoredFolder = config.monitoredFolder || null;
   const logEntries = [];
   const errors = [];
   let processed = 0;
@@ -1003,7 +1466,18 @@ async function ingestOneDriveFolderSnapshot(company, config, { reason = 'manual'
   let duplicates = 0;
   let pages = 0;
 
-  let nextLink = `/drives/${encodeURIComponent(config.driveId)}/items/${encodeURIComponent(config.folderId)}/children`;
+  if (!monitoredFolder?.id) {
+    return {
+      processed: 0,
+      created: 0,
+      skipped: 0,
+      duplicates: 0,
+      errors: [new Error('Monitored folder is not configured.')],
+      logEntries,
+    };
+  }
+
+  let nextLink = `/drives/${encodeURIComponent(driveContext.driveId)}/items/${encodeURIComponent(monitoredFolder.id)}/children`;
   let initial = true;
 
   while (nextLink && pages < ONEDRIVE_MAX_DELTA_PAGES) {
@@ -1035,7 +1509,13 @@ async function ingestOneDriveFolderSnapshot(company, config, { reason = 'manual'
       }
       processed += 1;
       try {
-        const result = await processOneDriveItem(company, config, item, { reason: reason === 'full-resync' ? 'full-resync-snapshot' : reason });
+        const result = await processOneDriveItem(
+          company,
+          config,
+          driveContext,
+          item,
+          { reason: reason === 'full-resync' ? 'full-resync-snapshot' : reason }
+        );
         const displayName = result?.originalName || item.name || item.id;
 
         if (result?.skipped) {
@@ -1091,9 +1571,24 @@ async function ingestOneDriveFolderSnapshot(company, config, { reason = 'manual'
   };
 }
 
-async function ensureOneDriveProcessedFolder(company, config) {
-  const driveId = config.driveId;
-  const sourceFolderId = config.folderId;
+function buildProcessedFolderDetails(metadata, fallbackName = ONEDRIVE_PROCESSED_FOLDER_NAME) {
+  if (!metadata || typeof metadata !== 'object') {
+    return null;
+  }
+
+  return normalizeOneDriveFolderConfig({
+    id: metadata.id,
+    name: metadata.name || fallbackName,
+    path: buildDriveItemPath(metadata),
+    webUrl: metadata.webUrl || null,
+    parentId: metadata.parentReference?.id || null,
+  });
+}
+
+async function ensureOneDriveProcessedFolder(company, config, driveContext) {
+  const driveId = driveContext.driveId;
+  const monitoredFolder = config.monitoredFolder || null;
+  const sourceFolderId = monitoredFolder?.id;
   if (!driveId || !sourceFolderId) {
     return null;
   }
@@ -1108,16 +1603,12 @@ async function ensureOneDriveProcessedFolder(company, config) {
   }
 
   const resolver = (async () => {
-    let metadata = null;
-
-    if (config.processedFolderId) {
-      metadata = await fetchOneDriveFolderMetadata(driveId, config.processedFolderId).catch(() => null);
+    const preference = normalizeOneDriveFolderConfig(config.processedFolder);
+    if (preference?.id) {
+      return preference;
     }
 
-    if (!metadata) {
-      metadata = await locateExistingProcessedFolder(driveId, sourceFolderId).catch(() => null);
-    }
-
+    let metadata = await locateExistingProcessedFolder(driveId, sourceFolderId).catch(() => null);
     if (!metadata) {
       metadata = await createProcessedFolder(driveId, sourceFolderId);
     }
@@ -1126,28 +1617,11 @@ async function ensureOneDriveProcessedFolder(company, config) {
       return null;
     }
 
-    const folderDetails = {
-      id: metadata.id,
-      name: metadata.name || ONEDRIVE_PROCESSED_FOLDER_NAME,
-      path: buildDriveItemPath(metadata),
-    };
-
-    const previousId = config.processedFolderId || null;
-    const previousName = config.processedFolderName || null;
-    const previousPath = config.processedFolderPath || null;
-
-    config.processedFolderId = folderDetails.id;
-    config.processedFolderName = folderDetails.name;
-    config.processedFolderPath = folderDetails.path;
-
-    if (
-      folderDetails.id &&
-      (folderDetails.id !== previousId || folderDetails.name !== previousName || folderDetails.path !== previousPath)
-    ) {
+    const folderDetails = buildProcessedFolderDetails(metadata);
+    if (folderDetails) {
+      config.processedFolder = folderDetails;
       await updateQuickBooksCompanyOneDrive(company.realmId, {
-        processedFolderId: folderDetails.id,
-        processedFolderName: folderDetails.name,
-        processedFolderPath: folderDetails.path,
+        processedFolder: folderDetails,
       }).catch((error) => {
         console.warn(
           `Unable to persist processed folder details for realm ${company.realmId}`,
@@ -1230,6 +1704,49 @@ function buildDriveItemPath(item) {
     return `${parentPath}/${item.name}`;
   }
   return item.name || null;
+}
+
+function buildDriveItemDisplayPath(rawPath) {
+  if (!rawPath) {
+    return null;
+  }
+
+  let remainder = rawPath;
+
+  const drivePrefixMatch = remainder.match(/^\/?drives\/[^/]+\/root:(.*)$/);
+  if (drivePrefixMatch) {
+    remainder = drivePrefixMatch[1] || '';
+  } else {
+    const rootPrefixMatch = remainder.match(/^\/?drive\/root:(.*)$/);
+    if (rootPrefixMatch) {
+      remainder = rootPrefixMatch[1] || '';
+    }
+  }
+
+  if (remainder.startsWith('/')) {
+    remainder = remainder.slice(1);
+  }
+
+  if (!remainder) {
+    return null;
+  }
+
+  const decoded = remainder
+    .split('/')
+    .map((part) => {
+      if (!part) {
+        return part;
+      }
+      try {
+        return decodeURIComponent(part);
+      } catch (error) {
+        return part;
+      }
+    })
+    .filter(Boolean)
+    .join('/');
+
+  return decoded || null;
 }
 
 function startOneDriveSyncScheduler() {
@@ -1988,16 +2505,188 @@ app.post('/api/parse-invoice', upload.single('invoice'), async (req, res) => {
   }
 });
 
-app.get('/api/quickbooks/companies', async (req, res) => {
+app.get('/api/onedrive/drives', async (req, res) => {
+  if (!isOneDriveSyncConfigured()) {
+    return res.status(503).json({ error: 'OneDrive integration is not configured on the server.' });
+  }
+
+  const driveId = typeof req.query?.driveId === 'string' ? req.query.driveId : null;
+
   try {
-    const companies = await readQuickBooksCompanies();
-    const sanitized = companies.map(sanitizeQuickBooksCompany);
-    res.json({ companies: sanitized });
+    const { drives, warning } = await graphListDrives({ driveId });
+    const payload = { drives };
+    if (warning) {
+      payload.warning = warning;
+    }
+    res.json(payload);
+  } catch (error) {
+    console.error('Failed to list OneDrive drives', error);
+    const status = Number.isInteger(error?.status) ? error.status : 500;
+    const message = error?.status === 403 ? 'Access to OneDrive drives was denied.' : 'Failed to list OneDrive drives.';
+    res.status(status).json({ error: message });
+  }
+});
+
+app.get('/api/onedrive/children', async (req, res) => {
+  if (!isOneDriveSyncConfigured()) {
+    return res.status(503).json({ error: 'OneDrive integration is not configured on the server.' });
+  }
+
+  const driveId = typeof req.query?.driveId === 'string' ? req.query.driveId.trim() : '';
+  const itemId = typeof req.query?.itemId === 'string' ? req.query.itemId.trim() : '';
+  const folderPath = typeof req.query?.path === 'string' ? req.query.path.trim() : typeof req.query?.folderPath === 'string' ? req.query.folderPath.trim() : '';
+
+  if (!driveId) {
+    return res.status(400).json({ error: 'Provide a driveId query parameter to list folders.' });
+  }
+
+  try {
+    const items = await graphListDriveChildren({ driveId, itemId, path: folderPath });
+    res.json({ items });
+  } catch (error) {
+    if (error?.status === 404) {
+      return res.status(404).json({ error: 'OneDrive folder not found.' });
+    }
+    if (error?.status === 403) {
+      return res.status(403).json({ error: 'Access to the specified OneDrive folder was denied.' });
+    }
+    console.error('Failed to list OneDrive folder children', error);
+    res.status(500).json({ error: 'Failed to list OneDrive folder contents.' });
+  }
+});
+
+app.post('/api/onedrive/resolve', async (req, res) => {
+  if (!isOneDriveSyncConfigured()) {
+    return res.status(503).json({ error: 'OneDrive integration is not configured on the server.' });
+  }
+
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const shareUrl = typeof body.shareUrl === 'string' ? body.shareUrl : null;
+  const driveId = typeof body.driveId === 'string' ? body.driveId : null;
+  const folderId = typeof body.folderId === 'string' ? body.folderId : null;
+  const folderPath = typeof body.folderPath === 'string' ? body.folderPath : null;
+
+  if (!shareUrl && !(driveId && (folderId || folderPath))) {
+    return res
+      .status(400)
+      .json({ error: 'Provide shareUrl or driveId with folderId or folderPath to resolve a OneDrive folder.' });
+  }
+
+  try {
+    const item = await resolveOneDriveFolderReference({ shareUrl, driveId, folderId, folderPath });
+    const response = item ? { ...item } : null;
+    res.json({ item: response });
+  } catch (error) {
+    if (error?.status === 404) {
+      return res.status(404).json({ error: 'Unable to locate the specified OneDrive folder.' });
+    }
+    if (error?.status === 403) {
+      return res.status(403).json({ error: 'Access to the specified OneDrive folder was denied.' });
+    }
+    console.error('Failed to resolve OneDrive folder reference', error);
+    res.status(500).json({ error: 'Failed to resolve OneDrive folder reference.' });
+  }
+});
+
+app.get('/api/onedrive/settings', async (req, res) => {
+  try {
+    const config = await loadGlobalOneDriveConfig();
+    res.json({ settings: sanitizeGlobalOneDriveConfig(config) });
+  } catch (error) {
+    console.error('Failed to load OneDrive shared settings', error);
+    res.status(500).json({ error: 'Failed to load OneDrive shared settings.' });
+  }
+});
+
+app.put('/api/onedrive/settings', async (req, res) => {
+  if (!isOneDriveSyncConfigured()) {
+    return res.status(503).json({ error: 'OneDrive integration is not configured on the server.' });
+  }
+
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const shareUrl = sanitiseOptionalString(body.shareUrl);
+  const driveIdInput = sanitiseOptionalString(body.driveId);
+  const folderId = sanitiseOptionalString(body.folderId);
+  const folderPath = sanitiseOptionalString(body.folderPath);
+  const statusInput = sanitiseOptionalString(body.status);
+  const lastSyncHealthInput = body.lastSyncHealth && typeof body.lastSyncHealth === 'object' ? body.lastSyncHealth : undefined;
+
+  if (!shareUrl && !(driveIdInput && (folderId || folderPath)) && !statusInput && lastSyncHealthInput === undefined) {
+    return res.status(400).json({
+      error: 'Provide a sharing link or drive and folder reference to update the shared OneDrive settings.',
+    });
+  }
+
+  try {
+    let update = {};
+
+    if (shareUrl || driveIdInput || folderId || folderPath) {
+      const resolution = await resolveOneDriveFolderReference(
+        {
+          shareUrl,
+          driveId: driveIdInput,
+          folderId,
+          folderPath,
+        }
+      );
+
+      const driveId = resolution.driveId;
+      let driveMetadata = null;
+      try {
+        const { drives: driveList } = await graphListDrives({ driveId });
+        driveMetadata = Array.isArray(driveList) ? driveList.find((entry) => entry?.id === driveId) || null : null;
+      } catch (metadataError) {
+        console.warn('Unable to resolve drive metadata while updating shared OneDrive settings', metadataError.message || metadataError);
+      }
+
+      update = {
+        driveId,
+        shareUrl: shareUrl || null,
+        driveName: driveMetadata?.name || null,
+        driveType: driveMetadata?.driveType || null,
+        driveWebUrl: driveMetadata?.webUrl || null,
+        driveOwner: driveMetadata?.owner || null,
+        status: 'ready',
+        lastValidatedAt: new Date().toISOString(),
+        lastValidationError: null,
+      };
+    }
+
+    if (statusInput !== undefined) {
+      update.status = statusInput || null;
+    }
+
+    if (lastSyncHealthInput !== undefined) {
+      update.lastSyncHealth = lastSyncHealthInput;
+    }
+
+    const next = await updateGlobalOneDriveConfig(update);
+    res.json({ settings: sanitizeGlobalOneDriveConfig(next) });
+  } catch (error) {
+    if (error?.status === 404) {
+      return res.status(404).json({ error: 'Unable to locate the specified OneDrive folder.' });
+    }
+    if (error?.status === 403) {
+      return res.status(403).json({ error: 'Access to the specified OneDrive folder was denied.' });
+    }
+    console.error('Failed to update OneDrive shared settings', error);
+    res.status(500).json({ error: 'Failed to update OneDrive shared settings.' });
+  }
+});
+
+app.get('/api/quickbooks/companies', async (req, res) => {
+  let companies = [];
+  try {
+    companies = await readQuickBooksCompanies();
   } catch (error) {
     if (error?.code === 'QUICKBOOKS_COMPANY_FILE_CORRUPT') {
       const message =
         'QuickBooks connections are paused because the company store is corrupt. Restore the latest backup or run the repair CLI before resuming sync.';
       console.error(message, error);
+      console.debug('[QuickBooks] Company store corruption details', {
+        backupPath: error?.backupPath || null,
+        code: error?.code || null,
+      });
       res.status(503).json({
         error: message,
         code: error.code,
@@ -2008,8 +2697,22 @@ app.get('/api/quickbooks/companies', async (req, res) => {
     }
 
     console.error('Failed to load QuickBooks companies', error);
-    res.status(500).json({ error: 'Failed to load QuickBooks connections.' });
+    console.debug('[QuickBooks] Unexpected error while loading QuickBooks companies', {
+      code: error?.code || null,
+      message: error?.message || null,
+    });
+    res.status(500).json({
+      error: 'Failed to load QuickBooks connections. See server logs for details.',
+      message: error?.message || null,
+    });
+    return;
   }
+
+  const sanitized = companies.map(sanitizeQuickBooksCompany);
+  console.info('[QuickBooks] Responding with companies payload', {
+    count: sanitized.length,
+  });
+  res.json({ companies: sanitized });
 });
 
 app.patch('/api/quickbooks/companies/:realmId', async (req, res) => {
@@ -2078,8 +2781,72 @@ app.patch('/api/quickbooks/companies/:realmId/onedrive', async (req, res) => {
     return res.status(503).json({ error: 'OneDrive integration is not configured on the server.' });
   }
 
-  const { shareUrl, driveId, folderId, folderPath, enabled } = req.body || {};
-  const enableSync = enabled !== false;
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const enableSync = body.enabled !== false;
+
+  const normalizeIncomingFolder = (input) => {
+    if (input === undefined) {
+      return undefined;
+    }
+    if (input === null) {
+      return null;
+    }
+    if (input && typeof input === 'object') {
+      const candidate = {
+        id: sanitiseOptionalString(input.id),
+        path: sanitiseOptionalString(input.path),
+        name: sanitiseOptionalString(input.name),
+        webUrl: sanitiseOptionalString(input.webUrl),
+        parentId: sanitiseOptionalString(input.parentId),
+      };
+      if (!candidate.id && !candidate.path) {
+        return null;
+      }
+      return candidate;
+    }
+    return null;
+  };
+
+  const monitoredFolderRequest = (() => {
+    const direct = normalizeIncomingFolder(body.monitoredFolder);
+    if (direct !== undefined) {
+      return direct;
+    }
+    const legacyFields = [body.folderId, body.folderPath, body.folderName, body.webUrl, body.parentId];
+    if (legacyFields.some((value) => value !== undefined && value !== null && String(value).trim() !== '')) {
+      return normalizeIncomingFolder({
+        id: body.folderId,
+        path: body.folderPath,
+        name: body.folderName,
+        webUrl: body.webUrl,
+        parentId: body.parentId,
+      });
+    }
+    return undefined;
+  })();
+
+  const processedFolderRequest = (() => {
+    if (Object.prototype.hasOwnProperty.call(body, 'processedFolder')) {
+      return normalizeIncomingFolder(body.processedFolder);
+    }
+    const legacyFields = [
+      body.processedFolderId,
+      body.processedFolderPath,
+      body.processedFolderName,
+      body.processedFolderWebUrl,
+      body.processedFolderParentId,
+    ];
+    if (legacyFields.some((value) => value !== undefined && value !== null && String(value).trim() !== '')) {
+      return normalizeIncomingFolder({
+        id: body.processedFolderId,
+        path: body.processedFolderPath,
+        name: body.processedFolderName,
+        webUrl: body.processedFolderWebUrl,
+        parentId: body.processedFolderParentId,
+      });
+    }
+    return undefined;
+  })();
 
   try {
     const company = await getQuickBooksCompanyRecord(realmId);
@@ -2087,43 +2854,84 @@ app.patch('/api/quickbooks/companies/:realmId/onedrive', async (req, res) => {
       return res.status(404).json({ error: 'QuickBooks company not found.' });
     }
 
-    let nextState;
+    const driveContext = await ensureGlobalOneDriveDriveContext();
+
     if (enableSync) {
-      const folder = await resolveOneDriveFolderReference({ shareUrl, driveId, folderId, folderPath });
-      nextState = {
+      if (!monitoredFolderRequest || (!monitoredFolderRequest.id && !monitoredFolderRequest.path)) {
+        return res.status(400).json({ error: 'Select a OneDrive folder to monitor before enabling sync.' });
+      }
+
+      const monitoredResolution = await resolveOneDriveFolderReference(
+        {
+          shareUrl: null,
+          driveId: driveContext.driveId,
+          folderId: monitoredFolderRequest.id,
+          folderPath: monitoredFolderRequest.path,
+        },
+        { expectedDriveId: driveContext.driveId }
+      );
+
+      const monitoredFolder = {
+        id: monitoredResolution.id,
+        name: monitoredResolution.name || monitoredFolderRequest.name || null,
+        path: monitoredResolution.path || monitoredFolderRequest.path || null,
+        webUrl: monitoredResolution.webUrl || monitoredFolderRequest.webUrl || null,
+        parentId: monitoredResolution.parentId || monitoredFolderRequest.parentId || null,
+      };
+
+      let processedFolderUpdate = undefined;
+      if (processedFolderRequest === null) {
+        processedFolderUpdate = null;
+      } else if (processedFolderRequest && (processedFolderRequest.id || processedFolderRequest.path)) {
+        const processedResolution = await resolveOneDriveFolderReference(
+          {
+            shareUrl: null,
+            driveId: driveContext.driveId,
+            folderId: processedFolderRequest.id,
+            folderPath: processedFolderRequest.path,
+          },
+          { expectedDriveId: driveContext.driveId }
+        );
+
+        processedFolderUpdate = {
+          id: processedResolution.id,
+          name: processedResolution.name || processedFolderRequest.name || null,
+          path: processedResolution.path || processedFolderRequest.path || null,
+          webUrl: processedResolution.webUrl || processedFolderRequest.webUrl || null,
+          parentId: processedResolution.parentId || processedFolderRequest.parentId || null,
+        };
+      }
+
+      const nextState = {
         enabled: true,
         status: 'connected',
-        driveId: folder.driveId,
-        folderId: folder.id,
-        folderPath: folder.path,
-        folderName: folder.name,
-        webUrl: folder.webUrl,
-        shareUrl: folder.shareUrl,
-        parentId: folder.parentId,
+        monitoredFolder,
         deltaLink: null,
         lastSyncStatus: null,
         lastSyncError: null,
-        lastSyncReason: 'configuration',
         lastSyncMetrics: null,
+        lastSyncReason: 'configuration',
       };
+
+      if (processedFolderUpdate !== undefined) {
+        nextState.processedFolder = processedFolderUpdate;
+      }
+
+      await updateQuickBooksCompanyOneDrive(realmId, nextState);
+
+      queueOneDrivePoll(realmId, { reason: 'configuration' }).catch((error) => {
+        console.warn(`Unable to trigger OneDrive sync for ${realmId}`, error.message || error);
+      });
     } else {
-      nextState = {
+      const disableState = {
         enabled: false,
         status: 'disabled',
-        deltaLink: null,
         lastSyncStatus: null,
         lastSyncError: null,
         lastSyncMetrics: null,
         lastSyncReason: 'disabled',
       };
-    }
-
-    await updateQuickBooksCompanyOneDrive(realmId, nextState, { replace: true });
-
-    if (enableSync) {
-      queueOneDrivePoll(realmId, { reason: 'configuration' }).catch((error) => {
-        console.warn(`Unable to trigger OneDrive sync for ${realmId}`, error.message || error);
-      });
+      await updateQuickBooksCompanyOneDrive(realmId, disableState);
     }
 
     const updated = await getQuickBooksCompanyRecord(realmId);
@@ -2132,10 +2940,16 @@ app.patch('/api/quickbooks/companies/:realmId/onedrive', async (req, res) => {
     if (error.code === 'NOT_FOUND') {
       return res.status(404).json({ error: 'QuickBooks company not found.' });
     }
-    if (error.status === 404) {
+    if (error.code === 'ONEDRIVE_GLOBAL_UNCONFIGURED') {
+      return res.status(409).json({ error: 'Configure the shared OneDrive drive before enabling company folders.' });
+    }
+    if (error.code === 'ONEDRIVE_FOLDER_MISMATCH') {
+      return res.status(400).json({ error: 'Selected folder does not belong to the shared OneDrive drive.' });
+    }
+    if (error?.status === 404) {
       return res.status(404).json({ error: 'Unable to locate the specified OneDrive folder.' });
     }
-    if (error.status === 403) {
+    if (error?.status === 403) {
       return res.status(403).json({ error: 'Access to the specified OneDrive folder was denied.' });
     }
     console.error('Failed to update OneDrive settings', error);
@@ -2187,7 +3001,7 @@ async function handleOneDriveSyncRequest(req, res, { forceFullDefault = false } 
     let responseCompany = company;
 
     if (wantsFullResync) {
-      if (!state || state.enabled === false || !state.driveId || !state.folderId) {
+      if (!state || state.enabled === false || !state.monitoredFolder?.id) {
         return res
           .status(409)
           .json({ error: 'Configure an active OneDrive folder before requesting a full resync.' });
@@ -3547,18 +4361,32 @@ async function attemptQuickBooksCompaniesRepair({ raw, parseError, backupPath })
 }
 
 async function readQuickBooksCompanies({ allowRepair = true } = {}) {
+  console.info('[QuickBooks] Loading companies file', {
+    file: QUICKBOOKS_COMPANIES_FILE,
+  });
   let file;
   try {
     file = await fs.readFile(QUICKBOOKS_COMPANIES_FILE, 'utf-8');
   } catch (err) {
     if (err.code === 'ENOENT') {
+      console.warn('[QuickBooks] Companies file missing; returning empty list', {
+        file: QUICKBOOKS_COMPANIES_FILE,
+      });
       return [];
     }
     throw err;
   }
 
   try {
-    return JSON.parse(file);
+    const companies = JSON.parse(file);
+    console.info('[QuickBooks] Parsed companies payload', {
+      count: Array.isArray(companies) ? companies.length : 0,
+    });
+    const migration = await applyLegacyOneDriveMigration(companies);
+    if (migration?.companiesChanged) {
+      await persistQuickBooksCompanies(companies);
+    }
+    return companies;
   } catch (parseErr) {
     const backupPath = await backupCorruptQuickBooksCompaniesFile(file);
 
@@ -3579,6 +4407,104 @@ async function readQuickBooksCompanies({ allowRepair = true } = {}) {
     }
     throw error;
   }
+}
+
+async function applyLegacyOneDriveMigration(companies) {
+  if (hasAppliedOneDriveMigration) {
+    return { companiesChanged: false };
+  }
+  hasAppliedOneDriveMigration = true;
+
+  if (!Array.isArray(companies) || !companies.length) {
+    console.info('[QuickBooks] Skipping legacy OneDrive migration - no companies detected');
+    return { companiesChanged: false };
+  }
+
+  console.info('[QuickBooks] Running legacy OneDrive migration', {
+    companyCount: companies.length,
+  });
+
+  let companiesChanged = false;
+  let discoveredDriveId = null;
+  let discoveredShareUrl = null;
+
+  const globalConfig = await loadGlobalOneDriveConfig();
+  if (isGlobalOneDriveConfigured(globalConfig)) {
+    console.info('[QuickBooks] Legacy OneDrive migration skipped - global config already configured');
+    discoveredDriveId = sanitiseOptionalString(globalConfig.driveId) || null;
+    discoveredShareUrl = sanitiseOptionalString(globalConfig.shareUrl) || null;
+  }
+
+  for (const company of companies) {
+    if (!company || typeof company !== 'object') {
+      continue;
+    }
+
+    const original = company.oneDrive;
+    const originalSerialised = JSON.stringify(original ?? null);
+
+    const legacyDriveId = sanitiseOptionalString(original?.driveId);
+    const legacyShareUrl = sanitiseOptionalString(original?.shareUrl);
+
+    const normalised = ensureOneDriveStateDefaults(original);
+    const nextState = normalised ? { ...normalised } : null;
+
+    if (nextState && nextState.monitoredFolder) {
+      nextState.monitoredFolder = normalizeOneDriveFolderConfig(nextState.monitoredFolder);
+    }
+    if (nextState && Object.prototype.hasOwnProperty.call(nextState, 'processedFolder')) {
+      nextState.processedFolder = nextState.processedFolder
+        ? normalizeOneDriveFolderConfig(nextState.processedFolder)
+        : null;
+    }
+
+    if (JSON.stringify(nextState ?? null) !== originalSerialised) {
+      companiesChanged = true;
+    }
+
+    company.oneDrive = nextState;
+
+    if (!discoveredDriveId && legacyDriveId) {
+      discoveredDriveId = legacyDriveId;
+      if (!discoveredShareUrl && legacyShareUrl) {
+        discoveredShareUrl = legacyShareUrl;
+      }
+    }
+  }
+
+  let globalUpdate = null;
+  if (!isGlobalOneDriveConfigured(globalConfig) && discoveredDriveId) {
+    console.info('[QuickBooks] Legacy OneDrive migration detected legacy drive metadata - seeding global config');
+    globalUpdate = {
+      driveId: discoveredDriveId,
+      shareUrl: discoveredShareUrl || null,
+      status: 'ready',
+      lastValidatedAt: new Date().toISOString(),
+      lastValidationError: null,
+    };
+  }
+
+  if (globalUpdate) {
+    try {
+      await updateGlobalOneDriveConfig(globalUpdate);
+      console.info('[QuickBooks] Applied legacy OneDrive global migration update');
+    } catch (error) {
+      console.warn('[QuickBooks] Failed to persist legacy OneDrive global migration update', {
+        message: error?.message || error,
+      });
+      globalUpdate = null;
+    }
+  }
+
+  console.debug('[QuickBooks] Legacy OneDrive migration result', {
+    companiesChanged,
+    globalUpdateApplied: Boolean(globalUpdate),
+  });
+
+  return {
+    companiesChanged,
+    globalUpdate,
+  };
 }
 
 async function storeQuickBooksCompany({ realmId, companyName, legalName, tokens }) {
@@ -4676,7 +5602,7 @@ function sanitizeQuickBooksCompany(company) {
 }
 
 function sanitizeOneDriveSettings(config) {
-  const normalized = normalizeOneDriveState(config);
+  const normalized = ensureOneDriveStateDefaults(config);
   if (!normalized) {
     return null;
   }
@@ -4693,6 +5619,72 @@ function sanitizeGmailSettings(config) {
 
   const { refreshToken, ...rest } = normalized;
   return rest;
+}
+
+function normalizeOneDriveFolderConfig(folder) {
+  if (!folder || typeof folder !== 'object') {
+    return null;
+  }
+
+  const result = {};
+
+  if (Object.prototype.hasOwnProperty.call(folder, 'id')) {
+    result.id = sanitiseOptionalString(folder.id);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(folder, 'path')) {
+    result.path = sanitiseOptionalString(folder.path);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(folder, 'name')) {
+    result.name = sanitiseOptionalString(folder.name);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(folder, 'webUrl')) {
+    result.webUrl = sanitiseOptionalString(folder.webUrl);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(folder, 'parentId')) {
+    result.parentId = sanitiseOptionalString(folder.parentId);
+  }
+
+  if (!Object.values(result).some((value) => value)) {
+    return null;
+  }
+
+  return result;
+}
+
+function extractLegacyMonitoredFolder(config) {
+  if (!config || typeof config !== 'object') {
+    return null;
+  }
+
+  const legacy = {
+    id: sanitiseOptionalString(config.folderId),
+    path: sanitiseOptionalString(config.folderPath),
+    name: sanitiseOptionalString(config.folderName),
+    webUrl: sanitiseOptionalString(config.webUrl),
+    parentId: sanitiseOptionalString(config.parentId),
+  };
+
+  return normalizeOneDriveFolderConfig(legacy);
+}
+
+function extractLegacyProcessedFolder(config) {
+  if (!config || typeof config !== 'object') {
+    return null;
+  }
+
+  const legacy = {
+    id: sanitiseOptionalString(config.processedFolderId),
+    path: sanitiseOptionalString(config.processedFolderPath),
+    name: sanitiseOptionalString(config.processedFolderName),
+    webUrl: sanitiseOptionalString(config.processedFolderWebUrl),
+    parentId: sanitiseOptionalString(config.processedFolderParentId),
+  };
+
+  return normalizeOneDriveFolderConfig(legacy);
 }
 
 function ensureOneDriveStateDefaults(config) {
@@ -4723,6 +5715,16 @@ function ensureOneDriveStateDefaults(config) {
     result.updatedAt = now;
   }
 
+  if (result.monitoredFolder) {
+    result.monitoredFolder = normalizeOneDriveFolderConfig(result.monitoredFolder);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(result, 'processedFolder')) {
+    result.processedFolder = result.processedFolder
+      ? normalizeOneDriveFolderConfig(result.processedFolder)
+      : null;
+  }
+
   return result;
 }
 
@@ -4732,111 +5734,125 @@ function normalizeOneDriveState(config) {
   }
 
   const result = {};
+  let hasValue = false;
 
   if (Object.prototype.hasOwnProperty.call(config, 'enabled')) {
     result.enabled = config.enabled === false ? false : true;
+    hasValue = true;
   }
 
   if (Object.prototype.hasOwnProperty.call(config, 'status')) {
     const statusValue = sanitiseOptionalString(config.status);
     result.status = statusValue || null;
+    hasValue = true;
   }
 
-  if (Object.prototype.hasOwnProperty.call(config, 'driveId')) {
-    result.driveId = sanitiseOptionalString(config.driveId);
+  if (Object.prototype.hasOwnProperty.call(config, 'monitoredFolder')) {
+    if (config.monitoredFolder === null) {
+      result.monitoredFolder = null;
+      hasValue = true;
+    } else {
+      const folder = normalizeOneDriveFolderConfig(config.monitoredFolder);
+      if (folder) {
+        result.monitoredFolder = folder;
+        hasValue = true;
+      }
+    }
+  } else {
+    const legacyMonitored = extractLegacyMonitoredFolder(config);
+    if (legacyMonitored) {
+      result.monitoredFolder = legacyMonitored;
+      hasValue = true;
+    }
   }
 
-  if (Object.prototype.hasOwnProperty.call(config, 'folderId')) {
-    result.folderId = sanitiseOptionalString(config.folderId);
-  }
-
-  if (Object.prototype.hasOwnProperty.call(config, 'folderPath')) {
-    result.folderPath = sanitiseOptionalString(config.folderPath);
-  }
-
-  if (Object.prototype.hasOwnProperty.call(config, 'folderName')) {
-    result.folderName = sanitiseOptionalString(config.folderName);
-  }
-
-  if (Object.prototype.hasOwnProperty.call(config, 'webUrl')) {
-    result.webUrl = sanitiseOptionalString(config.webUrl);
-  }
-
-  if (Object.prototype.hasOwnProperty.call(config, 'shareUrl')) {
-    result.shareUrl = sanitiseOptionalString(config.shareUrl);
-  }
-
-  if (Object.prototype.hasOwnProperty.call(config, 'parentId')) {
-    result.parentId = sanitiseOptionalString(config.parentId);
-  }
-
-  if (Object.prototype.hasOwnProperty.call(config, 'processedFolderId')) {
-    result.processedFolderId = sanitiseOptionalString(config.processedFolderId);
-  }
-
-  if (Object.prototype.hasOwnProperty.call(config, 'processedFolderName')) {
-    result.processedFolderName = sanitiseOptionalString(config.processedFolderName);
-  }
-
-  if (Object.prototype.hasOwnProperty.call(config, 'processedFolderPath')) {
-    result.processedFolderPath = sanitiseOptionalString(config.processedFolderPath);
+  if (Object.prototype.hasOwnProperty.call(config, 'processedFolder')) {
+    if (config.processedFolder === null) {
+      result.processedFolder = null;
+      hasValue = true;
+    } else {
+      const folder = normalizeOneDriveFolderConfig(config.processedFolder);
+      if (folder) {
+        result.processedFolder = folder;
+        hasValue = true;
+      }
+    }
+  } else {
+    const legacyProcessed = extractLegacyProcessedFolder(config);
+    if (legacyProcessed) {
+      result.processedFolder = legacyProcessed;
+      hasValue = true;
+    }
   }
 
   if (Object.prototype.hasOwnProperty.call(config, 'deltaLink')) {
     result.deltaLink = sanitiseOptionalString(config.deltaLink);
+    hasValue = true;
   }
 
   if (Object.prototype.hasOwnProperty.call(config, 'lastSyncLog')) {
     result.lastSyncLog = normalizeOneDriveSyncLog(config.lastSyncLog);
+    hasValue = true;
   }
 
   if (Object.prototype.hasOwnProperty.call(config, 'lastSyncAt')) {
     result.lastSyncAt = sanitiseIsoString(config.lastSyncAt);
+    hasValue = true;
   }
 
   if (Object.prototype.hasOwnProperty.call(config, 'lastSyncStatus')) {
     result.lastSyncStatus = sanitiseOptionalString(config.lastSyncStatus);
+    hasValue = true;
   }
 
   if (Object.prototype.hasOwnProperty.call(config, 'lastSyncReason')) {
     result.lastSyncReason = sanitiseOptionalString(config.lastSyncReason);
+    hasValue = true;
   }
 
   if (Object.prototype.hasOwnProperty.call(config, 'lastSyncDurationMs')) {
     result.lastSyncDurationMs = Number.isFinite(config.lastSyncDurationMs)
       ? Number(config.lastSyncDurationMs)
       : null;
+    hasValue = true;
   }
 
   if (Object.prototype.hasOwnProperty.call(config, 'lastSyncError')) {
     result.lastSyncError = normalizeOneDriveSyncError(config.lastSyncError);
+    hasValue = true;
   }
 
   if (Object.prototype.hasOwnProperty.call(config, 'lastSyncMetrics')) {
     result.lastSyncMetrics = normalizeOneDriveMetrics(config.lastSyncMetrics);
+    hasValue = true;
   }
 
   if (Object.prototype.hasOwnProperty.call(config, 'subscriptionId')) {
     result.subscriptionId = sanitiseOptionalString(config.subscriptionId);
+    hasValue = true;
   }
 
   if (Object.prototype.hasOwnProperty.call(config, 'subscriptionExpiration')) {
     result.subscriptionExpiration = sanitiseIsoString(config.subscriptionExpiration);
+    hasValue = true;
   }
 
   if (Object.prototype.hasOwnProperty.call(config, 'clientState')) {
     result.clientState = sanitiseOptionalString(config.clientState);
+    hasValue = true;
   }
 
   if (Object.prototype.hasOwnProperty.call(config, 'createdAt')) {
     result.createdAt = sanitiseIsoString(config.createdAt);
+    hasValue = true;
   }
 
   if (Object.prototype.hasOwnProperty.call(config, 'updatedAt')) {
     result.updatedAt = sanitiseIsoString(config.updatedAt);
+    hasValue = true;
   }
 
-  if (!Object.keys(result).length) {
+  if (!hasValue) {
     return {};
   }
 
