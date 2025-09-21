@@ -25,6 +25,11 @@ const uploadInput = document.getElementById('invoice-upload-input');
 const uploadStatusList = document.getElementById('upload-status-list');
 const oneDriveForm = document.getElementById('onedrive-settings-form');
 const oneDriveSharedSummaryText = document.getElementById('onedrive-shared-summary-text');
+const oneDriveSharedStatusBadge = document.getElementById('onedrive-shared-status');
+const oneDriveSharedConnectButton = document.getElementById('onedrive-shared-connect');
+const oneDriveSharedValidateButton = document.getElementById('onedrive-shared-validate');
+const oneDriveSharedLastValidated = document.getElementById('onedrive-shared-last-validated');
+const oneDriveSharedLastResult = document.getElementById('onedrive-shared-last-result');
 const oneDriveFolderIdInput = document.getElementById('onedrive-folder-id');
 const oneDriveFolderPathInput = document.getElementById('onedrive-folder-path');
 const oneDriveFolderNameInput = document.getElementById('onedrive-folder-name');
@@ -180,40 +185,133 @@ async function refreshSharedOneDriveSettings() {
     sharedOneDriveSettings = null;
   } finally {
     renderSharedOneDriveSummary();
+    renderOneDriveSettings();
   }
 }
 
 function renderSharedOneDriveSummary() {
-  if (!oneDriveSharedSummaryText) {
+  const settings = sharedOneDriveSettings || null;
+  const configured = isSharedOneDriveConfigured();
+
+  if (oneDriveSharedStatusBadge) {
+    setSharedOneDriveStatusBadge(settings?.status || (configured ? 'ready' : 'unconfigured'));
+  }
+
+  if (oneDriveSharedConnectButton) {
+    oneDriveSharedConnectButton.textContent = configured ? 'Change shared drive' : 'Connect shared drive';
+  }
+
+  if (oneDriveSharedValidateButton) {
+    oneDriveSharedValidateButton.disabled = !configured;
+  }
+
+  if (oneDriveSharedSummaryText) {
+    oneDriveSharedSummaryText.textContent = '';
+
+    if (!configured) {
+      oneDriveSharedSummaryText.textContent = 'Shared OneDrive drive is not configured yet.';
+    } else {
+      const label = settings.driveName || settings.driveId;
+      const summaryParts = [`Using shared drive: ${label}`];
+      const breadcrumb = formatOneDriveBreadcrumb(
+        deriveOneDriveBreadcrumbFromPath(settings.folderPath || '')
+      );
+      const folderLabels = [];
+      if (settings.folderName) {
+        folderLabels.push(settings.folderName);
+      }
+      if (breadcrumb) {
+        folderLabels.push(breadcrumb);
+      }
+      if (!folderLabels.length && settings.folderId) {
+        folderLabels.push(settings.folderId);
+      }
+      if (folderLabels.length) {
+        summaryParts.push(`Base folder: ${folderLabels.join(' • ')}`);
+      }
+
+      const text = `${summaryParts.join('. ')}.`;
+      oneDriveSharedSummaryText.appendChild(document.createTextNode(text));
+
+      const targetUrl = settings.folderWebUrl || settings.driveWebUrl || settings.shareUrl;
+      if (targetUrl) {
+        oneDriveSharedSummaryText.appendChild(document.createTextNode(' '));
+        const link = document.createElement('a');
+        link.href = targetUrl;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = folderLabels.length ? 'Open folder' : 'Open drive';
+        oneDriveSharedSummaryText.appendChild(link);
+      }
+
+      if (settings.status && settings.status !== 'ready') {
+        oneDriveSharedSummaryText.appendChild(document.createTextNode(` Status: ${settings.status}.`));
+      }
+    }
+  }
+
+  if (oneDriveSharedLastValidated) {
+    const { lastValidatedAt } = settings || {};
+    oneDriveSharedLastValidated.textContent = lastValidatedAt ? formatTimestamp(lastValidatedAt) : 'Never';
+  }
+
+  if (oneDriveSharedLastResult) {
+    oneDriveSharedLastResult.textContent = formatSharedOneDriveResult(settings);
+  }
+}
+
+function isSharedOneDriveConfigured() {
+  return Boolean(sharedOneDriveSettings?.driveId);
+}
+
+function setSharedOneDriveStatusBadge(status) {
+  if (!oneDriveSharedStatusBadge) {
     return;
   }
 
-  const element = oneDriveSharedSummaryText;
-  element.textContent = '';
+  const value = typeof status === 'string' ? status.trim().toLowerCase() : '';
+  const label = formatStatusLabel(value, 'Unconfigured');
+  oneDriveSharedStatusBadge.textContent = label;
+  oneDriveSharedStatusBadge.dataset.status = value || 'unconfigured';
 
-  const settings = sharedOneDriveSettings;
+  const variants = ['status-pill--ready', 'status-pill--error', 'status-pill--warning', 'status-pill--muted'];
+  variants.forEach((variant) => oneDriveSharedStatusBadge.classList.remove(variant));
+
+  if (value === 'ready') {
+    oneDriveSharedStatusBadge.classList.add('status-pill--ready');
+  } else if (value === 'error') {
+    oneDriveSharedStatusBadge.classList.add('status-pill--error');
+  } else if (value === 'warning' || value === 'pending' || value === 'validating') {
+    oneDriveSharedStatusBadge.classList.add('status-pill--warning');
+  } else {
+    oneDriveSharedStatusBadge.classList.add('status-pill--muted');
+  }
+}
+
+function formatSharedOneDriveResult(settings) {
   if (!settings || !settings.driveId) {
-    element.textContent = 'Shared OneDrive drive is not configured yet.';
-    return;
+    return 'Configure the shared drive to enable browsing.';
   }
 
-  const label = settings.driveName || settings.driveId;
-  element.appendChild(document.createTextNode(`Using shared drive: ${label}.`));
-
-  const targetUrl = settings.driveWebUrl || settings.shareUrl;
-  if (targetUrl) {
-    const link = document.createElement('a');
-    link.href = targetUrl;
-    link.target = '_blank';
-    link.rel = 'noopener noreferrer';
-    link.textContent = 'Open drive';
-    element.appendChild(document.createTextNode(' '));
-    element.appendChild(link);
+  const error = settings.lastValidationError;
+  if (error?.message) {
+    return error.message;
   }
 
-  if (settings.status && settings.status !== 'ready') {
-    element.appendChild(document.createTextNode(` Status: ${settings.status}.`));
+  const health = settings.lastSyncHealth;
+  if (health) {
+    const statusLabel = formatStatusLabel(health.status, 'OK');
+    if (health.message) {
+      return `${statusLabel}: ${health.message}`;
+    }
+    return statusLabel;
   }
+
+  if (settings.status === 'ready') {
+    return 'Ready for company folder selection.';
+  }
+
+  return formatStatusLabel(settings.status, 'Unknown');
 }
 
 function attachEventListeners() {
@@ -253,6 +351,14 @@ function attachEventListeners() {
 
   if (oneDriveForm) {
     oneDriveForm.addEventListener('submit', handleOneDriveSettingsSave);
+  }
+
+  if (oneDriveSharedConnectButton) {
+    oneDriveSharedConnectButton.addEventListener('click', handleSharedOneDriveConnect);
+  }
+
+  if (oneDriveSharedValidateButton) {
+    oneDriveSharedValidateButton.addEventListener('click', handleSharedOneDriveValidate);
   }
 
   if (oneDriveBrowseMonitoredButton) {
@@ -988,14 +1094,15 @@ function renderOneDriveSettings() {
 
   const company = getSelectedCompany();
   const hasCompany = Boolean(company);
+  const sharedConfigured = isSharedOneDriveConfigured();
 
   oneDriveEnabledInput.disabled = !hasCompany;
 
   if (oneDriveBrowseMonitoredButton) {
-    oneDriveBrowseMonitoredButton.disabled = !hasCompany;
+    oneDriveBrowseMonitoredButton.disabled = !hasCompany || !sharedConfigured;
   }
   if (oneDriveBrowseProcessedButton) {
-    oneDriveBrowseProcessedButton.disabled = !hasCompany;
+    oneDriveBrowseProcessedButton.disabled = !hasCompany || !sharedConfigured;
   }
   if (oneDriveProcessedClearButton) {
     oneDriveProcessedClearButton.disabled = !hasCompany;
@@ -1169,6 +1276,11 @@ function renderOneDriveSettings() {
 }
 function updateOneDriveSelectionPreviewFromInputs() {
   if (!oneDriveMonitoredSummary) {
+    return;
+  }
+
+  if (!isSharedOneDriveConfigured()) {
+    oneDriveMonitoredSummary.textContent = 'Connect the shared OneDrive drive before choosing a folder.';
     return;
   }
 
@@ -1418,6 +1530,13 @@ function openOneDriveBrowser(target) {
     return;
   }
 
+  if ((target === 'monitored' || target === 'processed') && !isSharedOneDriveConfigured()) {
+    showStatus(globalStatus, 'Connect the shared OneDrive drive before browsing folders.', 'error');
+    return;
+  }
+
+  const driveFilter = target === 'shared' ? null : sharedOneDriveSettings?.driveId || null;
+
   oneDriveBrowseState = {
     target,
     stack: [],
@@ -1426,20 +1545,46 @@ function openOneDriveBrowser(target) {
     currentDriveId: null,
     loading: false,
     requestToken: null,
+    driveFilter,
   };
 
+  if (driveFilter && target !== 'shared') {
+    oneDriveBrowseState.stack = [
+      {
+        kind: 'drive',
+        id: driveFilter,
+        name: sharedOneDriveSettings?.driveName || driveFilter,
+        driveId: driveFilter,
+      },
+    ];
+  }
+
   lastOneDriveBrowseTrigger =
-    target === 'processed' ? oneDriveBrowseProcessedButton || null : oneDriveBrowseMonitoredButton || null;
+    target === 'shared'
+      ? oneDriveSharedConnectButton || null
+      : target === 'processed'
+      ? oneDriveBrowseProcessedButton || null
+      : oneDriveBrowseMonitoredButton || null;
 
   if (oneDriveBrowseConfirmButton) {
     oneDriveBrowseConfirmButton.disabled = true;
-    oneDriveBrowseConfirmButton.textContent =
-      target === 'processed' ? 'Select processed folder' : 'Select folder';
+    if (target === 'processed') {
+      oneDriveBrowseConfirmButton.textContent = 'Select processed folder';
+    } else if (target === 'shared') {
+      oneDriveBrowseConfirmButton.textContent = 'Set shared drive folder';
+    } else {
+      oneDriveBrowseConfirmButton.textContent = 'Select folder';
+    }
   }
 
   if (oneDriveBrowseTitle) {
-    oneDriveBrowseTitle.textContent =
-      target === 'processed' ? 'Choose processed OneDrive folder' : 'Choose OneDrive folder';
+    if (target === 'processed') {
+      oneDriveBrowseTitle.textContent = 'Choose processed OneDrive folder';
+    } else if (target === 'shared') {
+      oneDriveBrowseTitle.textContent = 'Choose shared OneDrive folder';
+    } else {
+      oneDriveBrowseTitle.textContent = 'Choose OneDrive folder';
+    }
   }
 
   setOneDriveBrowseWarning('');
@@ -1453,10 +1598,14 @@ function openOneDriveBrowser(target) {
   setOneDriveBrowseEscapeHandler(true);
 
   if (oneDriveBrowseBackButton) {
-    oneDriveBrowseBackButton.disabled = true;
+    oneDriveBrowseBackButton.disabled = !oneDriveBrowseState.stack.length;
   }
 
-  loadOneDriveDrives();
+  if (driveFilter && target !== 'shared') {
+    loadOneDriveChildren(driveFilter);
+  } else {
+    loadOneDriveDrives();
+  }
 }
 
 function closeOneDriveBrowser() {
@@ -1553,7 +1702,11 @@ function renderOneDriveBrowserBreadcrumb() {
   }
 
   if (!oneDriveBrowseState || !Array.isArray(oneDriveBrowseState.stack) || !oneDriveBrowseState.stack.length) {
-    oneDriveBrowsePath.textContent = 'All drives';
+    const fallbackLabel =
+      oneDriveBrowseState?.driveFilter && oneDriveBrowseState.target !== 'shared'
+        ? sharedOneDriveSettings?.driveName || 'Shared drive'
+        : 'All drives';
+    oneDriveBrowsePath.textContent = fallbackLabel;
     return;
   }
 
@@ -1812,8 +1965,11 @@ async function loadOneDriveDrives() {
   oneDriveBrowseState.requestToken = token;
   setOneDriveBrowseLoading(true, 'Loading drives…');
 
+  const driveFilter = oneDriveBrowseState.driveFilter || null;
+  const query = driveFilter ? `?${new URLSearchParams({ driveId: driveFilter }).toString()}` : '';
+
   try {
-    const response = await fetch('/api/onedrive/drives');
+    const response = await fetch(`/api/onedrive/drives${query}`);
     const payload = await response.json().catch(() => ({}));
 
     if (!response.ok) {
@@ -1845,7 +2001,10 @@ async function loadOneDriveDrives() {
     setOneDriveBrowseWarning(payload?.warning || '');
 
     if (!normalised.length && !payload?.warning) {
-      setOneDriveBrowseStatus('No drives available for browsing.', { tone: 'info' });
+      const emptyMessage = driveFilter
+        ? 'Shared drive is unavailable or you lack access.'
+        : 'No drives available for browsing.';
+      setOneDriveBrowseStatus(emptyMessage, { tone: 'info' });
     } else if (!payload?.warning) {
       setOneDriveBrowseStatus('');
     }
@@ -1960,13 +2119,18 @@ function handleOneDriveBrowseBack() {
   }
 }
 
-function applyOneDriveBrowserSelection() {
+async function applyOneDriveBrowserSelection() {
   if (!oneDriveBrowseState || oneDriveBrowseState.selectedIndex < 0) {
     return;
   }
 
   const item = oneDriveBrowseState.items[oneDriveBrowseState.selectedIndex];
   if (!item || item.kind !== 'folder') {
+    return;
+  }
+
+  if (oneDriveBrowseState.target === 'shared') {
+    await persistSharedOneDriveSelection(item);
     return;
   }
 
@@ -2012,6 +2176,126 @@ function applyOneDriveBrowserSelection() {
   }
 
   closeOneDriveBrowser();
+}
+
+async function persistSharedOneDriveSelection(item) {
+  if (!item || item.kind !== 'folder') {
+    return;
+  }
+
+  const driveId = item.driveId || oneDriveBrowseState?.currentDriveId || sharedOneDriveSettings?.driveId || null;
+  if (!driveId) {
+    setOneDriveBrowseStatus('Unable to determine the selected drive.', { tone: 'error' });
+    return;
+  }
+
+  const payload = {
+    driveId,
+  };
+
+  if (item.id) {
+    payload.folderId = item.id;
+  }
+  if (item.path) {
+    payload.folderPath = item.path;
+  }
+
+  if (oneDriveBrowseConfirmButton) {
+    oneDriveBrowseConfirmButton.disabled = true;
+  }
+  setOneDriveBrowseWarning('');
+  setOneDriveBrowseLoading(true, 'Saving shared drive…');
+
+  try {
+    const response = await fetch('/api/onedrive/settings', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const body = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      const message = body?.error || 'Failed to update shared drive.';
+      throw new Error(message);
+    }
+
+    sharedOneDriveSettings = body?.settings || sharedOneDriveSettings;
+    showStatus(globalStatus, 'Shared OneDrive drive updated.', 'success');
+    closeOneDriveBrowser();
+    renderSharedOneDriveSummary();
+    renderOneDriveSettings();
+  } catch (error) {
+    console.error(error);
+    setOneDriveBrowseStatus(error.message || 'Failed to update shared drive.', { tone: 'error' });
+    if (oneDriveBrowseConfirmButton) {
+      oneDriveBrowseConfirmButton.disabled = false;
+    }
+  } finally {
+    setOneDriveBrowseLoading(false);
+  }
+}
+
+function handleSharedOneDriveConnect() {
+  openOneDriveBrowser('shared');
+}
+
+async function handleSharedOneDriveValidate() {
+  if (!isSharedOneDriveConfigured()) {
+    showStatus(globalStatus, 'Connect the shared OneDrive drive before validating.', 'error');
+    return;
+  }
+
+  const payload = {
+    driveId: sharedOneDriveSettings.driveId,
+  };
+
+  if (sharedOneDriveSettings.shareUrl) {
+    payload.shareUrl = sharedOneDriveSettings.shareUrl;
+  }
+  if (sharedOneDriveSettings.folderId) {
+    payload.folderId = sharedOneDriveSettings.folderId;
+  } else if (sharedOneDriveSettings.folderPath) {
+    payload.folderPath = sharedOneDriveSettings.folderPath;
+  }
+
+  const originalLabel = oneDriveSharedValidateButton ? oneDriveSharedValidateButton.textContent : '';
+  if (oneDriveSharedValidateButton) {
+    oneDriveSharedValidateButton.disabled = true;
+    oneDriveSharedValidateButton.textContent = 'Validating…';
+  }
+
+  try {
+    const response = await fetch('/api/onedrive/settings', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const body = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      const message = body?.error || 'Failed to validate shared drive.';
+      throw new Error(message);
+    }
+
+    sharedOneDriveSettings = body?.settings || sharedOneDriveSettings;
+    renderSharedOneDriveSummary();
+    renderOneDriveSettings();
+    showStatus(globalStatus, 'Shared drive revalidated.', 'success');
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, error.message || 'Failed to validate shared drive.', 'error');
+  } finally {
+    if (oneDriveSharedValidateButton) {
+      oneDriveSharedValidateButton.disabled = false;
+      oneDriveSharedValidateButton.textContent = originalLabel || 'Validate';
+    }
+  }
 }
 
 function renderGmailSettings() {

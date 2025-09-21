@@ -102,6 +102,11 @@ function getDefaultGlobalOneDriveConfig() {
     driveWebUrl: null,
     driveOwner: null,
     shareUrl: null,
+    folderId: null,
+    folderPath: null,
+    folderName: null,
+    folderWebUrl: null,
+    folderParentId: null,
     status: 'unconfigured',
     lastValidatedAt: null,
     lastValidationError: null,
@@ -167,6 +172,26 @@ function normalizeGlobalOneDriveConfig(config) {
 
   if (Object.prototype.hasOwnProperty.call(config, 'shareUrl')) {
     result.shareUrl = sanitiseOptionalString(config.shareUrl);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'folderId')) {
+    result.folderId = sanitiseOptionalString(config.folderId);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'folderPath')) {
+    result.folderPath = sanitiseOptionalString(config.folderPath);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'folderName')) {
+    result.folderName = sanitiseOptionalString(config.folderName);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'folderWebUrl')) {
+    result.folderWebUrl = sanitiseOptionalString(config.folderWebUrl);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'folderParentId')) {
+    result.folderParentId = sanitiseOptionalString(config.folderParentId);
   }
 
   if (Object.prototype.hasOwnProperty.call(config, 'status')) {
@@ -2639,13 +2664,41 @@ app.put('/api/onedrive/settings', async (req, res) => {
         console.warn('Unable to resolve drive metadata while updating shared OneDrive settings', metadataError.message || metadataError);
       }
 
+      const driveOwnerMetadata = driveMetadata?.owner || null;
+      const driveOwnerName = (() => {
+        if (!driveOwnerMetadata) {
+          return null;
+        }
+        if (typeof driveOwnerMetadata === 'string') {
+          return driveOwnerMetadata;
+        }
+        if (typeof driveOwnerMetadata === 'object') {
+          const nestedUser = typeof driveOwnerMetadata.user === 'object' ? driveOwnerMetadata.user : null;
+          return (
+            sanitiseOptionalString(driveOwnerMetadata.displayName) ||
+            sanitiseOptionalString(driveOwnerMetadata.name) ||
+            sanitiseOptionalString(driveOwnerMetadata.email) ||
+            sanitiseOptionalString(driveOwnerMetadata.principal) ||
+            sanitiseOptionalString(nestedUser?.displayName) ||
+            sanitiseOptionalString(nestedUser?.email) ||
+            null
+          );
+        }
+        return null;
+      })();
+
       update = {
         driveId,
-        shareUrl: shareUrl || null,
+        shareUrl: resolution.shareUrl || shareUrl || null,
         driveName: driveMetadata?.name || null,
         driveType: driveMetadata?.driveType || null,
         driveWebUrl: driveMetadata?.webUrl || null,
-        driveOwner: driveMetadata?.owner || null,
+        driveOwner: driveOwnerName || null,
+        folderId: resolution.id || null,
+        folderPath: resolution.path || null,
+        folderName: resolution.name || null,
+        folderWebUrl: resolution.webUrl || null,
+        folderParentId: resolution.parentId || null,
         status: 'ready',
         lastValidatedAt: new Date().toISOString(),
         lastValidationError: null,

@@ -58,61 +58,140 @@
         <div class="panel-card">
           <h2>OneDrive automation</h2>
           <p class="panel-summary">Monitor a OneDrive folder and import new invoices automatically for this company.</p>
+          <section class="onedrive-shared-card" aria-labelledby="onedrive-shared-heading">
+            <div class="onedrive-shared-row">
+              <div class="onedrive-shared-heading">
+                <h3 id="onedrive-shared-heading">Shared drive</h3>
+                <span id="onedrive-shared-status" class="status-pill status-pill--muted">Unconfigured</span>
+              </div>
+              <div class="onedrive-shared-actions">
+                <button type="button" id="onedrive-shared-connect" class="secondary-button">Connect shared drive</button>
+                <button type="button" id="onedrive-shared-validate" class="secondary-button" disabled>Validate</button>
+              </div>
+            </div>
+            <p id="onedrive-shared-summary-text" class="onedrive-shared-summary">Shared OneDrive drive is not configured yet.</p>
+            <dl class="onedrive-shared-meta">
+              <div>
+                <dt>Last validated</dt>
+                <dd id="onedrive-shared-last-validated">Never</dd>
+              </div>
+              <div>
+                <dt>Status</dt>
+                <dd id="onedrive-shared-last-result">No status yet.</dd>
+              </div>
+            </dl>
+          </section>
           <form id="onedrive-settings-form" class="onedrive-form">
-            <div class="input-group">
-              <label for="onedrive-share-url">Sharing link (optional)</label>
-              <input id="onedrive-share-url" name="shareUrl" type="url" placeholder="https://onedrive.live.com/..." autocomplete="off" />
-              <span>Provide a sharing link or specify the Drive and folder details below.</span>
-            </div>
-            <div class="form-divider"><span>or</span></div>
-            <div class="input-row">
-              <div class="input-group">
-                <label for="onedrive-drive-id">Drive ID</label>
-                <input id="onedrive-drive-id" name="driveId" type="text" autocomplete="off" />
+            <div class="onedrive-field-group">
+              <div class="onedrive-summary">
+                <h3>Monitored folder</h3>
+                <p id="onedrive-monitored-summary" class="onedrive-summary-text">No folder selected.</p>
               </div>
-              <div class="input-group">
-                <label for="onedrive-folder-id">Folder ID</label>
-                <input id="onedrive-folder-id" name="folderId" type="text" autocomplete="off" />
+              <div class="onedrive-selector-actions">
+                <button type="button" id="onedrive-browse-monitored" class="secondary-button" disabled>Select folder</button>
               </div>
             </div>
-            <div class="input-group">
-              <label for="onedrive-folder-path">Folder path (optional)</label>
-              <input id="onedrive-folder-path" name="folderPath" type="text" placeholder="/Invoices/Incoming" autocomplete="off" />
-              <span>Use when the folder ID is unknown. The path is relative to the drive root.</span>
+            <div class="onedrive-field-group">
+              <div class="onedrive-summary">
+                <h3>Processed folder</h3>
+                <p id="onedrive-processed-summary" class="onedrive-summary-text">Processed invoices will move into a “Synced” folder inside the monitored location.</p>
+              </div>
+              <div class="onedrive-selector-actions">
+                <button type="button" id="onedrive-browse-processed" class="secondary-button" disabled>Select processed folder</button>
+                <button type="button" id="onedrive-processed-clear" class="ghost-button">Clear</button>
+              </div>
             </div>
             <label class="checkbox-group">
               <input id="onedrive-enabled" name="enabled" type="checkbox" />
               <span>Enable automatic imports from this folder</span>
             </label>
+            <details class="onedrive-advanced">
+              <summary>Advanced: paste OneDrive values manually</summary>
+              <div class="onedrive-advanced-grid">
+                <div class="input-group">
+                  <label for="onedrive-share-url">Sharing link (optional)</label>
+                  <input id="onedrive-share-url" name="shareUrl" type="url" placeholder="https://onedrive.live.com/..." autocomplete="off" />
+                  <span>Provide a sharing link or specify the Drive and folder details below.</span>
+                </div>
+                <div class="input-row">
+                  <div class="input-group">
+                    <label for="onedrive-drive-id">Drive ID</label>
+                    <input id="onedrive-drive-id" name="driveId" type="text" autocomplete="off" />
+                  </div>
+                  <div class="input-group">
+                    <label for="onedrive-folder-id">Folder ID</label>
+                    <input id="onedrive-folder-id" name="folderId" type="text" autocomplete="off" />
+                  </div>
+                </div>
+                <div class="input-group">
+                  <label for="onedrive-folder-path">Folder path (optional)</label>
+                  <input id="onedrive-folder-path" name="folderPath" type="text" placeholder="/Invoices/Incoming" autocomplete="off" />
+                  <span>Use when the folder ID is unknown. The path is relative to the drive root.</span>
+                </div>
+                <div class="input-group">
+                  <label for="onedrive-folder-name">Folder name (optional)</label>
+                  <input id="onedrive-folder-name" name="folderName" type="text" autocomplete="off" />
+                </div>
+                <div class="input-group">
+                  <label for="onedrive-folder-weburl">Folder web URL (optional)</label>
+                  <input id="onedrive-folder-weburl" name="folderWebUrl" type="url" autocomplete="off" />
+                </div>
+                <div class="input-group">
+                  <label for="onedrive-folder-parent-id">Folder parent ID (optional)</label>
+                  <input id="onedrive-folder-parent-id" name="folderParentId" type="text" autocomplete="off" />
+                </div>
+                <div class="advanced-divider" role="presentation"></div>
+                <div class="input-group">
+                  <label for="onedrive-processed-folder-id">Processed folder ID (optional)</label>
+                  <input id="onedrive-processed-folder-id" name="processedFolderId" type="text" autocomplete="off" />
+                </div>
+                <div class="input-group">
+                  <label for="onedrive-processed-folder-path">Processed folder path (optional)</label>
+                  <input id="onedrive-processed-folder-path" name="processedFolderPath" type="text" autocomplete="off" />
+                </div>
+                <div class="input-group">
+                  <label for="onedrive-processed-folder-name">Processed folder name (optional)</label>
+                  <input id="onedrive-processed-folder-name" name="processedFolderName" type="text" autocomplete="off" />
+                </div>
+                <div class="input-group">
+                  <label for="onedrive-processed-folder-weburl">Processed folder web URL (optional)</label>
+                  <input id="onedrive-processed-folder-weburl" name="processedFolderWebUrl" type="url" autocomplete="off" />
+                </div>
+                <div class="input-group">
+                  <label for="onedrive-processed-folder-parent-id">Processed parent ID (optional)</label>
+                  <input id="onedrive-processed-folder-parent-id" name="processedFolderParentId" type="text" autocomplete="off" />
+                </div>
+              </div>
+            </details>
             <div class="onedrive-actions">
               <button type="submit" id="onedrive-save" class="primary-button">Save OneDrive settings</button>
               <button type="button" id="onedrive-sync-now" class="secondary-button">Sync now</button>
-              <button type="button" id="onedrive-resync" class="secondary-button">Full resync</button>
-              <button type="button" id="onedrive-clear" class="danger-button">Disconnect</button>
+              <button type="button" id="onedrive-resync" class="secondary-button">Request full resync</button>
+              <button type="button" id="onedrive-clear" class="danger-button">Disconnect OneDrive</button>
             </div>
+            <dl class="onedrive-status" id="onedrive-status" hidden>
+              <div>
+                <dt>Status</dt>
+                <dd id="onedrive-status-state">Not connected</dd>
+              </div>
+              <div>
+                <dt>Folder</dt>
+                <dd id="onedrive-status-folder">—</dd>
+              </div>
+              <div>
+                <dt>Last sync</dt>
+                <dd id="onedrive-status-last-sync">—</dd>
+              </div>
+              <div>
+                <dt>Last result</dt>
+                <dd id="onedrive-status-result">—</dd>
+              </div>
+              <div>
+                <dt>Activity log</dt>
+                <dd id="onedrive-status-log">—</dd>
+              </div>
+            </dl>
           </form>
-          <dl class="onedrive-status" id="onedrive-status" hidden>
-            <div>
-              <dt>Status</dt>
-              <dd id="onedrive-status-state">Not connected</dd>
-            </div>
-            <div>
-              <dt>Folder</dt>
-              <dd id="onedrive-status-folder">—</dd>
-            </div>
-            <div>
-              <dt>Last sync</dt>
-              <dd id="onedrive-status-last-sync">—</dd>
-            </div>
-            <div>
-              <dt>Last result</dt>
-              <dd id="onedrive-status-result">—</dd>
-            </div>
-            <div>
-              <dt>Activity log</dt>
-              <dd id="onedrive-status-log">—</dd>
-            </div>
-          </dl>
         </div>
         <div class="panel-card">
           <h2>Gmail inbox monitoring</h2>
@@ -277,6 +356,29 @@
       </section>
     </section>
   </main>
+
+  <div id="onedrive-browse-modal" class="modal" hidden aria-hidden="true">
+    <div class="modal-overlay" data-modal-dismiss></div>
+    <div class="modal-window onedrive-browser-window" role="dialog" aria-modal="true" aria-labelledby="onedrive-browse-title">
+      <header class="modal-header">
+        <h2 id="onedrive-browse-title">Choose OneDrive folder</h2>
+        <button type="button" id="onedrive-browse-close" class="icon-button" aria-label="Close folder browser">&times;</button>
+      </header>
+      <div class="modal-body">
+        <div class="onedrive-browser-toolbar">
+          <button type="button" id="onedrive-browse-back" class="secondary-button">Back</button>
+          <span id="onedrive-browse-path" class="onedrive-browser-path">All drives</span>
+        </div>
+        <p id="onedrive-browse-warning" class="onedrive-browser-warning" hidden></p>
+        <p id="onedrive-browse-status" class="onedrive-browser-status" hidden></p>
+        <ul id="onedrive-browse-list" class="onedrive-browser-list" role="listbox"></ul>
+      </div>
+      <footer class="modal-footer">
+        <button type="button" id="onedrive-browse-cancel" class="secondary-button">Cancel</button>
+        <button type="button" id="onedrive-browse-confirm" class="primary-button" disabled>Select folder</button>
+      </footer>
+    </div>
+  </div>
 
   <div id="qb-preview-modal" class="modal" hidden aria-hidden="true">
     <div class="modal-overlay" data-modal-dismiss></div>

@@ -1162,6 +1162,291 @@ pre {
   gap: 1rem;
 }
 
+
+.onedrive-shared-card {
+  margin-bottom: 1.5rem;
+  padding: 1.25rem;
+  border-radius: 14px;
+  background: rgba(12, 19, 31, 0.75);
+  border: 1px solid rgba(88, 132, 255, 0.22);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.onedrive-shared-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.onedrive-shared-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.9rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-weight: 600;
+  font-size: 0.8rem;
+  text-transform: capitalize;
+}
+
+.status-pill--ready {
+  background: rgba(76, 217, 100, 0.18);
+  border-color: rgba(76, 217, 100, 0.4);
+  color: #8ef7a8;
+}
+
+.status-pill--error {
+  background: rgba(255, 105, 97, 0.18);
+  border-color: rgba(255, 105, 97, 0.4);
+  color: #ff9b99;
+}
+
+.status-pill--warning {
+  background: rgba(255, 204, 0, 0.18);
+  border-color: rgba(255, 204, 0, 0.4);
+  color: #ffe083;
+}
+
+.status-pill--muted {
+  background: rgba(88, 132, 255, 0.16);
+  border-color: rgba(88, 132, 255, 0.32);
+  color: rgba(232, 237, 245, 0.85);
+}
+
+.onedrive-shared-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.onedrive-shared-summary {
+  margin: 0;
+  color: rgba(232, 237, 245, 0.75);
+}
+
+.onedrive-shared-summary a {
+  color: #9eb9ff;
+  text-decoration: underline;
+}
+
+.onedrive-shared-meta {
+  margin: 0;
+  display: grid;
+  gap: 0.75rem 1.25rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.onedrive-shared-meta div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.onedrive-shared-meta dt {
+  margin: 0;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(232, 237, 245, 0.55);
+}
+
+.onedrive-shared-meta dd {
+  margin: 0;
+  color: rgba(232, 237, 245, 0.85);
+}
+
+.onedrive-field-group {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+  padding: 1.1rem 1.25rem;
+  border-radius: 12px;
+  background: rgba(12, 19, 31, 0.65);
+  border: 1px solid rgba(88, 132, 255, 0.18);
+  margin-bottom: 1rem;
+}
+
+.onedrive-summary {
+  flex: 1 1 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.onedrive-summary h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.onedrive-summary-text {
+  margin: 0;
+  color: rgba(232, 237, 245, 0.75);
+}
+
+.onedrive-selector-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.ghost-button {
+  border: none;
+  background: transparent;
+  color: rgba(158, 185, 255, 0.85);
+  font-size: 0.9rem;
+  cursor: pointer;
+  padding: 0.25rem 0.35rem;
+  transition: color 0.2s ease;
+}
+
+.ghost-button:hover,
+.ghost-button:focus-visible {
+  color: #bcd4ff;
+}
+
+.onedrive-advanced {
+  margin-top: 1.25rem;
+  background: rgba(12, 17, 29, 0.45);
+  border: 1px solid rgba(88, 132, 255, 0.18);
+  border-radius: 12px;
+  padding: 0.75rem 1rem 1rem;
+}
+
+.onedrive-advanced > summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: rgba(232, 237, 245, 0.85);
+}
+
+.onedrive-advanced-grid {
+  margin-top: 1rem;
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.advanced-divider {
+  grid-column: 1 / -1;
+  height: 1px;
+  background: rgba(88, 132, 255, 0.18);
+  margin: 0.5rem 0;
+}
+
+.onedrive-browser-window {
+  width: min(720px, 95vw);
+}
+
+.onedrive-browser-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.onedrive-browser-path {
+  font-weight: 600;
+  color: rgba(232, 237, 245, 0.85);
+}
+
+.onedrive-browser-warning {
+  margin: 0.35rem 0;
+  padding: 0.6rem 0.75rem;
+  border-radius: 10px;
+  background: rgba(255, 204, 0, 0.15);
+  color: #ffe083;
+}
+
+.onedrive-browser-warning[hidden] {
+  display: none;
+}
+
+.onedrive-browser-status {
+  margin: 0;
+  color: rgba(232, 237, 245, 0.75);
+}
+
+.onedrive-browser-status.is-error {
+  color: #ff9b99;
+}
+
+.onedrive-browser-list {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.onedrive-browser-item {
+  list-style: none;
+}
+
+.onedrive-browser-entry {
+  width: 100%;
+  border: 1px solid rgba(88, 132, 255, 0.2);
+  border-radius: 12px;
+  background: rgba(12, 19, 31, 0.86);
+  color: inherit;
+  text-align: left;
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.onedrive-browser-entry:hover {
+  background: rgba(18, 27, 43, 0.95);
+  border-color: rgba(88, 132, 255, 0.35);
+}
+
+.onedrive-browser-entry.is-selected {
+  border-color: rgba(88, 132, 255, 0.55);
+  background: rgba(20, 32, 52, 0.95);
+}
+
+.onedrive-browser-entry:focus-visible {
+  outline: 2px solid rgba(78, 208, 255, 0.6);
+  outline-offset: 2px;
+}
+
+.onedrive-entry-name {
+  font-weight: 600;
+}
+
+.onedrive-entry-meta {
+  font-size: 0.85rem;
+  color: rgba(232, 237, 245, 0.6);
+}
+
+.onedrive-browser-empty {
+  padding: 1rem 1.1rem;
+  border-radius: 12px;
+  border: 1px dashed rgba(88, 132, 255, 0.25);
+  text-align: center;
+  color: rgba(232, 237, 245, 0.65);
+}
+
 .form-divider {
   display: flex;
   align-items: center;
