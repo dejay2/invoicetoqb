@@ -1,0 +1,24 @@
+{
+  "invoice": {
+    "reviewSelection": {
+      "vendorId": "vendor-001",
+      "taxCodeId": "TAX_STD"
+    },
+    "data": {
+      "products": [
+        {
+          "description": "Standard items",
+          "lineTotal": 120.0,
+          "taxCode": "Standard VAT"
+        },
+        {
+          "description": "More standard items",
+          "lineTotal": 80.0,
+          "taxCode": "Standard VAT"
+        }
+      ],
+      "totalAmount": 200.0
+    }
+  },
+  "expectedTotal": 200.0
+}

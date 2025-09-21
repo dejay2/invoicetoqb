@@ -15,6 +15,10 @@ body {
   align-items: flex-start;
 }
 
+body.modal-open {
+  overflow: hidden;
+}
+
 .container {
   width: clamp(320px, 92vw, 1320px);
   margin: 3rem auto;
@@ -771,7 +775,8 @@ pre {
 
 .cell-invoice,
 .cell-vendor,
-.cell-account {
+.cell-account,
+.cell-tax {
   vertical-align: top;
 }
 
@@ -810,6 +815,20 @@ pre {
   color: #ff6b61;
 }
 
+.vat-split-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  background: rgba(78, 208, 255, 0.18);
+  color: #79e4ff;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
 .review-field {
   width: 100%;
   margin-top: 0.65rem;
@@ -834,6 +853,15 @@ pre {
 .review-field.is-pending {
   opacity: 0.7;
   cursor: progress;
+}
+
+.review-field.is-required {
+  border-color: rgba(255, 204, 0, 0.65);
+  box-shadow: 0 0 0 1px rgba(255, 204, 0, 0.28);
+}
+
+.review-secondary-tax-select {
+  margin-top: 0.5rem;
 }
 
 .inline-action {
@@ -897,6 +925,20 @@ pre {
   transform: translateY(-1px);
 }
 
+.table-action:disabled,
+.table-action[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+  transform: none;
+}
+
+.table-action.is-pending {
+  opacity: 0.45;
+  cursor: progress;
+  pointer-events: none;
+}
+
 .table-action.destructive {
   border-color: rgba(255, 107, 129, 0.4);
   color: #ff6b81;
@@ -904,6 +946,151 @@ pre {
 
 .table-action.destructive:hover {
   background: rgba(255, 107, 129, 0.18);
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal[hidden] {
+  display: none;
+}
+
+.modal-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(7, 10, 18, 0.65);
+  backdrop-filter: blur(6px);
+}
+
+.modal-window {
+  position: relative;
+  background: rgba(12, 17, 29, 0.96);
+  border-radius: 16px;
+  border: 1px solid rgba(88, 132, 255, 0.35);
+  box-shadow: 0 28px 60px rgba(9, 13, 22, 0.55);
+  width: min(680px, 92vw);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modal-header,
+.modal-footer {
+  padding: 1.2rem 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.modal-body {
+  padding: 0 1.5rem 1.5rem;
+  overflow: auto;
+}
+
+.modal-meta {
+  margin-bottom: 1rem;
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.9rem;
+  color: rgba(232, 237, 245, 0.8);
+}
+
+.preview-summary {
+  margin-bottom: 1rem;
+  padding: 0.85rem 1rem;
+  border-radius: 12px;
+  border: 1px solid rgba(88, 132, 255, 0.2);
+  background: rgba(12, 20, 34, 0.85);
+}
+
+.preview-summary[hidden] {
+  display: none;
+}
+
+.preview-summary-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.preview-summary-table th,
+.preview-summary-table td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid rgba(88, 132, 255, 0.15);
+}
+
+.preview-summary-table th {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.72rem;
+  color: rgba(232, 237, 245, 0.6);
+}
+
+.preview-summary-table td.numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.preview-summary-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.modal-method {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  background: rgba(88, 132, 255, 0.18);
+  border: 1px solid rgba(88, 132, 255, 0.35);
+  color: #e8edf5;
+  font-weight: 600;
+}
+
+.modal-footer {
+  border-top: 1px solid rgba(88, 132, 255, 0.1);
+}
+
+.icon-button {
+  border: none;
+  background: transparent;
+  color: rgba(232, 237, 245, 0.8);
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.25rem;
+  transition: color 0.2s ease;
+}
+
+.icon-button:hover {
+  color: #ffffff;
+}
+
+.code-block {
+  margin: 0;
+  padding: 1.2rem;
+  background: rgba(18, 27, 43, 0.92);
+  border: 1px solid rgba(88, 132, 255, 0.2);
+  border-radius: 12px;
+  color: #d5e1ff;
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 50vh;
+  overflow: auto;
+}
+
+.code-block code {
+  display: block;
 }
 
 .empty-row td {

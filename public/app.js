@@ -55,6 +55,14 @@ const gmailStatusState = document.getElementById('gmail-status-state');
 const gmailStatusEmail = document.getElementById('gmail-status-email');
 const gmailStatusLastSync = document.getElementById('gmail-status-last-sync');
 const gmailStatusResult = document.getElementById('gmail-status-result');
+const qbPreviewModal = document.getElementById('qb-preview-modal');
+const qbPreviewMethod = document.getElementById('qb-preview-method');
+const qbPreviewSummary = document.getElementById('qb-preview-summary');
+const qbPreviewJson = document.getElementById('qb-preview-json');
+const qbPreviewCopyButton = document.getElementById('qb-preview-copy');
+const qbPreviewCloseButton = document.getElementById('qb-preview-close');
+const qbPreviewDismissButton = document.getElementById('qb-preview-dismiss');
+const qbPreviewDismissOverlay = qbPreviewModal?.querySelector('[data-modal-dismiss]') || null;
 
 let quickBooksCompanies = [];
 let selectedRealmId = '';
@@ -62,6 +70,9 @@ const companyMetadataCache = new Map();
 const metadataRequests = new Map();
 let storedInvoices = [];
 const reviewSelectedChecksums = new Set();
+let lastQuickBooksPreviewPayload = '';
+let quickBooksPreviewEscapeHandler = null;
+let invoicePreviewWindow = null;
 
 const MATCH_BADGE_LABELS = {
   exact: 'Exact match',
@@ -239,6 +250,22 @@ function attachEventListeners() {
 
   if (reviewBulkDeleteButton) {
     reviewBulkDeleteButton.addEventListener('click', handleBulkDeleteSelected);
+  }
+
+  if (qbPreviewCloseButton) {
+    qbPreviewCloseButton.addEventListener('click', hideQuickBooksPreviewModal);
+  }
+
+  if (qbPreviewDismissButton) {
+    qbPreviewDismissButton.addEventListener('click', hideQuickBooksPreviewModal);
+  }
+
+  if (qbPreviewDismissOverlay) {
+    qbPreviewDismissOverlay.addEventListener('click', hideQuickBooksPreviewModal);
+  }
+
+  if (qbPreviewCopyButton) {
+    qbPreviewCopyButton.addEventListener('click', copyQuickBooksPreviewPayload);
   }
 
   tabButtons.forEach((button) => {
@@ -583,11 +610,38 @@ async function refreshQuickBooksCompanies(preferredRealmId = selectedRealmId) {
 
   try {
     const response = await fetch('/api/quickbooks/companies');
-    if (!response.ok) {
-      throw new Error('Unable to load QuickBooks companies.');
+    let payload = null;
+    let responseText = '';
+
+    try {
+      responseText = await response.text();
+      if (responseText && responseText.trim()) {
+        payload = JSON.parse(responseText);
+      } else {
+        payload = null;
+      }
+    } catch (parseError) {
+      console.warn('Failed to parse response from /api/quickbooks/companies', parseError);
+      payload = null;
     }
 
-    const payload = await response.json();
+    if (!response.ok) {
+      const message = (payload && typeof payload.error === 'string' && payload.error.trim())
+        ? payload.error.trim()
+        : 'Unable to load QuickBooks companies.';
+      const error = new Error(message);
+      if (payload && typeof payload.code === 'string') {
+        error.code = payload.code;
+      }
+      if (payload && typeof payload.backupPath === 'string') {
+        error.backupPath = payload.backupPath;
+      }
+      throw error;
+    }
+
+    if (!payload || typeof payload !== 'object') {
+      payload = {};
+    }
     quickBooksCompanies = Array.isArray(payload?.companies) ? payload.companies : [];
 
     const activeRealms = new Set(quickBooksCompanies.map((company) => company.realmId));
@@ -1685,7 +1739,26 @@ function prepareMetadata(metadata) {
 }
 
 function prepareMetadataSection(section) {
-  const items = Array.isArray(section?.items) ? section.items : [];
+  const rawItems = Array.isArray(section?.items) ? section.items : [];
+  const items = rawItems
+    .map((item) => {
+      if (!item || typeof item !== 'object') {
+        return null;
+      }
+
+      const sanitisedId = sanitizeReviewSelectionId(item.id ?? item.Id ?? null);
+      if (!sanitisedId) {
+        return null;
+      }
+
+      if (item.id === sanitisedId) {
+        return item;
+      }
+
+      return { ...item, id: sanitisedId };
+    })
+    .filter(Boolean);
+
   const lookup = new Map(items.map((item) => [item.id, item]));
   return {
     updatedAt: section?.updatedAt || null,
@@ -1876,6 +1949,301 @@ function buildTaxCodeOptions(taxCodes) {
   });
 
   return options;
+}
+
+function buildReviewTaxCodeOptions(taxCodes) {
+  const base = buildTaxCodeOptions(taxCodes);
+  if (!base.length) {
+    return [{ value: '', label: 'No tax code selected' }];
+  }
+
+  const [, ...rest] = base;
+  return [{ value: '', label: 'No tax code selected' }, ...rest];
+}
+
+function normaliseMoneyValue(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+
+  const rounded = Math.round(numeric * 100) / 100;
+  if (!Number.isFinite(rounded)) {
+    return null;
+  }
+
+  return Number(rounded.toFixed(2));
+}
+
+function extractRateFromTaxMetadata(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+
+  const candidates = [
+    entry.rate,
+    entry.RateValue,
+    entry.rateValue,
+    entry.taxRate,
+    entry.TaxRate,
+    entry?.SalesTaxRateList?.TaxRateDetail?.[0]?.RateValue,
+    entry?.PurchaseTaxRateList?.TaxRateDetail?.[0]?.RateValue,
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate === null || candidate === undefined) {
+      continue;
+    }
+    const numeric = Number(candidate);
+    if (Number.isFinite(numeric)) {
+      return Number(Math.round(numeric * 1000) / 1000);
+    }
+  }
+
+  return null;
+}
+
+function matchesZeroRateLabel(text) {
+  if (!text) {
+    return false;
+  }
+  return (
+    text.includes('zero') ||
+    text.includes('no tax') ||
+    text.includes('tax free') ||
+    text.includes('out of scope') ||
+    text.includes('non tax') ||
+    text.includes('nontax') ||
+    text.includes('exempt') ||
+    text.includes('0%') ||
+    text.includes('0 %') ||
+    text.split(' ').includes('0')
+  );
+}
+
+function matchesStandardRateLabel(text) {
+  if (!text) {
+    return false;
+  }
+  return text.includes('standard') || text.includes('vat') || text.includes('taxable') || text.includes('20');
+}
+
+function isZeroRateTaxCodeEntry(entry) {
+  const rate = extractRateFromTaxMetadata(entry);
+  if (rate !== null) {
+    return Math.abs(rate) < 0.5;
+  }
+
+  const name = normaliseComparableText(entry?.name);
+  const description = normaliseComparableText(entry?.description);
+  return matchesZeroRateLabel(name) || matchesZeroRateLabel(description);
+}
+
+function classifyTaxCodeEntryForVat(entry) {
+  return isZeroRateTaxCodeEntry(entry) ? 'zero' : 'standard';
+}
+
+function computeProductAmount(product) {
+  if (!product || typeof product !== 'object') {
+    return null;
+  }
+
+  const direct = normaliseMoneyValue(product.lineTotal);
+  if (direct !== null) {
+    return direct;
+  }
+
+  const unitPrice = normaliseMoneyValue(product.unitPrice);
+  let quantity = null;
+  const quantityRaw = product.quantity;
+  if (typeof quantityRaw === 'number' && Number.isFinite(quantityRaw)) {
+    quantity = quantityRaw;
+  } else if (quantityRaw !== null && quantityRaw !== undefined) {
+    const parsed = Number(quantityRaw);
+    if (Number.isFinite(parsed)) {
+      quantity = parsed;
+    }
+  }
+
+  if (unitPrice !== null && quantity !== null) {
+    return normaliseMoneyValue(unitPrice * quantity);
+  }
+
+  return null;
+}
+
+function extractVatRateFromProductHint(product) {
+  const rawRate = product?.taxRate;
+  if (typeof rawRate === 'number' && Number.isFinite(rawRate)) {
+    return Number(Math.round(rawRate * 1000) / 1000);
+  }
+  if (typeof rawRate === 'string' && rawRate.trim()) {
+    const parsed = Number.parseFloat(rawRate);
+    if (Number.isFinite(parsed)) {
+      return Number(Math.round(parsed * 1000) / 1000);
+    }
+  }
+
+  if (typeof product?.taxCode === 'string' && product.taxCode.trim()) {
+    const match = product.taxCode.match(/(\d+(?:\.\d+)?)\s*%/);
+    if (match) {
+      const parsed = Number.parseFloat(match[1]);
+      if (Number.isFinite(parsed)) {
+        return Number(Math.round(parsed * 1000) / 1000);
+      }
+    }
+  }
+
+  return null;
+}
+
+function findTaxCodeIdByLabel(label, metadata) {
+  const taxLookup = metadata?.taxCodes?.lookup;
+  const taxItems = metadata?.taxCodes?.items || [];
+  if (!label || !taxLookup?.size || !taxItems.length) {
+    return null;
+  }
+
+  const directId = sanitizeReviewSelectionId(label);
+  if (directId && taxLookup.has(directId)) {
+    return directId;
+  }
+
+  const normalized = normaliseComparableText(label);
+  if (!normalized) {
+    return null;
+  }
+
+  const matched = taxItems.find((item) => {
+    const name = normaliseComparableText(item.name);
+    const description = normaliseComparableText(item.description);
+    return name === normalized || description === normalized;
+  });
+
+  return matched ? sanitizeReviewSelectionId(matched.id) : null;
+}
+
+function classifyProductVatBucket(product, metadata) {
+  const taxLookup = metadata?.taxCodes?.lookup;
+
+  const directTaxCodeId =
+    sanitizeReviewSelectionId(product?.quickBooksTaxCodeId) ||
+    sanitizeReviewSelectionId(product?.taxCode);
+  if (directTaxCodeId && taxLookup?.has(directTaxCodeId)) {
+    const entry = taxLookup.get(directTaxCodeId);
+    const rate = extractRateFromTaxMetadata(entry);
+    return {
+      bucket: classifyTaxCodeEntryForVat(entry),
+      rate,
+      taxCodeId: directTaxCodeId,
+    };
+  }
+
+  if (typeof product?.taxCode === 'string' && product.taxCode.trim()) {
+    const matchedId = findTaxCodeIdByLabel(product.taxCode, metadata);
+    if (matchedId && taxLookup?.has(matchedId)) {
+      const entry = taxLookup.get(matchedId);
+      const rate = extractRateFromTaxMetadata(entry);
+      return {
+        bucket: classifyTaxCodeEntryForVat(entry),
+        rate,
+        taxCodeId: matchedId,
+      };
+    }
+  }
+
+  const inferredRate = extractVatRateFromProductHint(product);
+  if (inferredRate !== null) {
+    return {
+      bucket: Math.abs(inferredRate) < 0.5 ? 'zero' : 'standard',
+      rate: inferredRate,
+      taxCodeId: null,
+    };
+  }
+
+  if (typeof product?.taxCode === 'string' && product.taxCode.trim()) {
+    const normalized = normaliseComparableText(product.taxCode);
+    if (matchesZeroRateLabel(normalized)) {
+      return { bucket: 'zero', rate: 0, taxCodeId: null };
+    }
+    if (matchesStandardRateLabel(normalized)) {
+      return { bucket: 'standard', rate: null, taxCodeId: null };
+    }
+  }
+
+  return { bucket: 'standard', rate: null, taxCodeId: null };
+}
+
+function analyzeInvoiceVatBuckets(invoice, metadata) {
+  const products = Array.isArray(invoice?.data?.products) ? invoice.data.products : [];
+  if (!products.length) {
+    return {
+      hasSplit: false,
+      requiresSecondary: false,
+      bucketTotals: { standard: 0, zero: 0 },
+      rates: [],
+      summaryLabel: '',
+      suggestedSecondaryTaxCodeId: null,
+    };
+  }
+
+  const bucketTotals = { standard: 0, zero: 0 };
+  const rateSet = new Set();
+  let suggestedSecondaryTaxCodeId = null;
+
+  products.forEach((product) => {
+    const amount = computeProductAmount(product);
+    if (amount === null) {
+      return;
+    }
+
+    const classification = classifyProductVatBucket(product, metadata);
+    const bucketKey = classification.bucket === 'zero' ? 'zero' : 'standard';
+    bucketTotals[bucketKey] += Math.round(amount * 100);
+
+    if (classification.rate !== null && Number.isFinite(classification.rate)) {
+      rateSet.add(Number(Math.round(classification.rate * 1000) / 1000));
+    }
+
+    if (bucketKey === 'zero' && classification.taxCodeId) {
+      suggestedSecondaryTaxCodeId = classification.taxCodeId;
+    }
+  });
+
+  const hasStandard = bucketTotals.standard !== 0;
+  const hasZero = bucketTotals.zero !== 0;
+  const hasSplit = hasStandard && hasZero;
+  const requiresSecondary = hasSplit && bucketTotals.zero !== 0;
+
+  const rates = Array.from(rateSet).sort((a, b) => b - a);
+  const positiveRate = rates.find((rate) => rate >= 0.5) ?? null;
+  const zeroRate = rates.find((rate) => Math.abs(rate) < 0.5) ?? (hasZero ? 0 : null);
+  const displayRates = [];
+  if (positiveRate !== null) {
+    displayRates.push(positiveRate);
+  }
+  if (zeroRate !== null) {
+    displayRates.push(0);
+  }
+  const summaryLabel =
+    displayRates.length >= 2
+      ? `${formatRateValue(displayRates[0])}% / ${formatRateValue(displayRates[1])}% VAT`
+      : displayRates.length === 1
+      ? `${formatRateValue(displayRates[0])}% VAT`
+      : '';
+
+  return {
+    hasSplit,
+    requiresSecondary,
+    bucketTotals,
+    rates,
+    summaryLabel,
+    suggestedSecondaryTaxCodeId,
+  };
 }
 
 function parsePercentageFromLabel(label) {
@@ -2403,7 +2771,7 @@ function renderReviewTable() {
     const row = document.createElement('tr');
     row.className = 'empty-row';
     const cell = document.createElement('td');
-    cell.colSpan = 9;
+    cell.colSpan = 10;
     cell.textContent = 'No invoices pending review.';
     row.appendChild(cell);
     reviewTableBody.appendChild(row);
@@ -2438,7 +2806,7 @@ function createReviewTableRow(invoice, metadata, historical) {
     return createEnhancedReviewRow(invoice, metadata, historical);
   } catch (error) {
     console.error('Failed to render enhanced review row', error, invoice);
-    return createFallbackReviewRow(invoice);
+    return createFallbackReviewRow(invoice, metadata);
   }
 }
 
@@ -2474,17 +2842,28 @@ function createEnhancedReviewRow(invoice, metadata, historical) {
   dateCell.appendChild(createCellTitle(formatDate(invoice.data?.invoiceDate)));
   row.appendChild(dateCell);
 
-  const reviewSelection = getInvoiceReviewSelection(invoice);
   const vendorLookup = metadata?.vendors?.lookup || null;
   const accountLookup = metadata?.accounts?.lookup || null;
+  const taxLookup = metadata?.taxCodes?.lookup || null;
+  const vatAnalysis = analyzeInvoiceVatBuckets(invoice, metadata);
+
+  ensureInvoiceReviewSelectionDefaults(invoice, metadata, insights, vatAnalysis);
+
+  const reviewSelection = getInvoiceReviewSelection(invoice);
   const vendorSelectionId = reviewSelection?.vendorId || insights.vendor.quickBooksVendor?.id || '';
   const accountSelectionId = reviewSelection?.accountId || insights.account.id || '';
+  const taxSelectionId = reviewSelection?.taxCodeId || '';
+  const secondaryTaxSelectionId = reviewSelection?.secondaryTaxCodeId || '';
   const selectedVendor = vendorSelectionId && vendorLookup?.has(vendorSelectionId)
     ? vendorLookup.get(vendorSelectionId)
     : null;
   const selectedAccount = accountSelectionId && accountLookup?.has(accountSelectionId)
     ? accountLookup.get(accountSelectionId)
     : null;
+  const resolvedVendorId = selectedVendor?.id || insights.vendor.quickBooksVendor?.id || '';
+  const vendorDefaults = resolvedVendorId
+    ? metadata?.vendorSettings?.entries?.[resolvedVendorId] || {}
+    : {};
 
   const vendorCell = document.createElement('td');
   vendorCell.className = 'cell-vendor';
@@ -2611,6 +2990,83 @@ function createEnhancedReviewRow(invoice, metadata, historical) {
 
   row.appendChild(accountCell);
 
+  const taxCell = document.createElement('td');
+  taxCell.className = 'cell-tax';
+  const vendorDefaultTaxCodeId = sanitizeReviewSelectionId(vendorDefaults?.taxCodeId);
+  const derivedTaxCodeId = findInvoiceTaxCodeId(invoice, metadata) || null;
+  const effectiveTaxCodeId = taxSelectionId || vendorDefaultTaxCodeId || derivedTaxCodeId || '';
+  const effectiveTaxCode = effectiveTaxCodeId && taxLookup?.has(effectiveTaxCodeId)
+    ? taxLookup.get(effectiveTaxCodeId)
+    : null;
+  const taxDisplayName = effectiveTaxCode?.name || (effectiveTaxCodeId ? `Tax Code ${effectiveTaxCodeId}` : '—');
+  taxCell.appendChild(createCellTitle(taxDisplayName || '—'));
+
+  const effectiveRate = typeof effectiveTaxCode?.rate === 'number' ? effectiveTaxCode.rate : null;
+  if (effectiveRate !== null) {
+    taxCell.appendChild(createCellSubtitle(`${formatRateValue(effectiveRate)}% rate`));
+  }
+
+  if (taxSelectionId) {
+    if (taxLookup?.has(taxSelectionId)) {
+      taxCell.appendChild(createCellSubtitle('Per-invoice selection.'));
+    } else {
+      taxCell.appendChild(
+        createCellSubtitle('Selected tax code is no longer available in QuickBooks metadata.')
+      );
+    }
+  } else if (vendorDefaultTaxCodeId && effectiveTaxCode && vendorDefaultTaxCodeId === effectiveTaxCodeId) {
+    taxCell.appendChild(createCellSubtitle('Vendor default tax code.'));
+  } else if (derivedTaxCodeId && effectiveTaxCode && derivedTaxCodeId === effectiveTaxCodeId) {
+    taxCell.appendChild(createCellSubtitle('Suggested from invoice data.'));
+  } else if (effectiveTaxCodeId && !effectiveTaxCode) {
+    taxCell.appendChild(createCellSubtitle('QuickBooks tax code is no longer available. Refresh metadata.'));
+  }
+
+  const taxSelect = createReviewTaxSelect({
+    metadata,
+    checksum,
+    selectedTaxCodeId: taxLookup?.has(taxSelectionId) ? taxSelectionId : '',
+  });
+  if (taxSelect) {
+    taxCell.appendChild(taxSelect);
+  } else if (selectedRealmId && (!metadata || !metadata?.taxCodes?.items?.length)) {
+    taxCell.appendChild(createCellSubtitle('Connect QuickBooks to manage tax codes.'));
+  }
+
+  if (vatAnalysis.hasSplit) {
+    const badgeLabel = vatAnalysis.summaryLabel
+      ? `VAT split: ${vatAnalysis.summaryLabel}`
+      : 'VAT split detected';
+    taxCell.appendChild(createVatSplitBadge(badgeLabel));
+
+    const hasSecondarySelection =
+      secondaryTaxSelectionId && taxLookup?.has(secondaryTaxSelectionId);
+
+    const secondarySelect = createReviewSecondaryTaxSelect({
+      metadata,
+      checksum,
+      selectedSecondaryTaxCodeId: hasSecondarySelection ? secondaryTaxSelectionId : '',
+    });
+
+    if (secondarySelect) {
+      if (vatAnalysis.requiresSecondary && !hasSecondarySelection) {
+        secondarySelect.classList.add('is-required');
+        secondarySelect.title = 'Assign the zero-rated QuickBooks tax code for split VAT invoices.';
+      }
+      taxCell.appendChild(secondarySelect);
+    } else if (vatAnalysis.requiresSecondary) {
+      taxCell.appendChild(
+        createCellSubtitle('Add a zero-rated QuickBooks tax code for split VAT invoices.')
+      );
+    }
+
+    if (vatAnalysis.requiresSecondary && !hasSecondarySelection) {
+      taxCell.appendChild(createCellSubtitle('Assign zero-rated VAT code to enable QuickBooks preview.'));
+    }
+  }
+
+  row.appendChild(taxCell);
+
   const subtotalCell = document.createElement('td');
   subtotalCell.className = 'cell-amount';
   subtotalCell.appendChild(createCellTitle(formatAmount(insights.totals.net)));
@@ -2626,11 +3082,11 @@ function createEnhancedReviewRow(invoice, metadata, historical) {
   totalCell.appendChild(createCellTitle(formatAmount(insights.totals.gross)));
   row.appendChild(totalCell);
 
-  row.appendChild(createReviewActionsCell(invoice));
+  row.appendChild(createReviewActionsCell(invoice, metadata));
   return row;
 }
 
-function createFallbackReviewRow(invoice) {
+function createFallbackReviewRow(invoice, metadata) {
   const row = document.createElement('tr');
   row.dataset.matchConfidence = 'unknown';
   row.classList.add('match-unknown');
@@ -2661,6 +3117,11 @@ function createFallbackReviewRow(invoice) {
   accountCell.appendChild(createCellTitle('—'));
   row.appendChild(accountCell);
 
+  const taxCell = document.createElement('td');
+  taxCell.className = 'cell-tax';
+  taxCell.appendChild(createCellTitle('—'));
+  row.appendChild(taxCell);
+
   const subtotalCell = document.createElement('td');
   subtotalCell.className = 'cell-amount';
   subtotalCell.appendChild(createCellTitle(formatAmount(invoice?.data?.subtotal ?? null)));
@@ -2676,23 +3137,42 @@ function createFallbackReviewRow(invoice) {
   totalCell.appendChild(createCellTitle(formatAmount(invoice?.data?.totalAmount ?? null)));
   row.appendChild(totalCell);
 
-  row.appendChild(createReviewActionsCell(invoice));
+  row.appendChild(createReviewActionsCell(invoice, metadata));
   return row;
 }
 
-function createReviewActionsCell(invoice) {
+function createReviewActionsCell(invoice, metadata) {
   const actionsCell = document.createElement('td');
   actionsCell.className = 'table-actions';
+
+  const checksum = invoice?.metadata?.checksum || '';
+
+  const qbPreviewButton = document.createElement('button');
+  qbPreviewButton.type = 'button';
+  qbPreviewButton.className = 'table-action';
+  qbPreviewButton.dataset.action = 'preview-qb';
+  qbPreviewButton.dataset.checksum = checksum;
+  qbPreviewButton.textContent = 'Preview QB';
+
+  const previewState = evaluateQuickBooksPreviewState(invoice, metadata);
+  if (!previewState.canPreview) {
+    qbPreviewButton.disabled = true;
+    qbPreviewButton.title = buildQuickBooksPreviewBlockerMessage(previewState.missing);
+  } else {
+    qbPreviewButton.title = 'Preview QuickBooks payload';
+  }
+
+  actionsCell.appendChild(qbPreviewButton);
 
   const previewButton = document.createElement('button');
   previewButton.type = 'button';
   previewButton.className = 'table-action';
-  previewButton.dataset.action = 'preview';
-  previewButton.dataset.checksum = invoice?.metadata?.checksum || '';
+  previewButton.dataset.action = 'preview-file';
+  previewButton.dataset.checksum = checksum;
   if (invoice?.metadata?.originalName) {
     previewButton.dataset.filename = invoice.metadata.originalName;
   }
-  previewButton.textContent = 'Preview';
+  previewButton.textContent = 'Preview file';
   actionsCell.appendChild(previewButton);
 
   const moveButton = document.createElement('button');
@@ -2712,6 +3192,167 @@ function createReviewActionsCell(invoice) {
   actionsCell.appendChild(deleteButton);
 
   return actionsCell;
+}
+
+function evaluateQuickBooksPreviewState(invoice, metadata) {
+  const state = {
+    canPreview: false,
+    missing: [],
+  };
+
+  if (!invoice || typeof invoice !== 'object') {
+    state.missing.push('invoice');
+    return state;
+  }
+
+  if (!selectedRealmId) {
+    state.missing.push('company');
+    return state;
+  }
+
+  if (!metadata) {
+    state.missing.push('metadata');
+    return state;
+  }
+
+  const vendorId = sanitizeReviewSelectionId(invoice?.reviewSelection?.vendorId);
+  if (!vendorId) {
+    state.missing.push('vendor');
+    return state;
+  }
+
+  const vendorLookup = metadata?.vendors?.lookup;
+  if (!vendorLookup?.has(vendorId)) {
+    state.missing.push('vendor');
+    return state;
+  }
+
+  const vendorDefaults = metadata?.vendorSettings?.entries?.[vendorId] || {};
+  let accountId = sanitizeReviewSelectionId(invoice?.reviewSelection?.accountId);
+  if (!accountId) {
+    accountId = sanitizeReviewSelectionId(vendorDefaults.accountId);
+  }
+
+  const accountLookup = metadata?.accounts?.lookup;
+  if (!accountId) {
+    state.missing.push('account');
+  } else if (!accountLookup?.has(accountId)) {
+    state.missing.push('account');
+  }
+
+  let taxCodeId = sanitizeReviewSelectionId(invoice?.reviewSelection?.taxCodeId);
+  if (!taxCodeId) {
+    taxCodeId = sanitizeReviewSelectionId(vendorDefaults.taxCodeId);
+  }
+  if (!taxCodeId) {
+    taxCodeId = findInvoiceTaxCodeId(invoice, metadata) || null;
+  }
+
+  const taxLookup = metadata?.taxCodes?.lookup;
+  if (!taxCodeId) {
+    state.missing.push('tax');
+  } else if (!taxLookup?.has(taxCodeId)) {
+    state.missing.push('tax');
+  }
+
+  const vatAnalysis = analyzeInvoiceVatBuckets(invoice, metadata);
+  const secondaryTaxCodeId = sanitizeReviewSelectionId(invoice?.reviewSelection?.secondaryTaxCodeId);
+  const suggestedSecondaryId = sanitizeReviewSelectionId(vatAnalysis?.suggestedSecondaryTaxCodeId);
+  const hasSecondarySelection = secondaryTaxCodeId && taxLookup?.has(secondaryTaxCodeId);
+  const hasSuggestedSecondary = suggestedSecondaryId && taxLookup?.has(suggestedSecondaryId);
+
+  if (vatAnalysis.requiresSecondary && !hasSecondarySelection && !hasSuggestedSecondary) {
+    state.missing.push('tax-secondary');
+  }
+
+  state.canPreview = state.missing.length === 0;
+  return state;
+}
+
+function findInvoiceTaxCodeId(invoice, metadata) {
+  const taxLookup = metadata?.taxCodes?.lookup;
+  const taxItems = metadata?.taxCodes?.items || [];
+  if (!taxLookup || !taxLookup.size || !taxItems.length) {
+    return null;
+  }
+
+  const candidates = collectInvoiceTaxCodeLabels(invoice);
+  if (!candidates.length) {
+    return null;
+  }
+
+  const entries = taxItems.map((entry) => ({
+    id: entry.id,
+    name: normaliseComparableText(entry.name),
+    description: normaliseComparableText(entry.description),
+  }));
+
+  for (const label of candidates) {
+    const directId = sanitizeReviewSelectionId(label);
+    if (directId && taxLookup.has(directId)) {
+      return directId;
+    }
+
+    const normalized = normaliseComparableText(label);
+    if (!normalized) {
+      continue;
+    }
+
+    const match = entries.find((entry) => entry.name === normalized || entry.description === normalized);
+    if (match) {
+      return match.id;
+    }
+  }
+
+  return null;
+}
+
+function collectInvoiceTaxCodeLabels(invoice) {
+  const labels = [];
+  const invoiceLevelCodeRaw = invoice?.data?.taxCode;
+  const invoiceLevelCode = sanitizeReviewSelectionId(invoiceLevelCodeRaw) || normaliseTextInput(invoiceLevelCodeRaw || '');
+  if (invoiceLevelCode) {
+    labels.push(invoiceLevelCode);
+  }
+
+  if (Array.isArray(invoice?.data?.products)) {
+    invoice.data.products.forEach((product) => {
+      const codeRaw = product?.taxCode;
+      const code = sanitizeReviewSelectionId(codeRaw) || normaliseTextInput(codeRaw || '');
+      if (code) {
+        labels.push(code);
+      }
+    });
+  }
+
+  return labels;
+}
+
+function buildQuickBooksPreviewBlockerMessage(missing) {
+  if (!Array.isArray(missing) || !missing.length) {
+    return 'QuickBooks preview unavailable.';
+  }
+
+  const labels = missing.map((item) => {
+    switch (item) {
+      case 'company':
+        return 'Select a QuickBooks company';
+      case 'metadata':
+        return 'Load QuickBooks metadata';
+      case 'vendor':
+      return 'Choose a QuickBooks vendor';
+    case 'account':
+      return 'Assign a QuickBooks account';
+    case 'tax':
+      return 'Assign a QuickBooks tax code';
+    case 'tax-secondary':
+      return 'Assign zero-rated VAT code for split invoice';
+    default:
+      return 'Complete QuickBooks mappings';
+    }
+  });
+
+  return labels.join(' • ');
 }
 
 function createReviewSelectionCell(checksum) {
@@ -2790,6 +3431,87 @@ function createReviewAccountSelect({ metadata, checksum, selectedAccountId }) {
   return select;
 }
 
+function createReviewTaxSelect({ metadata, checksum, selectedTaxCodeId }) {
+  const taxCodes = metadata?.taxCodes?.items;
+  if (!Array.isArray(taxCodes) || !taxCodes.length) {
+    return null;
+  }
+
+  const select = document.createElement('select');
+  select.className = 'review-field review-tax-select';
+  select.dataset.checksum = checksum || '';
+  select.dataset.field = 'taxCodeId';
+  select.setAttribute('aria-label', 'Select QuickBooks tax code');
+
+  buildReviewTaxCodeOptions(taxCodes).forEach((option) => {
+    const element = document.createElement('option');
+    element.value = option.value;
+    element.textContent = option.label;
+    select.appendChild(element);
+  });
+
+  const value = typeof selectedTaxCodeId === 'string' ? selectedTaxCodeId : '';
+  select.value = value;
+  select.dataset.currentValue = value;
+
+  if (!checksum) {
+    select.disabled = true;
+  }
+
+  return select;
+}
+
+function createReviewSecondaryTaxSelect({ metadata, checksum, selectedSecondaryTaxCodeId }) {
+  const taxCodes = metadata?.taxCodes?.items;
+  if (!Array.isArray(taxCodes) || !taxCodes.length) {
+    return null;
+  }
+
+  const taxLookup = metadata?.taxCodes?.lookup;
+  const zeroRated = taxCodes.filter((code) => isZeroRateTaxCodeEntry(code));
+
+  const selectedEntry = selectedSecondaryTaxCodeId && taxLookup?.has(selectedSecondaryTaxCodeId)
+    ? taxLookup.get(selectedSecondaryTaxCodeId)
+    : null;
+
+  const optionPool = zeroRated.slice();
+  if (selectedEntry && !optionPool.some((code) => code.id === selectedEntry.id)) {
+    optionPool.push(selectedEntry);
+  }
+
+  if (!optionPool.length) {
+    return null;
+  }
+
+  const select = document.createElement('select');
+  select.className = 'review-field review-secondary-tax-select';
+  select.dataset.checksum = checksum || '';
+  select.dataset.field = 'secondaryTaxCodeId';
+  select.setAttribute('aria-label', 'Select zero-rated QuickBooks tax code');
+
+  const options = buildTaxCodeOptions(optionPool);
+  if (options.length) {
+    options[0] = { value: '', label: 'No secondary tax code' };
+  }
+
+  options.forEach((option) => {
+    const element = document.createElement('option');
+    element.value = option.value;
+    element.textContent = option.label;
+    select.appendChild(element);
+  });
+
+  const value = typeof selectedSecondaryTaxCodeId === 'string' ? selectedSecondaryTaxCodeId : '';
+  select.value = value;
+  select.dataset.currentValue = value;
+
+  if (!checksum) {
+    select.disabled = true;
+  }
+
+  return select;
+}
+
 function getInvoiceReviewSelection(invoice) {
   if (!invoice || typeof invoice !== 'object') {
     return null;
@@ -2800,17 +3522,30 @@ function getInvoiceReviewSelection(invoice) {
     return null;
   }
 
-  const vendorId = typeof selection.vendorId === 'string' && selection.vendorId ? selection.vendorId : null;
-  const accountId = typeof selection.accountId === 'string' && selection.accountId ? selection.accountId : null;
+  const vendorId = sanitizeReviewSelectionId(selection.vendorId);
+  const accountId = sanitizeReviewSelectionId(selection.accountId);
+  const taxCodeId = sanitizeReviewSelectionId(selection.taxCodeId);
+  const secondaryTaxCodeId = sanitizeReviewSelectionId(selection.secondaryTaxCodeId);
 
-  if (!vendorId && !accountId) {
+  if (!vendorId && !accountId && !taxCodeId && !secondaryTaxCodeId) {
     return null;
   }
 
-  return {
-    vendorId,
-    accountId,
-  };
+  const result = {};
+  if (vendorId) {
+    result.vendorId = vendorId;
+  }
+  if (accountId) {
+    result.accountId = accountId;
+  }
+  if (taxCodeId) {
+    result.taxCodeId = taxCodeId;
+  }
+  if (secondaryTaxCodeId) {
+    result.secondaryTaxCodeId = secondaryTaxCodeId;
+  }
+
+  return result;
 }
 
 function buildInvoiceReviewInsights(invoice, metadata, historical) {
@@ -3147,6 +3882,13 @@ function createMatchBadge(confidence) {
   return badge;
 }
 
+function createVatSplitBadge(text) {
+  const badge = document.createElement('span');
+  badge.className = 'vat-split-badge';
+  badge.textContent = text || 'VAT split detected';
+  return badge;
+}
+
 function extractInvoiceKeywords(invoice) {
   const keywords = new Set();
   const pushTokens = (text) => {
@@ -3332,8 +4074,10 @@ async function handleReviewAction(event) {
     await moveInvoiceToArchive(checksum, button);
   } else if (action === 'delete') {
     await deleteInvoice(checksum, button);
-  } else if (action === 'preview') {
-    openInvoicePreview(checksum, button);
+  } else if (action === 'preview-file') {
+    openInvoiceFilePreview(checksum, button);
+  } else if (action === 'preview-qb') {
+    await openQuickBooksPreview(checksum, button);
   }
 }
 
@@ -3355,6 +4099,16 @@ function handleReviewChange(event) {
 
   if (target.classList.contains('review-account-select')) {
     void handleInvoiceReviewFieldChange(target, 'accountId');
+    return;
+  }
+
+  if (target.classList.contains('review-tax-select')) {
+    void handleInvoiceReviewFieldChange(target, 'taxCodeId');
+    return;
+  }
+
+  if (target.classList.contains('review-secondary-tax-select')) {
+    void handleInvoiceReviewFieldChange(target, 'secondaryTaxCodeId');
   }
 }
 
@@ -3455,6 +4209,10 @@ async function handleInvoiceReviewFieldChange(select, field) {
     return;
   }
 
+  if (!['vendorId', 'accountId', 'taxCodeId', 'secondaryTaxCodeId'].includes(field)) {
+    return;
+  }
+
   const checksum = typeof select.dataset.checksum === 'string' ? select.dataset.checksum : '';
   if (!checksum) {
     select.value = '';
@@ -3468,9 +4226,7 @@ async function handleInvoiceReviewFieldChange(select, field) {
     return;
   }
 
-  const payload = field === 'vendorId'
-    ? { vendorId: nextValue || null }
-    : { accountId: nextValue || null };
+  const payload = { [field]: nextValue || null };
 
   const originalDisabled = select.disabled;
   select.disabled = true;
@@ -3481,7 +4237,13 @@ async function handleInvoiceReviewFieldChange(select, field) {
     applyInvoiceReviewSelection(checksum, payload);
     select.dataset.currentValue = nextValue;
     renderReviewTable();
-    const fieldLabel = field === 'vendorId' ? 'Vendor' : 'Account';
+    const fieldLabelMap = {
+      vendorId: 'Vendor',
+      accountId: 'Account',
+      taxCodeId: 'Tax code',
+      secondaryTaxCodeId: 'Secondary tax code',
+    };
+    const fieldLabel = fieldLabelMap[field] || 'Field';
     showStatus(globalStatus, `${fieldLabel} updated for invoice.`, 'success');
   } catch (error) {
     console.error('Failed to update invoice review selection', error);
@@ -3623,6 +4385,90 @@ async function handleBulkDeleteSelected() {
   }
 }
 
+function ensureInvoiceReviewSelectionDefaults(invoice, metadata, insights, vatAnalysis) {
+  if (!invoice || typeof invoice !== 'object') {
+    return;
+  }
+
+  const checksum = typeof invoice?.metadata?.checksum === 'string' ? invoice.metadata.checksum : '';
+  if (!checksum) {
+    return;
+  }
+
+  const vendorLookup = metadata?.vendors?.lookup || null;
+  const accountLookup = metadata?.accounts?.lookup || null;
+  const taxLookup = metadata?.taxCodes?.lookup || null;
+
+  const currentSelection = getInvoiceReviewSelection(invoice);
+  const updates = {};
+
+  const existingVendorId = currentSelection?.vendorId || null;
+  const hasValidVendor = existingVendorId && vendorLookup?.has(existingVendorId);
+  const suggestedVendorId = sanitizeReviewSelectionId(insights?.vendor?.quickBooksVendor?.id);
+  if (!hasValidVendor && suggestedVendorId && vendorLookup?.has(suggestedVendorId)) {
+    updates.vendorId = suggestedVendorId;
+  }
+
+  const resolvedVendorId = updates.vendorId || (hasValidVendor ? existingVendorId : null);
+  const vendorDefaults = resolvedVendorId
+    ? metadata?.vendorSettings?.entries?.[resolvedVendorId] || {}
+    : {};
+
+  const existingAccountId = currentSelection?.accountId || null;
+  const hasValidAccount = existingAccountId && accountLookup?.has(existingAccountId);
+  if (!hasValidAccount) {
+    const accountCandidates = [
+      sanitizeReviewSelectionId(insights?.account?.id),
+      sanitizeReviewSelectionId(vendorDefaults.accountId),
+    ];
+    const matchedAccountId = accountCandidates.find((candidate) => candidate && accountLookup?.has(candidate));
+    if (matchedAccountId) {
+      updates.accountId = matchedAccountId;
+    }
+  }
+
+  const existingTaxCodeId = currentSelection?.taxCodeId || null;
+  const hasValidTax = existingTaxCodeId && taxLookup?.has(existingTaxCodeId);
+  if (!hasValidTax) {
+    const taxCandidates = [
+      sanitizeReviewSelectionId(vendorDefaults.taxCodeId),
+      sanitizeReviewSelectionId(findInvoiceTaxCodeId(invoice, metadata)),
+    ];
+    const matchedTaxCodeId = taxCandidates.find((candidate) => candidate && taxLookup?.has(candidate));
+    if (matchedTaxCodeId) {
+      updates.taxCodeId = matchedTaxCodeId;
+    }
+  }
+
+  const secondaryAnalysis = vatAnalysis || analyzeInvoiceVatBuckets(invoice, metadata);
+  const existingSecondaryId = currentSelection?.secondaryTaxCodeId || null;
+  const hasValidSecondary = existingSecondaryId && taxLookup?.has(existingSecondaryId);
+  if (secondaryAnalysis?.requiresSecondary && !hasValidSecondary) {
+    const secondaryCandidates = [
+      sanitizeReviewSelectionId(secondaryAnalysis.suggestedSecondaryTaxCodeId),
+    ];
+    const matchedSecondaryId = secondaryCandidates.find(
+      (candidate) => candidate && taxLookup?.has(candidate)
+    );
+    if (matchedSecondaryId) {
+      updates.secondaryTaxCodeId = matchedSecondaryId;
+    }
+  }
+
+  if (!Object.keys(updates).length) {
+    return;
+  }
+
+  applyInvoiceReviewSelection(checksum, updates);
+
+  const mergedSelection = normalizeClientReviewSelection({
+    ...(currentSelection || {}),
+    ...updates,
+  });
+
+  invoice.reviewSelection = mergedSelection;
+}
+
 function applyInvoiceReviewSelection(checksum, updates = {}) {
   if (!checksum || !Array.isArray(storedInvoices)) {
     return;
@@ -3644,6 +4490,14 @@ function applyInvoiceReviewSelection(checksum, updates = {}) {
 
   if (Object.prototype.hasOwnProperty.call(updates, 'accountId')) {
     existingSelection.accountId = sanitizeReviewSelectionId(updates.accountId);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'taxCodeId')) {
+    existingSelection.taxCodeId = sanitizeReviewSelectionId(updates.taxCodeId);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'secondaryTaxCodeId')) {
+    existingSelection.secondaryTaxCodeId = sanitizeReviewSelectionId(updates.secondaryTaxCodeId);
   }
 
   const nextSelection = normalizeClientReviewSelection(existingSelection);
@@ -3675,15 +4529,24 @@ function normalizeClientReviewSelection(selection) {
 
   const vendorId = sanitizeReviewSelectionId(selection.vendorId);
   const accountId = sanitizeReviewSelectionId(selection.accountId);
+  const taxCodeId = sanitizeReviewSelectionId(selection.taxCodeId);
+  const secondaryTaxCodeId = sanitizeReviewSelectionId(selection.secondaryTaxCodeId);
 
-  if (!vendorId && !accountId) {
-    return null;
+  const result = {};
+  if (vendorId) {
+    result.vendorId = vendorId;
+  }
+  if (accountId) {
+    result.accountId = accountId;
+  }
+  if (taxCodeId) {
+    result.taxCodeId = taxCodeId;
+  }
+  if (secondaryTaxCodeId) {
+    result.secondaryTaxCodeId = secondaryTaxCodeId;
   }
 
-  return {
-    vendorId,
-    accountId,
-  };
+  return Object.keys(result).length ? result : null;
 }
 
 async function updateInvoiceReviewSelectionRequest(checksum, updates = {}, { errorMessage } = {}) {
@@ -3903,17 +4766,272 @@ async function handleCreateAccount(button) {
   }
 }
 
-function openInvoicePreview(checksum, button) {
+function openInvoiceFilePreview(checksum, button) {
   if (!checksum) {
     return;
   }
 
   const previewUrl = buildInvoicePreviewUrl(checksum);
-  const previewWindow = window.open(previewUrl, '_blank', 'noopener,noreferrer');
+  const previewWindow = window.open(
+    previewUrl,
+    'invoicePreview',
+    'popup,width=900,height=700,left=200,top=120,noopener,noreferrer'
+  );
 
   if (!previewWindow) {
     const fileName = button?.dataset?.filename || 'invoice';
     showStatus(globalStatus, `Allow pop-ups to preview ${fileName}.`, 'error');
+    return;
+  }
+
+  previewWindow.opener = null;
+  invoicePreviewWindow = previewWindow;
+
+  try {
+    previewWindow.focus();
+  } catch (error) {
+    // Ignore focus errors; the window is already open.
+  }
+}
+
+async function openQuickBooksPreview(checksum, button) {
+  if (!checksum) {
+    return;
+  }
+
+  if (!selectedRealmId) {
+    showStatus(globalStatus, 'Select a QuickBooks company before previewing.', 'error');
+    return;
+  }
+
+  const targetButton = button || null;
+  const originalLabel = targetButton?.textContent;
+
+  if (targetButton) {
+    targetButton.disabled = true;
+    targetButton.classList.add('is-pending');
+    targetButton.textContent = 'Loading…';
+  }
+
+  try {
+    const params = new URLSearchParams({
+      invoiceId: checksum,
+      realmId: selectedRealmId,
+    });
+    const response = await fetch(`/api/preview-quickbooks?${params.toString()}`);
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      payload = null;
+    }
+
+    if (!response.ok) {
+      const message = payload?.error || 'Failed to build QuickBooks preview.';
+      const details = Array.isArray(payload?.missing) ? buildQuickBooksPreviewBlockerMessage(payload.missing) : '';
+      const composed = details ? `${message} (${details})` : message;
+      showStatus(globalStatus, composed, 'error');
+      return;
+    }
+
+    showQuickBooksPreviewModal(payload);
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, error.message || 'Failed to build QuickBooks preview.', 'error');
+  } finally {
+    if (targetButton) {
+      targetButton.textContent = originalLabel || 'Preview QB';
+      targetButton.disabled = false;
+      targetButton.classList.remove('is-pending');
+    }
+  }
+}
+
+function showQuickBooksPreviewModal(preview) {
+  if (!qbPreviewModal || !preview) {
+    return;
+  }
+
+  const method = preview.method || 'POST';
+  const url = preview.url || '';
+  const payload = preview.payload ?? {};
+  let structuredPayload = payload;
+  if (typeof payload === 'string') {
+    try {
+      structuredPayload = JSON.parse(payload);
+    } catch (error) {
+      structuredPayload = null;
+    }
+  }
+
+  renderQuickBooksPreviewSummary(structuredPayload && typeof structuredPayload === 'object' ? structuredPayload : null);
+
+  const formatted = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
+
+  if (qbPreviewMethod) {
+    qbPreviewMethod.textContent = `${method} ${url}`.trim();
+  }
+  if (qbPreviewJson) {
+    qbPreviewJson.textContent = formatted;
+  }
+
+  lastQuickBooksPreviewPayload = formatted;
+
+  qbPreviewModal.hidden = false;
+  qbPreviewModal.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('modal-open');
+  setQuickBooksPreviewEscapeHandler(true);
+
+  if (qbPreviewCloseButton) {
+    qbPreviewCloseButton.focus();
+  }
+}
+
+function renderQuickBooksPreviewSummary(payload) {
+  if (!qbPreviewSummary) {
+    return;
+  }
+
+  qbPreviewSummary.innerHTML = '';
+  qbPreviewSummary.hidden = true;
+
+  if (!payload || typeof payload !== 'object') {
+    return;
+  }
+
+  const lines = Array.isArray(payload.Line) ? payload.Line : [];
+  if (!lines.length) {
+    return;
+  }
+
+  const metadata = selectedRealmId ? companyMetadataCache.get(selectedRealmId) : null;
+  const taxLookup = metadata?.taxCodes?.lookup;
+
+  const table = document.createElement('table');
+  table.className = 'preview-summary-table';
+
+  const thead = document.createElement('thead');
+  const headerRow = document.createElement('tr');
+  ['Line description', 'Amount', 'Tax code'].forEach((label) => {
+    const th = document.createElement('th');
+    th.scope = 'col';
+    th.textContent = label;
+    headerRow.appendChild(th);
+  });
+  thead.appendChild(headerRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+
+  lines.forEach((line, index) => {
+    if (!line || typeof line !== 'object') {
+      return;
+    }
+
+    const detail = line.AccountBasedExpenseLineDetail || line.Detail || {};
+    const taxCodeRef = detail.TaxCodeRef || line.TaxCodeRef || {};
+    const taxCodeId = sanitizeReviewSelectionId(taxCodeRef.value || taxCodeRef.Value);
+    const amount = formatAmount(line.Amount);
+    const description =
+      typeof line.Description === 'string' && line.Description.trim()
+        ? line.Description.trim()
+        : `Line ${index + 1}`;
+
+    let taxLabel = '—';
+    if (taxCodeId) {
+      if (taxLookup?.has(taxCodeId)) {
+        const entry = taxLookup.get(taxCodeId);
+        const rate = extractRateFromTaxMetadata(entry);
+        const rateText = typeof rate === 'number' ? `${formatRateValue(rate)}%` : null;
+        const baseName = entry?.name || `Tax Code ${taxCodeId}`;
+        taxLabel = rateText ? `${baseName} (${rateText})` : baseName;
+      } else {
+        taxLabel = `Tax Code ${taxCodeId}`;
+      }
+    }
+
+    const row = document.createElement('tr');
+
+    const descriptionCell = document.createElement('td');
+    descriptionCell.textContent = description;
+    row.appendChild(descriptionCell);
+
+    const amountCell = document.createElement('td');
+    amountCell.textContent = amount;
+    amountCell.className = 'numeric';
+    row.appendChild(amountCell);
+
+    const taxCell = document.createElement('td');
+    taxCell.textContent = taxLabel;
+    row.appendChild(taxCell);
+
+    tbody.appendChild(row);
+  });
+
+  if (!tbody.children.length) {
+    return;
+  }
+
+  table.appendChild(tbody);
+  qbPreviewSummary.appendChild(table);
+  qbPreviewSummary.hidden = false;
+}
+
+function hideQuickBooksPreviewModal() {
+  if (!qbPreviewModal || qbPreviewModal.hidden) {
+    return;
+  }
+
+  qbPreviewModal.hidden = true;
+  qbPreviewModal.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('modal-open');
+  setQuickBooksPreviewEscapeHandler(false);
+  if (qbPreviewSummary) {
+    qbPreviewSummary.innerHTML = '';
+    qbPreviewSummary.hidden = true;
+  }
+}
+
+async function copyQuickBooksPreviewPayload() {
+  if (!lastQuickBooksPreviewPayload) {
+    return;
+  }
+
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(lastQuickBooksPreviewPayload);
+    } else {
+      const textarea = document.createElement('textarea');
+      textarea.value = lastQuickBooksPreviewPayload;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'absolute';
+      textarea.style.left = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
+    showStatus(globalStatus, 'Copied preview JSON to clipboard.', 'success');
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, 'Unable to copy preview JSON.', 'error');
+  }
+}
+
+function setQuickBooksPreviewEscapeHandler(active) {
+  if (active) {
+    if (quickBooksPreviewEscapeHandler) {
+      return;
+    }
+    quickBooksPreviewEscapeHandler = (event) => {
+      if (event.key === 'Escape') {
+        hideQuickBooksPreviewModal();
+      }
+    };
+    window.addEventListener('keydown', quickBooksPreviewEscapeHandler);
+  } else if (quickBooksPreviewEscapeHandler) {
+    window.removeEventListener('keydown', quickBooksPreviewEscapeHandler);
+    quickBooksPreviewEscapeHandler = null;
   }
 }
 

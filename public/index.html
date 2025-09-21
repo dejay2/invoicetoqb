@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Invoice Tools</title>
-  <link rel="stylesheet" href="styles.css?v=20240930" />
+  <link rel="stylesheet" href="styles.css?v=20241010" />
 </head>
 <body>
   <main class="container">
@@ -234,6 +234,7 @@
                   <th scope="col">Invoice date</th>
                   <th scope="col">Vendor</th>
                   <th scope="col">Account</th>
+                  <th scope="col">Tax code</th>
                   <th scope="col">Total ex VAT</th>
                   <th scope="col">VAT</th>
                   <th scope="col">Grand total</th>
@@ -242,7 +243,7 @@
               </thead>
               <tbody id="review-table-body">
                 <tr class="empty-row">
-                  <td colspan="9">No invoices pending review.</td>
+                  <td colspan="10">No invoices pending review.</td>
                 </tr>
               </tbody>
             </table>
@@ -277,6 +278,27 @@
     </section>
   </main>
 
-  <script src="app.js?v=20241007" defer></script>
+  <div id="qb-preview-modal" class="modal" hidden aria-hidden="true">
+    <div class="modal-overlay" data-modal-dismiss></div>
+    <div class="modal-window" role="dialog" aria-modal="true" aria-labelledby="qb-preview-title">
+      <header class="modal-header">
+        <h2 id="qb-preview-title">QuickBooks Preview</h2>
+        <button type="button" id="qb-preview-dismiss" class="icon-button" aria-label="Close preview">&times;</button>
+      </header>
+      <div class="modal-body">
+        <div class="modal-meta">
+          <span id="qb-preview-method" class="modal-method">—</span>
+        </div>
+        <div id="qb-preview-summary" class="preview-summary" hidden></div>
+        <pre class="code-block"><code id="qb-preview-json"></code></pre>
+      </div>
+      <footer class="modal-footer">
+        <button type="button" id="qb-preview-copy" class="secondary-button">Copy JSON</button>
+        <button type="button" id="qb-preview-close" class="primary-button">Close</button>
+      </footer>
+    </div>
+  </div>
+
+  <script src="app.js?v=20241216" defer></script>
 </body>
 </html>

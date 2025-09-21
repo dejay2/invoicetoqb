@@ -34,9 +34,57 @@ const QUICKBOOKS_REDIRECT_URI = process.env.QUICKBOOKS_REDIRECT_URI || QUICKBOOK
 const QUICKBOOKS_SCOPES = process.env.QUICKBOOKS_SCOPES || 'com.intuit.quickbooks.accounting';
 const QUICKBOOKS_ENVIRONMENT = process.env.QUICKBOOKS_ENVIRONMENT || 'sandbox';
 const QUICKBOOKS_API_BASE_URL = process.env.QUICKBOOKS_API_BASE_URL || (QUICKBOOKS_ENVIRONMENT === 'production' ? 'https://quickbooks.api.intuit.com' : 'https://sandbox-quickbooks.api.intuit.com');
-const QUICKBOOKS_COMPANIES_FILE = path.join(__dirname, '..', 'data', 'quickbooks_companies.json');
+const QUICKBOOKS_MINOR_VERSION = process.env.QUICKBOOKS_MINOR_VERSION || '75';
+const QUICKBOOKS_COMPANIES_FILE = process.env.QUICKBOOKS_COMPANIES_FILE
+  ? path.resolve(process.env.QUICKBOOKS_COMPANIES_FILE)
+  : path.join(__dirname, '..', 'data', 'quickbooks_companies.json');
 const QUICKBOOKS_METADATA_DIR = path.join(__dirname, '..', 'data', 'quickbooks');
 const QUICKBOOKS_AUTH_URL = 'https://appcenter.intuit.com/connect/oauth2';
+
+let quickBooksCompaniesWriteMutex = Promise.resolve();
+const QUICKBOOKS_HEALTH_METRICS = [];
+const MAX_HEALTH_METRIC_HISTORY = 100;
+
+function emitHealthMetric(name, dimensions = {}) {
+  if (typeof name !== 'string' || !name) {
+    return null;
+  }
+
+  const entry = {
+    name,
+    dimensions: dimensions && typeof dimensions === 'object' ? { ...dimensions } : {},
+    at: new Date().toISOString(),
+  };
+
+  QUICKBOOKS_HEALTH_METRICS.push(entry);
+  if (QUICKBOOKS_HEALTH_METRICS.length > MAX_HEALTH_METRIC_HISTORY) {
+    QUICKBOOKS_HEALTH_METRICS.shift();
+  }
+
+  console.info(`[HealthMetric] ${name}`, entry.dimensions);
+  return entry;
+}
+
+function getHealthMetricHistory() {
+  return QUICKBOOKS_HEALTH_METRICS.slice();
+}
+
+async function runWithQuickBooksCompaniesWriteLock(task) {
+  let release;
+  const next = new Promise((resolve) => {
+    release = resolve;
+  });
+
+  const previous = quickBooksCompaniesWriteMutex;
+  quickBooksCompaniesWriteMutex = next;
+
+  try {
+    await previous.catch(() => {});
+    return await task();
+  } finally {
+    release();
+  }
+}
 const QUICKBOOKS_TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
 const QUICKBOOKS_STATE_TTL_MS = 10 * 60 * 1000;
 
@@ -567,7 +615,14 @@ async function pollAllOneDriveCompanies() {
 
     await Promise.allSettled(tasks);
   } catch (error) {
-    console.error('OneDrive poll enumeration failed', error);
+    if (error?.code === 'QUICKBOOKS_COMPANY_FILE_CORRUPT') {
+      console.error(
+        'OneDrive poll enumeration halted: QuickBooks company store is corrupt. Restore the latest backup before resuming sync.'
+      );
+      emitHealthMetric('quickbooks.company_file.corrupt', { source: 'onedrive_poll' });
+    } else {
+      console.error('OneDrive poll enumeration failed', error);
+    }
   }
 }
 
@@ -1299,7 +1354,19 @@ async function pollAllGmailCompanies() {
     return;
   }
 
-  const companies = await readQuickBooksCompanies();
+  let companies;
+  try {
+    companies = await readQuickBooksCompanies();
+  } catch (error) {
+    if (error?.code === 'QUICKBOOKS_COMPANY_FILE_CORRUPT') {
+      console.error(
+        'Gmail polling halted: QuickBooks company store is corrupt. Restore the latest backup before resuming inbox checks.'
+      );
+      emitHealthMetric('quickbooks.company_file.corrupt', { source: 'gmail_poll' });
+      return;
+    }
+    throw error;
+  }
   const now = Date.now();
 
   for (const company of companies) {
@@ -1927,6 +1994,19 @@ app.get('/api/quickbooks/companies', async (req, res) => {
     const sanitized = companies.map(sanitizeQuickBooksCompany);
     res.json({ companies: sanitized });
   } catch (error) {
+    if (error?.code === 'QUICKBOOKS_COMPANY_FILE_CORRUPT') {
+      const message =
+        'QuickBooks connections are paused because the company store is corrupt. Restore the latest backup or run the repair CLI before resuming sync.';
+      console.error(message, error);
+      res.status(503).json({
+        error: message,
+        code: error.code,
+        backupPath: error.backupPath || null,
+      });
+      emitHealthMetric('quickbooks.company_file.corrupt', { source: 'http_companies' });
+      return;
+    }
+
     console.error('Failed to load QuickBooks companies', error);
     res.status(500).json({ error: 'Failed to load QuickBooks connections.' });
   }
@@ -2803,23 +2883,48 @@ app.post('/api/invoices/:checksum/status', async (req, res) => {
 
 app.patch('/api/invoices/:checksum/review', async (req, res) => {
   const checksum = req.params.checksum;
-  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  let body = req.body;
+
+  if (typeof body === 'string') {
+    try {
+      body = body.trim() ? JSON.parse(body) : {};
+    } catch (error) {
+      console.warn('Unable to parse review update payload as JSON', { checksum });
+      body = {};
+    }
+  } else if (!body || typeof body !== 'object') {
+    body = {};
+  }
+
   const hasVendorUpdate = Object.prototype.hasOwnProperty.call(body, 'vendorId');
   const hasAccountUpdate = Object.prototype.hasOwnProperty.call(body, 'accountId');
+  const hasTaxUpdate = Object.prototype.hasOwnProperty.call(body, 'taxCodeId');
+  const hasSecondaryTaxUpdate = Object.prototype.hasOwnProperty.call(body, 'secondaryTaxCodeId');
 
   if (!checksum) {
     return res.status(400).json({ error: 'Checksum is required.' });
   }
 
-  if (!hasVendorUpdate && !hasAccountUpdate) {
+  if (!hasVendorUpdate && !hasAccountUpdate && !hasTaxUpdate && !hasSecondaryTaxUpdate) {
     return res.status(400).json({ error: 'No review updates provided.' });
   }
 
+  const updates = {};
+  if (hasVendorUpdate) {
+    updates.vendorId = body.vendorId;
+  }
+  if (hasAccountUpdate) {
+    updates.accountId = body.accountId;
+  }
+  if (hasTaxUpdate) {
+    updates.taxCodeId = body.taxCodeId;
+  }
+  if (hasSecondaryTaxUpdate) {
+    updates.secondaryTaxCodeId = body.secondaryTaxCodeId;
+  }
+
   try {
-    const updated = await updateStoredInvoiceReviewSelection(checksum, {
-      vendorId: body.vendorId,
-      accountId: body.accountId,
-    });
+    const updated = await updateStoredInvoiceReviewSelection(checksum, updates);
 
     if (!updated) {
       return res.status(404).json({ error: 'Invoice not found.' });
@@ -2904,6 +3009,82 @@ app.post('/api/invoices/:checksum/match', async (req, res) => {
       return res.status(502).json({ error: error.message });
     }
     return res.status(500).json({ error: 'Failed to generate AI match suggestions.' });
+  }
+});
+
+app.get('/api/preview-quickbooks', async (req, res) => {
+  const invoiceIdRaw = typeof req.query.invoiceId === 'string' ? req.query.invoiceId.trim() : '';
+  const realmIdRaw = typeof req.query.realmId === 'string' ? req.query.realmId.trim() : '';
+
+  if (!invoiceIdRaw) {
+    return res.status(400).json({ error: 'invoiceId query parameter is required.' });
+  }
+
+  if (!realmIdRaw) {
+    return res.status(400).json({ error: 'realmId query parameter is required.' });
+  }
+
+  try {
+    const [invoice, metadata] = await Promise.all([
+      findStoredInvoiceByChecksum(invoiceIdRaw),
+      readQuickBooksCompanyMetadata(realmIdRaw).catch((error) => {
+        if (error?.code === 'NOT_FOUND') {
+          return null;
+        }
+        throw error;
+      }),
+    ]);
+
+    if (!invoice) {
+      return res.status(404).json({ error: 'Invoice not found.' });
+    }
+
+    if (!metadata) {
+      return res.status(404).json({ error: 'QuickBooks company not found.' });
+    }
+
+    const invoiceRealmId = invoice?.metadata?.companyProfile?.realmId;
+    if (invoiceRealmId && invoiceRealmId !== realmIdRaw) {
+      return res.status(409).json({ error: 'Invoice belongs to a different QuickBooks company.' });
+    }
+
+    const missingMetadata = identifyMissingQuickBooksMetadata(metadata);
+    if (missingMetadata.length) {
+      return res.status(412).json({
+        error: 'QuickBooks metadata is missing. Refresh QuickBooks data before previewing.',
+        missing: missingMetadata,
+      });
+    }
+
+    let payload;
+    try {
+      payload = buildQuickBooksInvoicePayload(invoice, { metadata, realmId: realmIdRaw });
+    } catch (error) {
+      if (error?.status === 422) {
+        const responseBody = { error: error.message };
+        if (error.details) {
+          responseBody.details = error.details;
+        }
+        return res.status(422).json(responseBody);
+      }
+      throw error;
+    }
+
+    const url = buildQuickBooksInvoiceUrl(realmIdRaw);
+    console.info('quickbooks-preview.generated', {
+      invoiceId: invoiceIdRaw,
+      realmId: realmIdRaw,
+      timestamp: new Date().toISOString(),
+    });
+
+    res.json({
+      method: 'POST',
+      url,
+      payload,
+    });
+  } catch (error) {
+    console.error('Failed to build QuickBooks preview', error);
+    res.status(500).json({ error: 'Failed to build QuickBooks preview.' });
   }
 });
 
@@ -3096,27 +3277,44 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Not found' });
 });
 
-app.listen(PORT, () => {
-  console.log(`Invoice parser listening on http://localhost:${PORT}`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Invoice parser listening on http://localhost:${PORT}`);
+  });
 
-warmQuickBooksMetadata().catch((error) => {
-  console.error('QuickBooks metadata warmup failed', error);
-});
+  warmQuickBooksMetadata().catch((error) => {
+    console.error('QuickBooks metadata warmup failed', error);
+  });
 
-if (isOneDriveSyncConfigured()) {
-  startOneDriveSyncScheduler();
-} else if (process.env.MS_GRAPH_CLIENT_ID || process.env.MS_GRAPH_CLIENT_SECRET || process.env.MS_GRAPH_TENANT_ID) {
-  console.warn('OneDrive sync is not enabled. Provide MS_GRAPH_CLIENT_ID, MS_GRAPH_CLIENT_SECRET, and MS_GRAPH_TENANT_ID to activate folder monitoring.');
+  if (isOneDriveSyncConfigured()) {
+    startOneDriveSyncScheduler();
+  } else if (process.env.MS_GRAPH_CLIENT_ID || process.env.MS_GRAPH_CLIENT_SECRET || process.env.MS_GRAPH_TENANT_ID) {
+    console.warn('OneDrive sync is not enabled. Provide MS_GRAPH_CLIENT_ID, MS_GRAPH_CLIENT_SECRET, and MS_GRAPH_TENANT_ID to activate folder monitoring.');
+  }
+
+  if (isGmailMonitoringConfigured()) {
+    startGmailMonitor();
+  } else if (GMAIL_CLIENT_ID || GMAIL_CLIENT_SECRET) {
+    console.warn(
+      'Gmail monitoring is not enabled. Provide both GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET to activate inbox polling.'
+    );
+  }
 }
 
-if (isGmailMonitoringConfigured()) {
-  startGmailMonitor();
-} else if (GMAIL_CLIENT_ID || GMAIL_CLIENT_SECRET) {
-  console.warn(
-    'Gmail monitoring is not enabled. Provide both GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET to activate inbox polling.'
-  );
-}
+module.exports = {
+  app,
+  buildQuickBooksExpenseLines,
+  resolveQuickBooksTaxCodes,
+  analyseInvoiceVatSignals,
+  sumLineAmounts,
+  normaliseMoneyValue,
+  readQuickBooksCompanies,
+  persistQuickBooksCompanies,
+  emitHealthMetric,
+  getHealthMetricHistory,
+  attemptQuickBooksCompaniesRepair,
+  QUICKBOOKS_COMPANIES_FILE,
+};
 
 async function exchangeQuickBooksCode(code) {
   if (!QUICKBOOKS_CLIENT_ID || !QUICKBOOKS_CLIENT_SECRET) {
@@ -3212,7 +3410,9 @@ async function exchangeGmailCode(code) {
 }
 
 async function fetchQuickBooksCompanyInfo(realmId, accessToken) {
-  const url = `${QUICKBOOKS_API_BASE_URL}/v3/company/${realmId}/companyinfo/${realmId}?minorversion=65`;
+  const url = `${QUICKBOOKS_API_BASE_URL}/v3/company/${realmId}/companyinfo/${realmId}?minorversion=${encodeURIComponent(
+    QUICKBOOKS_MINOR_VERSION
+  )}`;
   const response = await fetch(url, {
     method: 'GET',
     headers: {
@@ -3241,15 +3441,143 @@ function formatFallbackCompanyName(realmId) {
   return `QuickBooks Company #${realmId}`;
 }
 
-async function readQuickBooksCompanies() {
+function findBalancedJsonArrayEndIndex(source) {
+  if (!source || typeof source !== 'string') {
+    return -1;
+  }
+
+  let depth = 0;
+  let inString = false;
+  let isEscaped = false;
+
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+
+    if (inString) {
+      if (isEscaped) {
+        isEscaped = false;
+        continue;
+      }
+
+      if (char === '\\') {
+        isEscaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (char === '[' || char === '{') {
+      depth += 1;
+      continue;
+    }
+
+    if (char === ']' || char === '}') {
+      depth -= 1;
+      if (depth === 0 && char === ']') {
+        return index;
+      }
+      continue;
+    }
+  }
+
+  return -1;
+}
+
+async function backupCorruptQuickBooksCompaniesFile(rawContents) {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupPath = `${QUICKBOOKS_COMPANIES_FILE}.corrupt-${timestamp}.json`;
+
   try {
-    const file = await fs.readFile(QUICKBOOKS_COMPANIES_FILE, 'utf-8');
-    return JSON.parse(file);
+    await fs.writeFile(backupPath, rawContents, { flag: 'wx' });
+    console.error(
+      `[QuickBooks] Failed to parse ${QUICKBOOKS_COMPANIES_FILE}. Backed up corrupt contents to ${backupPath}`
+    );
+    return backupPath;
+  } catch (backupErr) {
+    if (backupErr.code === 'EEXIST') {
+      console.warn(`[QuickBooks] Backup file ${backupPath} already exists. Skipping overwrite.`);
+    } else {
+      console.error(`[QuickBooks] Failed to write corrupt backup ${backupPath}: ${backupErr.message}`);
+    }
+    return null;
+  }
+}
+
+async function attemptQuickBooksCompaniesRepair({ raw, parseError, backupPath }) {
+  const closingIndex = findBalancedJsonArrayEndIndex(raw);
+  if (closingIndex === -1) {
+    console.error(
+      `[QuickBooks] Unable to locate balanced closing bracket while repairing ${QUICKBOOKS_COMPANIES_FILE}.`
+    );
+    return null;
+  }
+
+  const trimmed = `${raw.slice(0, closingIndex + 1)}\n`;
+  try {
+    const repaired = JSON.parse(trimmed);
+    await persistQuickBooksCompanies(repaired);
+    const truncatedBytes = Math.max(raw.length - (closingIndex + 1), 0);
+    console.warn(
+      `[QuickBooks] Repaired ${QUICKBOOKS_COMPANIES_FILE} by truncating ${truncatedBytes} trailing byte${
+        truncatedBytes === 1 ? '' : 's'
+      } at index ${closingIndex}`
+    );
+    emitHealthMetric('quickbooks.company_file.repaired', {
+      truncatedBytes,
+      backupPath: backupPath || null,
+      parseError: parseError?.message || null,
+    });
+    return {
+      companies: repaired,
+      truncatedBytes,
+      closingIndex,
+    };
+  } catch (repairErr) {
+    console.error(
+      `[QuickBooks] Attempted repair of ${QUICKBOOKS_COMPANIES_FILE} failed: ${repairErr.message}`
+    );
+    return null;
+  }
+}
+
+async function readQuickBooksCompanies({ allowRepair = true } = {}) {
+  let file;
+  try {
+    file = await fs.readFile(QUICKBOOKS_COMPANIES_FILE, 'utf-8');
   } catch (err) {
     if (err.code === 'ENOENT') {
       return [];
     }
     throw err;
+  }
+
+  try {
+    return JSON.parse(file);
+  } catch (parseErr) {
+    const backupPath = await backupCorruptQuickBooksCompaniesFile(file);
+
+    if (allowRepair) {
+      const repaired = await attemptQuickBooksCompaniesRepair({ raw: file, parseError: parseErr, backupPath });
+      if (repaired?.companies) {
+        return repaired.companies;
+      }
+    }
+
+    const error = new Error(
+      `Failed to parse QuickBooks companies file at ${QUICKBOOKS_COMPANIES_FILE}. Restore the backup or run the repair CLI.`
+    );
+    error.code = 'QUICKBOOKS_COMPANY_FILE_CORRUPT';
+    error.cause = parseErr;
+    if (backupPath) {
+      error.backupPath = backupPath;
+    }
+    throw error;
   }
 }
 
@@ -3285,8 +3613,47 @@ async function storeQuickBooksCompany({ realmId, companyName, legalName, tokens 
 }
 
 async function persistQuickBooksCompanies(companies) {
-  await fs.mkdir(path.dirname(QUICKBOOKS_COMPANIES_FILE), { recursive: true });
-  await fs.writeFile(QUICKBOOKS_COMPANIES_FILE, JSON.stringify(companies, null, 2));
+  return runWithQuickBooksCompaniesWriteLock(async () => {
+    const dir = path.dirname(QUICKBOOKS_COMPANIES_FILE);
+    const tempPath = `${QUICKBOOKS_COMPANIES_FILE}.tmp-${process.pid}-${Date.now()}`;
+    const payload = `${JSON.stringify(companies, null, 2)}\n`;
+
+    await fs.mkdir(dir, { recursive: true });
+
+    let handle;
+    try {
+      handle = await fs.open(tempPath, 'w', 0o600);
+      await handle.writeFile(payload);
+      await handle.sync();
+    } finally {
+      if (handle) {
+        await handle.close();
+      }
+    }
+
+    try {
+      await fs.rename(tempPath, QUICKBOOKS_COMPANIES_FILE);
+    } catch (err) {
+      await fs.unlink(tempPath).catch(() => {});
+      throw err;
+    }
+
+    let dirHandle;
+    try {
+      dirHandle = await fs.open(dir, 'r');
+      await dirHandle.sync();
+    } catch (dirErr) {
+      if (dirErr && dirErr.code !== 'EISDIR' && dirErr.code !== 'ENOENT') {
+        console.warn(
+          `[QuickBooks] Failed to fsync directory ${dir}: ${dirErr.message}`
+        );
+      }
+    } finally {
+      if (dirHandle) {
+        await dirHandle.close().catch(() => {});
+      }
+    }
+  });
 }
 
 async function updateQuickBooksCompanyFields(realmId, updates) {
@@ -3801,15 +4168,20 @@ function transformQuickBooksVendor(vendor) {
     return null;
   }
 
+  const id = sanitiseQuickBooksId(vendor.Id);
+  if (!id) {
+    return null;
+  }
+
   return {
-    id: vendor.Id,
+    id,
     displayName:
       vendor.DisplayName ||
       vendor.CompanyName ||
       vendor.Title ||
       vendor.FamilyName ||
       vendor.GivenName ||
-      (vendor.Id ? `Vendor ${vendor.Id}` : null),
+      (id ? `Vendor ${id}` : null),
     email: vendor.PrimaryEmailAddr?.Address || null,
     phone: vendor.PrimaryPhone?.FreeFormNumber || null,
   };
@@ -3820,9 +4192,14 @@ function transformQuickBooksAccount(account) {
     return null;
   }
 
+  const id = sanitiseQuickBooksId(account.Id);
+  if (!id) {
+    return null;
+  }
+
   return {
-    id: account.Id,
-    name: account.Name || account.FullyQualifiedName || `Account ${account.Id}`,
+    id,
+    name: account.Name || account.FullyQualifiedName || `Account ${id}`,
     fullyQualifiedName: account.FullyQualifiedName || null,
     accountType: account.AccountType || null,
     accountSubType: account.AccountSubType || null,
@@ -3851,7 +4228,9 @@ async function createQuickBooksVendor(realmId, details) {
   }
 
   const vendor = await performQuickBooksFetch(realmId, async (accessToken) => {
-    const url = `${QUICKBOOKS_API_BASE_URL}/v3/company/${realmId}/vendor?minorversion=65`;
+    const url = `${QUICKBOOKS_API_BASE_URL}/v3/company/${realmId}/vendor?minorversion=${encodeURIComponent(
+      QUICKBOOKS_MINOR_VERSION
+    )}`;
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -3908,7 +4287,9 @@ async function createQuickBooksAccount(realmId, details) {
   }
 
   const account = await performQuickBooksFetch(realmId, async (accessToken) => {
-    const url = `${QUICKBOOKS_API_BASE_URL}/v3/company/${realmId}/account?minorversion=65`;
+    const url = `${QUICKBOOKS_API_BASE_URL}/v3/company/${realmId}/account?minorversion=${encodeURIComponent(
+      QUICKBOOKS_MINOR_VERSION
+    )}`;
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -3966,14 +4347,22 @@ async function fetchQuickBooksTaxCodes(realmId, accessToken) {
 
   return (taxCodes || [])
     .filter((code) => code?.Active !== false)
-    .map((code) => ({
-      id: code.Id,
-      name: code.Name || `Tax Code ${code.Id}`,
-      description: code.Description || null,
-      rate: deriveTaxCodeRate(code, taxRateLookup),
-      agency: code.SalesTaxRateList?.TaxAgencyRef?.name || null,
-      active: code.Active !== false,
-    }));
+    .map((code) => {
+      const id = sanitiseQuickBooksId(code.Id);
+      if (!id) {
+        return null;
+      }
+
+      return {
+        id,
+        name: code.Name || `Tax Code ${id}`,
+        description: code.Description || null,
+        rate: deriveTaxCodeRate(code, taxRateLookup),
+        agency: code.SalesTaxRateList?.TaxAgencyRef?.name || null,
+        active: code.Active !== false,
+      };
+    })
+    .filter(Boolean);
 }
 
 async function fetchQuickBooksQueryList(realmId, accessToken, entity) {
@@ -3983,7 +4372,9 @@ async function fetchQuickBooksQueryList(realmId, accessToken, entity) {
 
   while (true) {
     const query = `select * from ${entity} startposition ${startPosition} maxresults ${pageSize}`;
-    const url = `${QUICKBOOKS_API_BASE_URL}/v3/company/${realmId}/query?minorversion=65&query=${encodeURIComponent(query)}`;
+    const url = `${QUICKBOOKS_API_BASE_URL}/v3/company/${realmId}/query?minorversion=${encodeURIComponent(
+      QUICKBOOKS_MINOR_VERSION
+    )}&query=${encodeURIComponent(query)}`;
 
     const response = await fetch(url, {
       method: 'GET',
@@ -4170,7 +4561,7 @@ async function fetchLastVendorDefaults(realmId, accessToken, vendorId) {
 async function runQuickBooksQuery(realmId, accessToken, query) {
   const url = `${QUICKBOOKS_API_BASE_URL}/v3/company/${realmId}/query`;
   const params = new URLSearchParams({
-    minorversion: '65',
+    minorversion: QUICKBOOKS_MINOR_VERSION,
     query,
   });
 
@@ -4259,7 +4650,14 @@ async function warmQuickBooksMetadata() {
       }
     }
   } catch (error) {
-    console.error('Unable to warm QuickBooks metadata', error);
+    if (error?.code === 'QUICKBOOKS_COMPANY_FILE_CORRUPT') {
+      console.error(
+        'Unable to warm QuickBooks metadata because the company store is corrupt. Restore the backup to resume warmup.'
+      );
+      emitHealthMetric('quickbooks.company_file.corrupt', { source: 'metadata_warmup' });
+    } else {
+      console.error('Unable to warm QuickBooks metadata', error);
+    }
   }
 }
 
@@ -5581,6 +5979,850 @@ function applyVendorDefaultAccount({ vendor, account }, { vendorSettings, accoun
   };
 }
 
+function identifyMissingQuickBooksMetadata(metadata) {
+  const missing = [];
+  if (!metadata?.vendors || !Array.isArray(metadata.vendors.items) || !metadata.vendors.items.length) {
+    missing.push('vendors');
+  }
+  if (!metadata?.accounts || !Array.isArray(metadata.accounts.items) || !metadata.accounts.items.length) {
+    missing.push('accounts');
+  }
+  if (!metadata?.taxCodes || !Array.isArray(metadata.taxCodes.items) || !metadata.taxCodes.items.length) {
+    missing.push('taxCodes');
+  }
+  return missing;
+}
+
+function buildQuickBooksInvoiceUrl(realmId) {
+  const base = (QUICKBOOKS_API_BASE_URL || '').replace(/\/+$/, '');
+  const encodedRealmId = encodeURIComponent(realmId);
+  const url = `${base}/v3/company/${encodedRealmId}/bill`;
+  return `${url}?minorversion=${encodeURIComponent(QUICKBOOKS_MINOR_VERSION)}`;
+}
+
+function buildQuickBooksInvoicePayload(invoice, { metadata, realmId }) {
+  if (!invoice) {
+    throw createPreviewValidationError('Invoice is not available for preview.');
+  }
+
+  if (!realmId) {
+    throw createPreviewValidationError('QuickBooks realmId is required for preview.');
+  }
+
+  const vendorId = normaliseNullableId(invoice?.reviewSelection?.vendorId);
+  if (!vendorId) {
+    throw createPreviewValidationError('Select a QuickBooks vendor before previewing.', { missing: 'vendorId' });
+  }
+
+  const vendorLookup = buildQuickBooksLookup(metadata?.vendors?.items);
+  const vendor = vendorLookup.get(vendorId);
+  if (!vendor) {
+    throw createPreviewValidationError(
+      'Selected QuickBooks vendor is no longer available. Refresh QuickBooks data and try again.',
+      { missing: 'vendor', vendorId }
+    );
+  }
+
+  const vendorSettings = metadata?.vendorSettings || {};
+  const vendorDefaults = vendorSettings[vendorId] || {};
+  const accountId = normaliseNullableId(invoice?.reviewSelection?.accountId) || normaliseNullableId(vendorDefaults.accountId);
+  if (!accountId) {
+    throw createPreviewValidationError('Select a QuickBooks account before previewing.', { missing: 'accountId' });
+  }
+
+  const accountLookup = buildQuickBooksLookup(metadata?.accounts?.items);
+  const account = accountLookup.get(accountId);
+  if (!account) {
+    throw createPreviewValidationError(
+      'Selected QuickBooks account is no longer available. Refresh QuickBooks data and try again.',
+      { missing: 'account', accountId }
+    );
+  }
+
+  const taxLookup = buildQuickBooksLookup(metadata?.taxCodes?.items);
+  const taxResolution = resolveQuickBooksTaxCodes(invoice, taxLookup, vendorDefaults);
+  const primaryTaxCodeId = taxResolution.primaryTaxCodeId;
+
+  if (!primaryTaxCodeId) {
+    throw createPreviewValidationError('Add a QuickBooks tax code for this vendor before previewing.', {
+      missing: 'taxCodeId',
+      vendorId,
+    });
+  }
+
+  if (!taxLookup.has(primaryTaxCodeId)) {
+    throw createPreviewValidationError(
+      'Selected QuickBooks tax code is no longer available. Refresh QuickBooks data and try again.',
+      { missing: 'taxCode', taxCodeId: primaryTaxCodeId }
+    );
+  }
+
+  const secondaryTaxCodeId =
+    taxResolution.secondaryTaxCodeId && taxLookup.has(taxResolution.secondaryTaxCodeId)
+      ? taxResolution.secondaryTaxCodeId
+      : null;
+
+  if (taxResolution.secondaryTaxCodeId && !secondaryTaxCodeId) {
+    console.warn('Secondary QuickBooks tax code selection is no longer available in metadata.', {
+      requestedTaxCodeId: taxResolution.secondaryTaxCodeId,
+      invoiceChecksum: invoice?.metadata?.checksum || null,
+    });
+  }
+
+  const expenseLinesResult = buildQuickBooksExpenseLines(invoice, {
+    account,
+    taxLookup,
+    taxResolution: { ...taxResolution, secondaryTaxCodeId },
+  });
+
+  const { lines, vatBuckets, usedTaxCodeIds, requiresSecondaryTaxCode } = expenseLinesResult;
+
+  if (!lines.length) {
+    throw createPreviewValidationError('Invoice does not contain any line items with amounts to preview.', {
+      missing: 'lines',
+    });
+  }
+
+  if (requiresSecondaryTaxCode) {
+    throw createPreviewValidationError('Assign zero-rated VAT code for split invoice before previewing.', {
+      missing: 'secondaryTaxCodeId',
+      vendorId,
+    });
+  }
+
+  const totalAmount = sumLineAmounts(lines);
+  if (totalAmount === null) {
+    throw createPreviewValidationError('Unable to determine invoice total for preview.', {
+      missing: 'totalAmount',
+    });
+  }
+
+  const vendorRef = compactObject({
+    value: vendor.id,
+    name: sanitiseOptionalString(vendor.displayName || vendor.name),
+  });
+
+  const currency = sanitiseCurrencyCode(invoice?.data?.currency);
+  const currencyRef = currency ? compactObject({ value: currency }) : null;
+
+  const hasMultipleTaxCodes = usedTaxCodeIds && usedTaxCodeIds.size > 1;
+  const invoiceLevelTaxCodeId = !hasMultipleTaxCodes
+    ? vatBuckets && vatBuckets.length ? vatBuckets[0].taxCodeId || primaryTaxCodeId : primaryTaxCodeId
+    : null;
+  const taxDetail = invoiceLevelTaxCodeId
+    ? compactObject({ TxnTaxCodeRef: compactObject({ value: invoiceLevelTaxCodeId }) })
+    : null;
+
+  const payload = compactObject({
+    VendorRef: vendorRef,
+    DocNumber: sanitiseDocNumberForQuickBooks(invoice?.data?.invoiceNumber),
+    TxnDate: normaliseInvoiceDateForQuickBooks(invoice?.data?.invoiceDate),
+    PrivateNote: buildPreviewPrivateNote(invoice),
+    CurrencyRef: currencyRef,
+    Line: lines,
+    TxnTaxDetail: taxDetail,
+    TotalAmt: totalAmount,
+  });
+
+  if (payload.CurrencyRef) {
+    payload.CurrencyRef = compactObject(payload.CurrencyRef);
+  }
+
+  if (payload.TxnTaxDetail) {
+    payload.TxnTaxDetail = compactObject({
+      TxnTaxCodeRef: compactObject(payload.TxnTaxDetail.TxnTaxCodeRef),
+    });
+  }
+
+  return payload;
+}
+
+function resolveQuickBooksTaxCodes(invoice, taxLookup, vendorDefaults) {
+  const candidateFromSelection = normaliseNullableId(invoice?.reviewSelection?.taxCodeId);
+  const candidateFromDefaults = normaliseNullableId(vendorDefaults?.taxCodeId);
+  const candidateLabels = collectCandidateTaxCodeLabels(invoice);
+  const matchFromLabels = findTaxCodeIdFromLabels(candidateLabels, taxLookup);
+
+  const primaryCandidates = [candidateFromSelection, candidateFromDefaults, matchFromLabels].filter(Boolean);
+
+  let primaryTaxCodeId = null;
+  for (const candidate of primaryCandidates) {
+    if (candidate && taxLookup?.has(candidate)) {
+      primaryTaxCodeId = candidate;
+      break;
+    }
+  }
+
+  if (!primaryTaxCodeId) {
+    primaryTaxCodeId = primaryCandidates.find(Boolean) || null;
+  }
+
+  const secondaryFromSelection = normaliseNullableId(invoice?.reviewSelection?.secondaryTaxCodeId);
+  let secondaryTaxCodeId =
+    secondaryFromSelection && taxLookup?.has(secondaryFromSelection) ? secondaryFromSelection : null;
+
+  const vatAnalysis = analyseInvoiceVatSignals(invoice, taxLookup);
+
+  if (!secondaryTaxCodeId) {
+    const productTaxCodeCandidates = vatAnalysis.signals
+      .map((signal) => signal.taxCodeId)
+      .filter((taxCodeId) => taxCodeId && taxCodeId !== primaryTaxCodeId);
+
+    for (const candidate of productTaxCodeCandidates) {
+      if (taxLookup?.has(candidate)) {
+        secondaryTaxCodeId = candidate;
+        break;
+      }
+    }
+  }
+
+  if (!secondaryTaxCodeId) {
+    const zeroBucketPresent = vatAnalysis.signals.some((signal) => signal.bucket === 'zero');
+    if (zeroBucketPresent) {
+      const zeroCandidates = [];
+      if (taxLookup?.size) {
+        for (const [id, entry] of taxLookup.entries()) {
+          if (id === primaryTaxCodeId) {
+            continue;
+          }
+          if (classifyTaxCodeEntry(entry) === 'zero') {
+            zeroCandidates.push(id);
+          }
+        }
+      }
+      if (zeroCandidates.length === 1) {
+        secondaryTaxCodeId = zeroCandidates[0];
+      }
+    }
+  }
+
+  if (secondaryTaxCodeId === primaryTaxCodeId) {
+    secondaryTaxCodeId = null;
+  }
+
+  return {
+    primaryTaxCodeId,
+    secondaryTaxCodeId,
+    detectedVatBuckets: Array.from(vatAnalysis.detectedBucketKeys || []),
+    distinctVatRates: Array.from(vatAnalysis.distinctRates || []),
+  };
+}
+
+function collectCandidateTaxCodeLabels(invoice) {
+  const candidates = [];
+  const invoiceLevel = sanitiseOptionalString(invoice?.data?.taxCode);
+  if (invoiceLevel) {
+    candidates.push(invoiceLevel);
+  }
+
+  if (Array.isArray(invoice?.data?.products)) {
+    invoice.data.products.forEach((product) => {
+      const code = sanitiseOptionalString(product?.taxCode);
+      if (code) {
+        candidates.push(code);
+      }
+    });
+  }
+
+  return candidates;
+}
+
+function findTaxCodeIdFromLabels(candidates, taxLookup) {
+  if (!Array.isArray(candidates) || !candidates.length || !taxLookup?.size) {
+    return null;
+  }
+
+  const entries = [];
+  for (const [id, entry] of taxLookup.entries()) {
+    entries.push({
+      id,
+      name: normaliseComparableText(entry?.name),
+      description: normaliseComparableText(entry?.description),
+    });
+  }
+
+  for (const label of candidates) {
+    const directId = normaliseNullableId(label);
+    if (directId && taxLookup.has(directId)) {
+      return directId;
+    }
+
+    const normalizedLabel = normaliseComparableText(label);
+    if (!normalizedLabel) {
+      continue;
+    }
+
+    const matched = entries.find(
+      (entry) => entry.name === normalizedLabel || entry.description === normalizedLabel
+    );
+    if (matched) {
+      return matched.id;
+    }
+  }
+
+  return null;
+}
+
+function buildQuickBooksLookup(items) {
+  const lookup = new Map();
+  if (!Array.isArray(items)) {
+    return lookup;
+  }
+
+  items.forEach((entry) => {
+    const id = normaliseNullableId(entry?.id);
+    if (id) {
+      lookup.set(id, entry);
+    }
+  });
+
+  return lookup;
+}
+
+// Aggregates Gemini product lines into at most two VAT buckets (standard and zero-rated) so the
+// QuickBooks payload mirrors invoices that span two VAT rates. Bucket selection relies on
+// product-level tax hints when available (explicit QuickBooks tax code IDs, Gemini tax labels, or
+// numeric tax rates) and falls back to the primary vendor tax code when no hints exist. Any third
+// rate is collapsed into the closest standard bucket and logged for follow-up. QuickBooks line
+// entries are emitted with per-bucket TaxCodeRef values, enabling invoices with mixed VAT.
+function buildQuickBooksExpenseLines(invoice, { account, taxLookup, taxResolution }) {
+  const resolution = taxResolution || {};
+  const lines = [];
+  const usedTaxCodeIds = new Set();
+  const vatBuckets = [];
+
+  const accountId = normaliseNullableId(account?.id);
+  const accountName = sanitiseOptionalString(account?.name || account?.fullyQualifiedName);
+  const accountRef = compactObject({ value: accountId, name: accountName });
+
+  const bucketTemplates = {
+    standard: {
+      key: 'standard',
+      description: 'Standard VAT items',
+      totalCents: 0,
+      taxCodeId: null,
+    },
+    zero: {
+      key: 'zero',
+      description: 'Zero-rated items',
+      totalCents: 0,
+      taxCodeId: null,
+    },
+  };
+
+  const availableBucketTaxCodes = determineAvailableBucketTaxCodes(resolution, taxLookup);
+  if (availableBucketTaxCodes.standard) {
+    bucketTemplates.standard.taxCodeId = availableBucketTaxCodes.standard;
+  }
+  if (availableBucketTaxCodes.zero) {
+    bucketTemplates.zero.taxCodeId = availableBucketTaxCodes.zero;
+  }
+
+  const vatAnalysis = analyseInvoiceVatSignals(invoice, taxLookup);
+
+  vatAnalysis.signals.forEach((signal) => {
+    const bucketKey = signal.bucket === 'zero' ? 'zero' : 'standard';
+    const bucket = bucketTemplates[bucketKey];
+    bucket.totalCents += Math.round(signal.amount * 100);
+    if (!bucket.taxCodeId && signal.taxCodeId && taxLookup?.has(signal.taxCodeId)) {
+      bucket.taxCodeId = signal.taxCodeId;
+    }
+  });
+
+  ['standard', 'zero'].forEach((bucketKey) => {
+    const bucket = bucketTemplates[bucketKey];
+    if (!bucket) {
+      return;
+    }
+
+    const normalisedAmount = normaliseMoneyValue(bucket.totalCents / 100);
+    if (normalisedAmount === null || normalisedAmount === 0) {
+      return;
+    }
+
+    const preferredTaxCodeId =
+      bucket.taxCodeId && taxLookup?.has(bucket.taxCodeId)
+        ? bucket.taxCodeId
+        : bucketKey === 'standard'
+        ? resolution.primaryTaxCodeId
+        : resolution.secondaryTaxCodeId;
+    const taxCodeId = preferredTaxCodeId && taxLookup?.has(preferredTaxCodeId) ? preferredTaxCodeId : null;
+
+    const detail = compactObject({
+      AccountRef: accountRef,
+      TaxCodeRef: taxCodeId ? compactObject({ value: taxCodeId }) : null,
+    });
+
+    const line = compactObject({
+      DetailType: 'AccountBasedExpenseLineDetail',
+      Amount: normalisedAmount,
+      Description: bucket.description,
+      AccountBasedExpenseLineDetail: detail,
+    });
+
+    if (!line.Description) {
+      delete line.Description;
+    }
+
+    lines.push(line);
+
+    if (taxCodeId) {
+      usedTaxCodeIds.add(taxCodeId);
+    }
+
+    vatBuckets.push({
+      key: bucket.key,
+      description: bucket.description,
+      amount: normalisedAmount,
+      taxCodeId: taxCodeId || null,
+    });
+  });
+
+  let requiresSecondaryTaxCode = false;
+  const zeroBucket = vatBuckets.find((entry) => entry.key === 'zero' && entry.amount !== null && entry.amount !== 0);
+  if (zeroBucket && !zeroBucket.taxCodeId) {
+    requiresSecondaryTaxCode = true;
+  }
+
+  if (!lines.length) {
+    const totalAmount = normaliseMoneyValue(invoice?.data?.totalAmount);
+    const subtotalAmount = normaliseMoneyValue(invoice?.data?.subtotal);
+    const fallbackAmount = totalAmount !== null ? totalAmount : subtotalAmount;
+    if (fallbackAmount !== null) {
+      const fallbackTaxCodeId =
+        resolution.primaryTaxCodeId && taxLookup?.has(resolution.primaryTaxCodeId)
+          ? resolution.primaryTaxCodeId
+          : null;
+      const detail = compactObject({
+        AccountRef: accountRef,
+        TaxCodeRef: fallbackTaxCodeId ? compactObject({ value: fallbackTaxCodeId }) : null,
+      });
+      const fallbackDescription =
+        sanitiseOptionalString(invoice?.data?.vendor) ||
+        sanitiseOptionalString(invoice?.metadata?.originalName) ||
+        'Invoice total';
+
+      const fallbackLine = compactObject({
+        DetailType: 'AccountBasedExpenseLineDetail',
+        Amount: fallbackAmount,
+        Description: fallbackDescription ? fallbackDescription.slice(0, 4000) : null,
+        AccountBasedExpenseLineDetail: detail,
+      });
+
+      if (!fallbackLine.Description) {
+        delete fallbackLine.Description;
+      }
+
+      lines.push(fallbackLine);
+
+      if (fallbackTaxCodeId) {
+        usedTaxCodeIds.add(fallbackTaxCodeId);
+      }
+
+      vatBuckets.push({
+        key: 'standard',
+        description: fallbackLine.Description || 'Invoice total',
+        amount: fallbackAmount,
+        taxCodeId: fallbackTaxCodeId,
+      });
+
+      requiresSecondaryTaxCode = false;
+    }
+  }
+
+  if (vatAnalysis.requiresSplit && zeroBucket && !zeroBucket.taxCodeId) {
+    requiresSecondaryTaxCode = true;
+  }
+
+  if (vatAnalysis.distinctRates && vatAnalysis.distinctRates.size > 2) {
+    console.warn('Detected more than two VAT rates; collapsing to standard/zero buckets.', {
+      rates: Array.from(vatAnalysis.distinctRates).sort((a, b) => a - b),
+      invoiceChecksum: invoice?.metadata?.checksum || null,
+      invoiceName: invoice?.metadata?.originalName || null,
+    });
+  }
+
+  return {
+    lines,
+    vatBuckets,
+    usedTaxCodeIds,
+    requiresSecondaryTaxCode,
+    detectedVatBuckets: Array.from(vatAnalysis.detectedBucketKeys || []),
+  };
+}
+
+function determineAvailableBucketTaxCodes(taxResolution, taxLookup) {
+  const mapping = {};
+  if (!taxResolution) {
+    return mapping;
+  }
+
+  const register = (candidate) => {
+    const id = normaliseNullableId(candidate);
+    if (!id || !taxLookup?.has(id)) {
+      return;
+    }
+    const entry = taxLookup.get(id);
+    const bucket = classifyTaxCodeEntry(entry);
+    if (!mapping[bucket]) {
+      mapping[bucket] = id;
+    }
+  };
+
+  register(taxResolution.primaryTaxCodeId);
+  register(taxResolution.secondaryTaxCodeId);
+
+  return mapping;
+}
+
+function analyseInvoiceVatSignals(invoice, taxLookup) {
+  const products = Array.isArray(invoice?.data?.products) ? invoice.data.products : [];
+  const signals = [];
+  const detectedBucketKeys = new Set();
+  const distinctRates = new Set();
+
+  products.forEach((product) => {
+    const amount = computeLineAmount(product);
+    if (amount === null) {
+      return;
+    }
+
+    const classification = classifyProductVatSignal(product, taxLookup);
+    const bucketKey = classification.bucket === 'zero' ? 'zero' : 'standard';
+    detectedBucketKeys.add(bucketKey);
+
+    const rate = typeof classification.rate === 'number' && Number.isFinite(classification.rate)
+      ? Number(Math.round(classification.rate * 1000) / 1000)
+      : null;
+    if (rate !== null) {
+      distinctRates.add(rate);
+    }
+
+    signals.push({
+      bucket: bucketKey,
+      taxCodeId: classification.taxCodeId || null,
+      amount,
+      rate,
+    });
+  });
+
+  const bucketTotals = signals.reduce(
+    (acc, signal) => {
+      const bucketKey = signal.bucket === 'zero' ? 'zero' : 'standard';
+      acc[bucketKey] = (acc[bucketKey] || 0) + Math.round(signal.amount * 100);
+      return acc;
+    },
+    { standard: 0, zero: 0 }
+  );
+
+  const requiresSplit = bucketTotals.standard !== 0 && bucketTotals.zero !== 0;
+
+  return {
+    signals,
+    detectedBucketKeys,
+    distinctRates,
+    requiresSplit,
+  };
+}
+
+function classifyProductVatSignal(product, taxLookup) {
+  if (!product || typeof product !== 'object') {
+    return { bucket: 'standard', taxCodeId: null, rate: null };
+  }
+
+  const directTaxCodeId =
+    normaliseNullableId(product?.quickBooksTaxCodeId) || normaliseNullableId(product?.taxCode);
+  if (directTaxCodeId && taxLookup?.has(directTaxCodeId)) {
+    const entry = taxLookup.get(directTaxCodeId);
+    const rate = extractRateFromTaxEntry(entry);
+    return {
+      bucket: classifyTaxCodeEntry(entry),
+      taxCodeId: directTaxCodeId,
+      rate,
+    };
+  }
+
+  if (typeof product?.taxCode === 'string' && product.taxCode.trim()) {
+    const matchedId = findTaxCodeIdFromLabels([product.taxCode], taxLookup);
+    if (matchedId && taxLookup?.has(matchedId)) {
+      const entry = taxLookup.get(matchedId);
+      const rate = extractRateFromTaxEntry(entry);
+      return {
+        bucket: classifyTaxCodeEntry(entry),
+        taxCodeId: matchedId,
+        rate,
+      };
+    }
+  }
+
+  const inferredRate = extractVatRateFromProduct(product);
+  if (inferredRate !== null) {
+    return {
+      bucket: classifyRateToBucket(inferredRate),
+      taxCodeId: null,
+      rate: inferredRate,
+    };
+  }
+
+  if (typeof product?.taxCode === 'string' && product.taxCode.trim()) {
+    const normalizedLabel = normaliseComparableText(product.taxCode);
+    if (isZeroRateLabel(normalizedLabel)) {
+      return { bucket: 'zero', taxCodeId: null, rate: 0 };
+    }
+    if (isStandardRateLabel(normalizedLabel)) {
+      return { bucket: 'standard', taxCodeId: null, rate: null };
+    }
+  }
+
+  return { bucket: 'standard', taxCodeId: null, rate: null };
+}
+
+function extractVatRateFromProduct(product) {
+  const rawRate = product?.taxRate;
+  if (typeof rawRate === 'number' && Number.isFinite(rawRate)) {
+    return Number(Math.round(rawRate * 1000) / 1000);
+  }
+  if (typeof rawRate === 'string' && rawRate.trim()) {
+    const parsed = Number.parseFloat(rawRate);
+    if (Number.isFinite(parsed)) {
+      return Number(Math.round(parsed * 1000) / 1000);
+    }
+  }
+
+  if (typeof product?.taxCode === 'string' && product.taxCode.trim()) {
+    const match = product.taxCode.match(/(\d+(?:\.\d+)?)\s*%/);
+    if (match) {
+      const rate = Number.parseFloat(match[1]);
+      if (Number.isFinite(rate)) {
+        return Number(Math.round(rate * 1000) / 1000);
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractRateFromTaxEntry(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+
+  const candidates = [
+    entry.rate,
+    entry.RateValue,
+    entry.rateValue,
+    entry.taxRate,
+    entry.TaxRate,
+    entry?.SalesTaxRateList?.TaxRateDetail?.[0]?.RateValue,
+    entry?.PurchaseTaxRateList?.TaxRateDetail?.[0]?.RateValue,
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate === null || candidate === undefined) {
+      continue;
+    }
+    const numeric = Number(candidate);
+    if (Number.isFinite(numeric)) {
+      return Number(Math.round(numeric * 1000) / 1000);
+    }
+  }
+
+  return null;
+}
+
+function classifyRateToBucket(rate) {
+  if (!Number.isFinite(rate)) {
+    return 'standard';
+  }
+  return Math.abs(rate) < 0.5 ? 'zero' : 'standard';
+}
+
+function classifyTaxCodeEntry(entry) {
+  const rate = extractRateFromTaxEntry(entry);
+  if (rate !== null) {
+    return classifyRateToBucket(rate);
+  }
+
+  const name = normaliseComparableText(entry?.name);
+  const description = normaliseComparableText(entry?.description);
+
+  if (isZeroRateLabel(name) || isZeroRateLabel(description)) {
+    return 'zero';
+  }
+
+  return 'standard';
+}
+
+function isZeroRateLabel(text) {
+  if (!text) {
+    return false;
+  }
+  return (
+    text.includes('zero') ||
+    text.includes('no tax') ||
+    text.includes('tax free') ||
+    text.includes('out of scope') ||
+    text.includes('non tax') ||
+    text.includes('nontax') ||
+    text.includes('exempt') ||
+    text.includes('0%') ||
+    text.includes('0 %') ||
+    text.split(' ').includes('0')
+  );
+}
+
+function isStandardRateLabel(text) {
+  if (!text) {
+    return false;
+  }
+  return text.includes('standard') || text.includes('vat') || text.includes('taxable') || text.includes('20');
+}
+
+function computeLineAmount(product) {
+  if (!product || typeof product !== 'object') {
+    return null;
+  }
+
+  const direct = normaliseMoneyValue(product.lineTotal);
+  if (direct !== null) {
+    return direct;
+  }
+
+  const unitPrice = normaliseMoneyValue(product.unitPrice);
+  const quantityRaw = product.quantity;
+  let quantity = null;
+  if (typeof quantityRaw === 'number' && Number.isFinite(quantityRaw)) {
+    quantity = quantityRaw;
+  } else if (quantityRaw !== null && quantityRaw !== undefined) {
+    const numeric = Number(quantityRaw);
+    if (Number.isFinite(numeric)) {
+      quantity = numeric;
+    }
+  }
+
+  if (unitPrice !== null && quantity !== null) {
+    return normaliseMoneyValue(unitPrice * quantity);
+  }
+
+  return null;
+}
+
+function normaliseMoneyValue(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+
+  const rounded = Math.round(numeric * 100) / 100;
+  if (!Number.isFinite(rounded)) {
+    return null;
+  }
+
+  return Number(rounded.toFixed(2));
+}
+
+function sumLineAmounts(lines) {
+  if (!Array.isArray(lines) || !lines.length) {
+    return null;
+  }
+
+  let running = 0;
+  let counted = 0;
+
+  lines.forEach((line) => {
+    const amount = normaliseMoneyValue(line?.Amount);
+    if (amount !== null) {
+      running += amount;
+      counted += 1;
+    }
+  });
+
+  if (!counted) {
+    return null;
+  }
+
+  return normaliseMoneyValue(running);
+}
+
+function normaliseInvoiceDateForQuickBooks(value) {
+  const text = sanitiseOptionalString(value);
+  if (!text) {
+    return null;
+  }
+
+  const isoMatch = text.match(/\d{4}-\d{2}-\d{2}/);
+  if (isoMatch) {
+    return isoMatch[0];
+  }
+
+  const parsed = new Date(text);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toISOString().slice(0, 10);
+  }
+
+  return null;
+}
+
+function sanitiseDocNumberForQuickBooks(value) {
+  const text = sanitiseOptionalString(value);
+  if (!text) {
+    return null;
+  }
+
+  return text.slice(0, 21);
+}
+
+function buildPreviewPrivateNote(invoice) {
+  const parts = [];
+  const originalName = sanitiseOptionalString(invoice?.metadata?.originalName);
+  if (originalName) {
+    parts.push(`Source file: ${originalName}`);
+  }
+
+  const provider = sanitiseOptionalString(invoice?.metadata?.remoteSource?.provider);
+  if (provider) {
+    parts.push(`Imported via ${provider}`);
+  }
+
+  if (!parts.length) {
+    return null;
+  }
+
+  return `Preview only. ${parts.join(' | ')}`.slice(0, 4000);
+}
+
+function compactObject(object) {
+  if (!object || typeof object !== 'object') {
+    return object;
+  }
+
+  if (Array.isArray(object)) {
+    return object;
+  }
+
+  const result = {};
+  Object.entries(object).forEach(([key, value]) => {
+    if (value !== null && value !== undefined) {
+      result[key] = value;
+    }
+  });
+  return result;
+}
+
+function createPreviewValidationError(message, details) {
+  const error = new Error(message);
+  error.status = 422;
+  error.code = 'PREVIEW_VALIDATION_FAILED';
+  if (details) {
+    error.details = details;
+  }
+  return error;
+}
+
 function mapAiConfidence(confidence) {
   if (!confidence) {
     return 'unknown';
@@ -5837,8 +7079,13 @@ async function updateStoredInvoiceReviewSelection(checksum, updates = {}) {
 
   const hasVendorUpdate = Object.prototype.hasOwnProperty.call(updates, 'vendorId');
   const hasAccountUpdate = Object.prototype.hasOwnProperty.call(updates, 'accountId');
+  const hasTaxUpdate = Object.prototype.hasOwnProperty.call(updates, 'taxCodeId');
+  const hasSecondaryTaxUpdate = Object.prototype.hasOwnProperty.call(
+    updates,
+    'secondaryTaxCodeId'
+  );
 
-  if (!hasVendorUpdate && !hasAccountUpdate) {
+  if (!hasVendorUpdate && !hasAccountUpdate && !hasTaxUpdate && !hasSecondaryTaxUpdate) {
     return invoices[index];
   }
 
@@ -5853,6 +7100,14 @@ async function updateStoredInvoiceReviewSelection(checksum, updates = {}) {
 
   if (hasAccountUpdate) {
     currentSelection.accountId = normaliseNullableId(updates.accountId);
+  }
+
+  if (hasTaxUpdate) {
+    currentSelection.taxCodeId = normaliseNullableId(updates.taxCodeId);
+  }
+
+  if (hasSecondaryTaxUpdate) {
+    currentSelection.secondaryTaxCodeId = normaliseNullableId(updates.secondaryTaxCodeId);
   }
 
   const normalizedSelection = normalizeReviewSelection(currentSelection);
@@ -5910,15 +7165,28 @@ function normalizeReviewSelection(selection) {
 
   const vendorId = normaliseNullableId(selection.vendorId);
   const accountId = normaliseNullableId(selection.accountId);
+  const taxCodeId = normaliseNullableId(selection.taxCodeId);
+  const secondaryTaxCodeId = normaliseNullableId(selection.secondaryTaxCodeId);
 
-  if (!vendorId && !accountId) {
+  if (!vendorId && !accountId && !taxCodeId && !secondaryTaxCodeId) {
     return null;
   }
 
-  return {
-    vendorId,
-    accountId,
-  };
+  const result = {};
+  if (vendorId) {
+    result.vendorId = vendorId;
+  }
+  if (accountId) {
+    result.accountId = accountId;
+  }
+  if (taxCodeId) {
+    result.taxCodeId = taxCodeId;
+  }
+  if (secondaryTaxCodeId) {
+    result.secondaryTaxCodeId = secondaryTaxCodeId;
+  }
+
+  return result;
 }
 
 function normaliseNullableId(value) {

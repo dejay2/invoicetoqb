@@ -1,0 +1,29 @@
+{
+  "invoice": {
+    "reviewSelection": {
+      "vendorId": "vendor-001",
+      "taxCodeId": "TAX_STD"
+    },
+    "data": {
+      "products": [
+        {
+          "description": "Standard VAT goods",
+          "lineTotal": 40.0,
+          "taxCode": "Standard VAT"
+        },
+        {
+          "description": "Untagged cold food",
+          "lineTotal": 35.0,
+          "taxCode": "Not provided"
+        },
+        {
+          "description": "Standard add-on",
+          "lineTotal": 25.0,
+          "taxCode": ""
+        }
+      ],
+      "totalAmount": 100.0
+    }
+  },
+  "expectedTotal": 100.0
+}

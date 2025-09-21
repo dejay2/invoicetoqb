@@ -8,7 +8,8 @@
 ## Build, Test, and Development Commands
 - `npm install` — install server and client dependencies (Express, Multer, node-fetch, dotenv).
 - `npm start` — launch the combined API + static client on `http://localhost:3000`, warm QuickBooks metadata, and serve the UI.
-- `npm test` — placeholder script; currently prints “No automated tests configured.” Treat as a reminder to add coverage.
+- `npm test` — runs lightweight regression checks, including a QuickBooks company store concurrency/repair suite.
+- `node scripts/quickbooks-companies.js [inspect|repair]` — inspect or repair the QuickBooks company store; add `--file <path>` to override the default location.
 
 ## Coding Style & Naming Conventions
 - JavaScript uses two-space indentation, semicolons, CommonJS `require`, and `async/await` for asynchronous flows.
@@ -16,7 +17,7 @@
 - Keep helper functions near related logic in `src/server.js`; split into additional modules under `src/` only when responsibilities grow substantially.
 
 ## Testing Guidelines
-- No automated suite exists yet. When adding tests, place them under `tests/`, mock external services (Gemini, QuickBooks), and wire them into `npm test`.
+- Tests live under `tests/`; new coverage should mock external services (Gemini, QuickBooks) and integrate into `npm test`.
 - Name test files after the module under test (`server.test.js`, etc.) and keep fixtures free of live customer data.
 - Manual verification: run `npm start`, upload a sample invoice, confirm parsed JSON, then refresh QuickBooks metadata and validate vendor/account/tax lists.
 
