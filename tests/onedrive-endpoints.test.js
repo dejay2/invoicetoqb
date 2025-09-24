@@ -230,7 +230,7 @@ function createGraphStub(nativeFetch, Response) {
     server = http.createServer(app);
     await new Promise((resolve, reject) => {
       server.once('error', reject);
-      server.listen(0, '127.0.0.1', () => resolve());
+      server.listen(0, () => resolve());
     });
 
     const address = server.address();

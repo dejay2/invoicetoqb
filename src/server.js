@@ -86,6 +86,23 @@ async function runWithOneDriveSettingsWriteLock(task) {
   }
 }
 
+async function runWithOutlookSettingsWriteLock(task) {
+  let release;
+  const next = new Promise((resolve) => {
+    release = resolve;
+  });
+
+  const previous = outlookSettingsWriteMutex;
+  outlookSettingsWriteMutex = next;
+
+  try {
+    await previous.catch(() => {});
+    return await task();
+  } finally {
+    release();
+  }
+}
+
 function cloneGlobalOneDriveConfig(value) {
   if (value === null || value === undefined) {
     return null;
@@ -219,6 +236,471 @@ function normalizeGlobalOneDriveConfig(config) {
   }
 
   return result;
+}
+
+function cloneGlobalOutlookSettings(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return JSON.parse(JSON.stringify(value));
+}
+
+function getDefaultGlobalOutlookSettings() {
+  const now = new Date().toISOString();
+  return {
+    mailboxUserId: MS_GRAPH_MAILBOX_USER_ID || null,
+    mailboxDisplayName: null,
+    baseFolder: null,
+    status: MS_GRAPH_MAILBOX_USER_ID ? 'pending_validation' : 'unconfigured',
+    lastValidatedAt: null,
+    lastValidationError: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function normalizeOutlookFolderMetadata(folder) {
+  if (!folder || typeof folder !== 'object') {
+    return null;
+  }
+
+  const id = sanitiseOptionalString(folder.id);
+  const displayName = sanitiseOptionalString(folder.displayName || folder.name);
+  const path = sanitiseOptionalString(folder.path || folder.folderPath || folder.pathDisplay);
+  const webUrl = sanitiseOptionalString(folder.webUrl || folder.webLink);
+  const parentId = sanitiseOptionalString(folder.parentId || folder.parentFolderId);
+
+  if (!id && !displayName) {
+    return null;
+  }
+
+  return {
+    id: id || null,
+    displayName: displayName || null,
+    path: path || null,
+    webUrl: webUrl || null,
+    parentId: parentId || null,
+  };
+}
+
+function normalizeGlobalOutlookSettings(config) {
+  if (!config || typeof config !== 'object') {
+    return null;
+  }
+
+  const result = {};
+
+  if (Object.prototype.hasOwnProperty.call(config, 'mailboxUserId')) {
+    result.mailboxUserId = sanitiseOptionalString(config.mailboxUserId) || null;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'mailboxDisplayName')) {
+    result.mailboxDisplayName = sanitiseOptionalString(config.mailboxDisplayName);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'baseFolder')) {
+    result.baseFolder = normalizeOutlookFolderMetadata(config.baseFolder);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'status')) {
+    result.status = sanitiseOptionalString(config.status) || null;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'lastValidatedAt')) {
+    result.lastValidatedAt = sanitiseIsoString(config.lastValidatedAt);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'lastValidationError')) {
+    if (!config.lastValidationError) {
+      result.lastValidationError = null;
+    } else if (typeof config.lastValidationError === 'string') {
+      result.lastValidationError = {
+        message: sanitiseOptionalString(config.lastValidationError) || null,
+        at: null,
+      };
+    } else if (typeof config.lastValidationError === 'object') {
+      result.lastValidationError = {
+        message: sanitiseOptionalString(config.lastValidationError.message) || null,
+        at: sanitiseIsoString(config.lastValidationError.at || config.lastValidationError.timestamp),
+      };
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'createdAt')) {
+    result.createdAt = sanitiseIsoString(config.createdAt);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'updatedAt')) {
+    result.updatedAt = sanitiseIsoString(config.updatedAt);
+  }
+
+  return result;
+}
+
+function sanitizeGlobalOutlookSettings(config) {
+  const normalised = normalizeGlobalOutlookSettings(config) || {};
+  const now = new Date().toISOString();
+
+  const mailboxUserId = normalised.mailboxUserId || MS_GRAPH_MAILBOX_USER_ID || null;
+  const baseFolder = normalizeOutlookFolderMetadata(normalised.baseFolder);
+  const lastValidationError = normalised.lastValidationError?.message
+    ? {
+        message: normalised.lastValidationError.message,
+        at: normalised.lastValidationError.at || new Date().toISOString(),
+      }
+    : null;
+
+  return {
+    mailboxUserId,
+    mailboxDisplayName: sanitiseOptionalString(normalised.mailboxDisplayName) || null,
+    baseFolder,
+    status: sanitiseOptionalString(normalised.status) || (mailboxUserId ? 'pending_validation' : 'unconfigured'),
+    lastValidatedAt: sanitiseIsoString(normalised.lastValidatedAt),
+    lastValidationError,
+    createdAt: normalised.createdAt || now,
+    updatedAt: normalised.updatedAt || now,
+  };
+}
+
+async function persistGlobalOutlookSettings(config) {
+  return runWithOutlookSettingsWriteLock(async () => {
+    const dir = path.dirname(OUTLOOK_SETTINGS_FILE);
+    const payload = `${JSON.stringify(config, null, 2)}\n`;
+    const tempPath = `${OUTLOOK_SETTINGS_FILE}.tmp-${process.pid}-${Date.now()}`;
+
+    await fs.mkdir(dir, { recursive: true });
+
+    let handle;
+    try {
+      handle = await fs.open(tempPath, 'w', 0o600);
+      await handle.writeFile(payload);
+      await handle.sync();
+    } finally {
+      if (handle) {
+        await handle.close().catch(() => {});
+      }
+    }
+
+    try {
+      await fs.rename(tempPath, OUTLOOK_SETTINGS_FILE);
+    } catch (err) {
+      await fs.unlink(tempPath).catch(() => {});
+      throw err;
+    }
+
+    let dirHandle;
+    try {
+      dirHandle = await fs.open(dir, 'r');
+      await dirHandle.sync();
+    } catch (dirErr) {
+      if (dirErr && dirErr.code !== 'EISDIR' && dirErr.code !== 'ENOENT') {
+        console.warn(`[Outlook] Failed to fsync directory ${dir}: ${dirErr.message}`);
+      }
+    } finally {
+      if (dirHandle) {
+        await dirHandle.close().catch(() => {});
+      }
+    }
+  });
+}
+
+async function loadGlobalOutlookSettings({ refresh = false } = {}) {
+  if (!hasLoadedOutlookSettings || refresh) {
+    let contents = null;
+    try {
+      contents = await fs.readFile(OUTLOOK_SETTINGS_FILE, 'utf-8');
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        throw error;
+      }
+    }
+
+    if (!contents) {
+      globalOutlookSettingsCache = getDefaultGlobalOutlookSettings();
+      await persistGlobalOutlookSettings(globalOutlookSettingsCache).catch((err) => {
+        console.warn('[Outlook] Unable to seed default Outlook settings file', err?.message || err);
+      });
+    } else {
+      try {
+        const parsed = JSON.parse(contents);
+        const normalised = sanitizeGlobalOutlookSettings(parsed);
+        const now = new Date().toISOString();
+        if (!normalised.createdAt) {
+          normalised.createdAt = now;
+        }
+        if (!normalised.updatedAt) {
+          normalised.updatedAt = now;
+        }
+        globalOutlookSettingsCache = normalised;
+      } catch (error) {
+        console.error('[Outlook] Failed to parse Outlook settings file. Resetting to defaults.', error);
+        globalOutlookSettingsCache = getDefaultGlobalOutlookSettings();
+        await persistGlobalOutlookSettings(globalOutlookSettingsCache).catch((err) => {
+          console.warn('[Outlook] Unable to persist reset Outlook settings file', err?.message || err);
+        });
+      }
+    }
+
+    hasLoadedOutlookSettings = true;
+  }
+
+  return cloneGlobalOutlookSettings(globalOutlookSettingsCache);
+}
+
+async function updateGlobalOutlookSettings(updates, { replace = false } = {}) {
+  const current = await loadGlobalOutlookSettings();
+  const now = new Date().toISOString();
+
+  let next;
+  if (replace) {
+    next = sanitizeGlobalOutlookSettings(updates);
+    next.updatedAt = now;
+    if (!next.createdAt) {
+      next.createdAt = now;
+    }
+  } else {
+    const normalisedUpdate = normalizeGlobalOutlookSettings(updates) || {};
+    next = {
+      ...current,
+    };
+
+    for (const key of Object.keys(normalisedUpdate)) {
+      const value = normalisedUpdate[key];
+      if (value === undefined) {
+        continue;
+      }
+
+      if (key === 'baseFolder') {
+        next.baseFolder = normalizeOutlookFolderMetadata(value);
+        continue;
+      }
+
+      next[key] = value;
+    }
+
+    if (!next.mailboxUserId) {
+      next.mailboxUserId = MS_GRAPH_MAILBOX_USER_ID || null;
+    }
+
+    next.updatedAt = now;
+  }
+
+  next = sanitizeGlobalOutlookSettings(next);
+  globalOutlookSettingsCache = next;
+  await persistGlobalOutlookSettings(globalOutlookSettingsCache);
+  return cloneGlobalOutlookSettings(globalOutlookSettingsCache);
+}
+
+async function ensureOutlookMailboxContext(requestedMailboxId) {
+  const settings = await loadGlobalOutlookSettings();
+  const mailboxUserId = sanitiseOptionalString(requestedMailboxId || settings?.mailboxUserId || MS_GRAPH_MAILBOX_USER_ID);
+  if (!mailboxUserId) {
+    const error = new Error('Shared Outlook mailbox is not configured.');
+    error.code = 'OUTLOOK_GLOBAL_UNCONFIGURED';
+    throw error;
+  }
+
+  return {
+    mailboxUserId,
+    settings,
+  };
+}
+
+function sanitizeOutlookFolder(folder, { parentPath = null } = {}) {
+  if (!folder || typeof folder !== 'object') {
+    return null;
+  }
+
+  const id = sanitiseOptionalString(folder.id);
+  const displayName = sanitiseOptionalString(folder.displayName || folder.name) || null;
+  const parentId = sanitiseOptionalString(folder.parentFolderId || folder.parentId);
+  const webUrl = sanitiseOptionalString(folder.webUrl || folder.webLink);
+  const childFolderCount = Number.isFinite(folder.childFolderCount) ? Number(folder.childFolderCount) : 0;
+  const path = displayName
+    ? parentPath
+      ? `${parentPath}/${displayName}`
+      : displayName
+    : parentPath || null;
+
+  return {
+    id,
+    displayName,
+    parentId,
+    path,
+    webUrl: webUrl || null,
+    childFolderCount,
+  };
+}
+
+async function fetchOutlookFolder(mailboxUserId, folderId) {
+  if (!mailboxUserId || !folderId) {
+    return null;
+  }
+
+  return graphFetch(`/users/${encodeURIComponent(mailboxUserId)}/mailFolders/${encodeURIComponent(folderId)}`, {
+    query: {
+      $select: 'id,displayName,parentFolderId,childFolderCount',
+    },
+  }).catch((error) => {
+    if (error.status === 404) {
+      const notFound = new Error('Outlook folder not found.');
+      notFound.code = 'OUTLOOK_FOLDER_NOT_FOUND';
+      throw notFound;
+    }
+    throw error;
+  });
+}
+
+async function buildOutlookFolderPath(mailboxUserId, folder) {
+  if (!folder) {
+    return null;
+  }
+
+  const segments = [];
+  let current = folder;
+  let guard = 0;
+
+  while (current && guard < 50) {
+    const displayName = sanitiseOptionalString(current.displayName || current.name);
+    if (displayName) {
+      segments.unshift(displayName);
+    }
+
+    const parentId = sanitiseOptionalString(current.parentFolderId || current.parentId);
+    if (!parentId) {
+      break;
+    }
+
+    current = await fetchOutlookFolder(mailboxUserId, parentId);
+    guard += 1;
+  }
+
+  return segments.length ? segments.join('/') : null;
+}
+
+async function resolveOutlookFolderByPathSegments(mailboxUserId, segments) {
+  if (!Array.isArray(segments) || !segments.length) {
+    return null;
+  }
+
+  let parentId = null;
+  let parentPath = null;
+  let currentFolder = null;
+
+  for (const segment of segments) {
+    const query = {
+      $select: 'id,displayName,parentFolderId,childFolderCount',
+      $top: 200,
+      $orderby: 'displayName',
+    };
+
+    let resource;
+    if (!parentId) {
+      resource = `/users/${encodeURIComponent(mailboxUserId)}/mailFolders`;
+    } else {
+      resource = `/users/${encodeURIComponent(mailboxUserId)}/mailFolders/${encodeURIComponent(parentId)}/childFolders`;
+    }
+
+    const response = await graphFetch(resource, { query });
+    const entries = Array.isArray(response?.value) ? response.value : [];
+    const match = entries.find((entry) => {
+      const displayName = sanitiseOptionalString(entry.displayName || entry.name);
+      return displayName && displayName.toLowerCase() === segment.toLowerCase();
+    });
+
+    if (!match) {
+      const error = new Error(`Outlook folder segment not found: ${segment}`);
+      error.code = 'OUTLOOK_FOLDER_NOT_FOUND';
+      throw error;
+    }
+
+    parentId = sanitiseOptionalString(match.id) || null;
+    parentPath = parentPath ? `${parentPath}/${match.displayName || match.name}` : (match.displayName || match.name);
+    currentFolder = match;
+  }
+
+  if (!currentFolder) {
+    return null;
+  }
+
+  const sanitised = sanitizeOutlookFolder(currentFolder, { parentPath: segments.slice(0, -1).join('/') || null });
+  if (!sanitised.path) {
+    sanitised.path = parentPath || segments.join('/');
+  }
+
+  return sanitised;
+}
+
+async function resolveOutlookFolderReference({ mailboxId, folderId, folderPath } = {}) {
+  const { mailboxUserId } = await ensureOutlookMailboxContext(mailboxId);
+
+  if (!folderId && !folderPath) {
+    const error = new Error('folderId or folderPath is required.');
+    error.code = 'OUTLOOK_FOLDER_REFERENCE_REQUIRED';
+    throw error;
+  }
+
+  if (folderPath) {
+    const segments = folderPath
+      .split('/')
+      .map((value) => sanitiseOptionalString(value))
+      .filter(Boolean);
+    if (!segments.length) {
+      const error = new Error('folderPath must include at least one segment.');
+      error.code = 'OUTLOOK_FOLDER_REFERENCE_REQUIRED';
+      throw error;
+    }
+    return resolveOutlookFolderByPathSegments(mailboxUserId, segments);
+  }
+
+  const folder = await fetchOutlookFolder(mailboxUserId, folderId);
+  if (!folder) {
+    const error = new Error('Outlook folder not found.');
+    error.code = 'OUTLOOK_FOLDER_NOT_FOUND';
+    throw error;
+  }
+
+  const path = await buildOutlookFolderPath(mailboxUserId, folder);
+  const sanitised = sanitizeOutlookFolder(folder, { parentPath: path ? path.split('/').slice(0, -1).join('/') || null : null });
+  sanitised.path = path || sanitised.path;
+  return sanitised;
+}
+
+async function graphListMailFolders({ mailboxId, folderId, folderPath, parentPath } = {}) {
+  const { mailboxUserId } = await ensureOutlookMailboxContext(mailboxId);
+
+  let baseFolderId = null;
+  let effectiveParentPath = parentPath || null;
+
+  if (folderId || folderPath) {
+    const resolved = await resolveOutlookFolderReference({ mailboxId: mailboxUserId, folderId, folderPath });
+    baseFolderId = resolved?.id || null;
+    effectiveParentPath = resolved?.path || resolved?.displayName || effectiveParentPath || null;
+  }
+
+  const query = {
+    $select: 'id,displayName,parentFolderId,childFolderCount',
+    $orderby: 'displayName',
+  };
+
+  let resource;
+  if (baseFolderId) {
+    resource = `/users/${encodeURIComponent(mailboxUserId)}/mailFolders/${encodeURIComponent(baseFolderId)}/childFolders`;
+  } else {
+    resource = `/users/${encodeURIComponent(mailboxUserId)}/mailFolders`;
+  }
+
+  const response = await graphFetch(resource, { query });
+  const entries = Array.isArray(response?.value) ? response.value : [];
+  const folders = entries
+    .map((entry) => sanitizeOutlookFolder(entry, { parentPath: effectiveParentPath }))
+    .filter(Boolean);
+
+  return {
+    mailboxUserId,
+    parentFolder: baseFolderId ? { id: baseFolderId, path: effectiveParentPath || null } : null,
+    folders,
+  };
 }
 
 function sanitizeGlobalOneDriveConfig(config) {
@@ -452,26 +934,18 @@ const OCR_IMAGE_MIME_TYPES = new Set([
   'image/webp',
 ]);
 
-const GMAIL_CLIENT_ID = process.env.GMAIL_CLIENT_ID || '';
-const GMAIL_CLIENT_SECRET = process.env.GMAIL_CLIENT_SECRET || '';
-const GMAIL_API_BASE_URL = 'https://gmail.googleapis.com/gmail/v1';
-const GMAIL_TOKEN_URL = 'https://oauth2.googleapis.com/token';
-const GMAIL_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
-const GMAIL_SCOPES = process.env.GMAIL_SCOPES || 'https://www.googleapis.com/auth/gmail.readonly';
-const GMAIL_DEFAULT_CALLBACK_PATH = '/api/gmail/callback';
-const GMAIL_DEFAULT_REDIRECT_URI = `http://localhost:${PORT}${GMAIL_DEFAULT_CALLBACK_PATH}`;
-const GMAIL_REDIRECT_URI = process.env.GMAIL_REDIRECT_URI || GMAIL_DEFAULT_REDIRECT_URI;
-const GMAIL_STATE_TTL_MS = 10 * 60 * 1000;
-const GMAIL_DEFAULT_POLL_INTERVAL_MS = Math.max(parseInt(process.env.GMAIL_POLL_INTERVAL_MS || '120000', 10), 15000);
-const GMAIL_DEFAULT_MAX_RESULTS = Math.max(parseInt(process.env.GMAIL_MAX_RESULTS || '25', 10), 1);
-const GMAIL_DEFAULT_SEARCH_QUERY = process.env.GMAIL_SEARCH_QUERY || 'in:inbox has:attachment';
-const GMAIL_DEFAULT_LABEL_IDS = parseDelimitedList(process.env.GMAIL_LABEL_IDS);
-const GMAIL_DEFAULT_MAX_ATTACHMENT_BYTES = Math.max(
-  parseInt(process.env.GMAIL_MAX_ATTACHMENT_BYTES || `${10 * 1024 * 1024}`, 10),
+const MS_GRAPH_MAILBOX_USER_ID = (process.env.MS_GRAPH_MAILBOX_USER_ID || '').trim();
+const OUTLOOK_POLL_MIN_INTERVAL_MS = 15000;
+const OUTLOOK_DEFAULT_POLL_INTERVAL_MS = Math.max(
+  parseInt(process.env.OUTLOOK_POLL_INTERVAL_MS || '120000', 10),
+  OUTLOOK_POLL_MIN_INTERVAL_MS
+);
+const OUTLOOK_DEFAULT_MAX_ATTACHMENT_BYTES = Math.max(
+  parseInt(process.env.OUTLOOK_MAX_ATTACHMENT_BYTES || `${10 * 1024 * 1024}`, 10),
   1024
 );
-const GMAIL_DEFAULT_ALLOWED_MIME_TYPES = (() => {
-  const envValues = parseDelimitedList(process.env.GMAIL_ALLOWED_MIME_TYPES);
+const OUTLOOK_DEFAULT_ALLOWED_MIME_TYPES = (() => {
+  const envValues = parseDelimitedList(process.env.OUTLOOK_ALLOWED_MIME_TYPES);
   if (envValues?.length) {
     return envValues.map((value) => value.toLowerCase());
   }
@@ -481,24 +955,30 @@ const GMAIL_DEFAULT_ALLOWED_MIME_TYPES = (() => {
   }
   return defaults;
 })();
-const GMAIL_DEFAULT_BUSINESS_TYPE = (process.env.GMAIL_DEFAULT_BUSINESS_TYPE || '').trim();
-const GMAIL_POLL_MIN_INTERVAL_MS = 15000;
-const GMAIL_CLIENT_CONFIGURED = Boolean(GMAIL_CLIENT_ID && GMAIL_CLIENT_SECRET);
+
+const OUTLOOK_SETTINGS_FILE = process.env.OUTLOOK_SETTINGS_FILE
+  ? path.resolve(process.env.OUTLOOK_SETTINGS_FILE)
+  : path.join(__dirname, '..', 'data', 'outlook_settings.json');
+
+let outlookSettingsWriteMutex = Promise.resolve();
+let globalOutlookSettingsCache = null;
+let hasLoadedOutlookSettings = false;
+
+loadGlobalOutlookSettings().catch((error) => {
+  console.error('[Outlook] Failed to load global Outlook settings', error);
+});
 
 let graphTokenCache = { token: null, expiresAt: 0 };
 const activeOneDrivePolls = new Map();
 const oneDriveProcessedFolderCache = new Map();
 let oneDrivePollingTimer = null;
 
-const gmailTokenCache = new Map();
-const gmailStateCache = new Map();
-const activeGmailPolls = new Map();
-let gmailPollingTimer = null;
+const activeOutlookPolls = new Map();
+let outlookPollingTimer = null;
+const outlookStateCache = new Map();
 
 const quickBooksStates = new Map();
 const quickBooksCallbackPaths = getQuickBooksCallbackPaths();
-const gmailStates = new Map();
-const gmailCallbackPaths = getGmailCallbackPaths();
 
 const GEMINI_TEXT_LIMIT = 60000;
 const VENDOR_VAT_TREATMENTS = new Set(['inclusive', 'exclusive', 'no_vat']);
@@ -545,15 +1025,6 @@ function buildGeminiUrl() {
 function getQuickBooksCallbackPaths() {
   const paths = new Set([QUICKBOOKS_DEFAULT_CALLBACK_PATH]);
   const derived = derivePathFromUrl(QUICKBOOKS_REDIRECT_URI);
-  if (derived) {
-    paths.add(derived);
-  }
-  return Array.from(paths);
-}
-
-function getGmailCallbackPaths() {
-  const paths = new Set([GMAIL_DEFAULT_CALLBACK_PATH]);
-  const derived = derivePathFromUrl(GMAIL_REDIRECT_URI);
   if (derived) {
     paths.add(derived);
   }
@@ -1062,9 +1533,25 @@ function encodeSharingUrl(shareUrl) {
 
 function normaliseGraphFolderPath(folderPath) {
   const trimmed = sanitiseOptionalString(folderPath) || '';
-  const withoutRoot = trimmed.replace(/^drive\/?root:?/i, '').replace(/^:+/, '');
-  const normalised = withoutRoot.startsWith('/') ? withoutRoot : `/${withoutRoot}`;
-  return normalised.replace(/\/+$/, '');
+  if (!trimmed) {
+    return '';
+  }
+
+  let remainder = trimmed;
+
+  const drivesMatch = remainder.match(/^\/?drives\/[^/]+\/root:(.*)$/i);
+  if (drivesMatch) {
+    remainder = drivesMatch[1] || '';
+  } else {
+    remainder = remainder.replace(/^drive\/?root:?/i, '');
+  }
+
+  remainder = remainder.replace(/^:+/, '');
+  if (!remainder.startsWith('/')) {
+    remainder = `/${remainder}`;
+  }
+
+  return remainder.replace(/\/+$/, '');
 }
 
 async function resolveOneDriveFolderReference({ shareUrl, driveId, folderId, folderPath }, { expectedDriveId = null } = {}) {
@@ -1163,6 +1650,10 @@ async function pollAllOneDriveCompanies() {
 
 async function queueOneDrivePoll(realmId, { reason = 'manual', forceFull = false } = {}) {
   if (!isOneDriveSyncConfigured() || !realmId) {
+    return null;
+  }
+
+  if (process.env.DISABLE_ONEDRIVE_QUEUE === 'true') {
     return null;
   }
 
@@ -1453,6 +1944,85 @@ async function processOneDriveItem(company, config, driveContext, item, { reason
     movedTo,
     moveError,
     skipReason: ingestion?.skipped ? ingestion?.duplicate?.reason || 'Skipped by ingestion.' : null,
+  };
+}
+
+async function downloadOneDriveItem(driveId, itemId) {
+  const normalisedDriveId = sanitiseOptionalString(driveId);
+  const normalisedItemId = sanitiseOptionalString(itemId);
+
+  if (!normalisedDriveId || !normalisedItemId) {
+    const error = new Error('OneDrive driveId and itemId are required to download a file.');
+    error.code = 'ONEDRIVE_DOWNLOAD_REFERENCE_MISSING';
+    throw error;
+  }
+
+  const metadata = await graphFetch(
+    `/drives/${encodeURIComponent(normalisedDriveId)}/items/${encodeURIComponent(normalisedItemId)}`,
+    {
+      query: {
+        $select: 'id,name,size,file,@microsoft.graph.downloadUrl',
+      },
+    }
+  );
+
+  const downloadUrl = metadata?.['@microsoft.graph.downloadUrl'];
+  let response = null;
+
+  if (downloadUrl) {
+    try {
+      response = await fetch(downloadUrl);
+      if (!response?.ok) {
+        console.warn(
+          `OneDrive direct download failed with status ${response?.status} for item ${normalisedItemId}; falling back to Graph content endpoint.`
+        );
+        response = null;
+      }
+    } catch (error) {
+      console.warn(
+        `Unable to download OneDrive item ${normalisedItemId} via direct URL. Falling back to Graph content endpoint.`,
+        error?.message || error
+      );
+      response = null;
+    }
+  }
+
+  if (!response) {
+    response = await graphFetch(
+      `/drives/${encodeURIComponent(normalisedDriveId)}/items/${encodeURIComponent(normalisedItemId)}/content`,
+      {
+        responseType: 'response',
+      }
+    );
+  }
+
+  if (!response?.ok) {
+    const status = response?.status || 'unknown';
+    const error = new Error(`OneDrive file download failed with status ${status}`);
+    if (response?.status) {
+      error.status = response.status;
+    }
+    throw error;
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  const contentLengthHeader = response.headers?.get?.('content-length');
+  const sizeFromHeader = contentLengthHeader ? Number.parseInt(contentLengthHeader, 10) : null;
+  const declaredSize = typeof metadata?.size === 'number' ? metadata.size : null;
+  const size = Number.isFinite(declaredSize)
+    ? declaredSize
+    : Number.isFinite(sizeFromHeader)
+    ? sizeFromHeader
+    : buffer.length;
+  const mimeType =
+    response.headers?.get?.('content-type') || metadata?.file?.mimeType || 'application/octet-stream';
+
+  return {
+    buffer,
+    mimeType,
+    size,
+    originalName: metadata?.name || `${normalisedItemId}.bin`,
   };
 }
 
@@ -1797,44 +2367,49 @@ function startOneDriveSyncScheduler() {
 }
 
 
-function isGmailMonitoringConfigured() {
-  return GMAIL_CLIENT_CONFIGURED;
-}
-
-function getGmailStatePath(realmId) {
-  return path.join(__dirname, '..', 'data', 'gmail', `${realmId}.json`);
-}
-
-async function readCompanyGmailState(realmId) {
-  if (!realmId) {
-    return ensureGmailRuntimeStateDefaults(null);
+function isOutlookMonitoringConfigured() {
+  if (!(MS_GRAPH_CLIENT_ID && MS_GRAPH_CLIENT_SECRET && MS_GRAPH_TENANT_ID)) {
+    return false;
   }
 
-  if (gmailStateCache.has(realmId)) {
-    return gmailStateCache.get(realmId);
+  const mailboxUserId = MS_GRAPH_MAILBOX_USER_ID || globalOutlookSettingsCache?.mailboxUserId;
+  return Boolean(mailboxUserId);
+}
+
+function getOutlookStatePath(realmId) {
+  return path.join(__dirname, '..', 'data', 'outlook', `${realmId}.json`);
+}
+
+async function readCompanyOutlookState(realmId) {
+  if (!realmId) {
+    return ensureOutlookRuntimeStateDefaults(null);
+  }
+
+  if (outlookStateCache.has(realmId)) {
+    return outlookStateCache.get(realmId);
   }
 
   try {
-    const contents = await fs.readFile(getGmailStatePath(realmId), 'utf-8');
+    const contents = await fs.readFile(getOutlookStatePath(realmId), 'utf-8');
     const parsed = JSON.parse(contents);
-    const state = ensureGmailRuntimeStateDefaults(parsed);
-    gmailStateCache.set(realmId, state);
+    const state = ensureOutlookRuntimeStateDefaults(parsed);
+    outlookStateCache.set(realmId, state);
     return state;
   } catch (error) {
     if (error.code === 'ENOENT') {
-      const state = ensureGmailRuntimeStateDefaults(null);
-      gmailStateCache.set(realmId, state);
+      const state = ensureOutlookRuntimeStateDefaults(null);
+      outlookStateCache.set(realmId, state);
       return state;
     }
     throw error;
   }
 }
 
-function ensureGmailRuntimeStateDefaults(state) {
+function ensureOutlookRuntimeStateDefaults(state) {
   const base = state && typeof state === 'object' ? state : {};
   return {
     lastPollAt: typeof base.lastPollAt === 'string' ? base.lastPollAt : null,
-    lastHistoryId: typeof base.lastHistoryId === 'string' ? base.lastHistoryId : null,
+    deltaLink: typeof base.deltaLink === 'string' ? base.deltaLink : null,
     processedMessages:
       base.processedMessages && typeof base.processedMessages === 'object' && !Array.isArray(base.processedMessages)
         ? { ...base.processedMessages }
@@ -1842,24 +2417,24 @@ function ensureGmailRuntimeStateDefaults(state) {
   };
 }
 
-async function persistCompanyGmailState(realmId, nextState) {
-  const normalised = ensureGmailRuntimeStateDefaults(nextState);
-  normalised.processedMessages = pruneGmailProcessedMessages(normalised.processedMessages, 500);
-  gmailStateCache.set(realmId, normalised);
+async function persistCompanyOutlookState(realmId, nextState) {
+  const normalised = ensureOutlookRuntimeStateDefaults(nextState);
+  normalised.processedMessages = pruneOutlookProcessedMessages(normalised.processedMessages, 500);
+  outlookStateCache.set(realmId, normalised);
 
-  const statePath = getGmailStatePath(realmId);
+  const statePath = getOutlookStatePath(realmId);
   await fs.mkdir(path.dirname(statePath), { recursive: true });
-  await fs.writeFile(statePath, JSON.stringify(normalised, null, 2));
+  await fs.writeFile(statePath, `${JSON.stringify(normalised, null, 2)}\n`);
   return normalised;
 }
 
-async function deleteCompanyGmailState(realmId) {
-  gmailStateCache.delete(realmId);
+async function deleteCompanyOutlookState(realmId) {
+  outlookStateCache.delete(realmId);
   if (!realmId) {
     return;
   }
 
-  const statePath = getGmailStatePath(realmId);
+  const statePath = getOutlookStatePath(realmId);
   try {
     await fs.unlink(statePath);
   } catch (error) {
@@ -1869,19 +2444,19 @@ async function deleteCompanyGmailState(realmId) {
   }
 }
 
-function getGmailPollInterval(config) {
+function getOutlookPollInterval(config) {
   const interval = Number.parseInt(config?.pollIntervalMs, 10);
   if (!Number.isFinite(interval) || interval <= 0) {
-    return GMAIL_DEFAULT_POLL_INTERVAL_MS;
+    return OUTLOOK_DEFAULT_POLL_INTERVAL_MS;
   }
-  return Math.max(interval, GMAIL_POLL_MIN_INTERVAL_MS);
+  return Math.max(interval, OUTLOOK_POLL_MIN_INTERVAL_MS);
 }
 
-function getGmailAllowedMimeTypes(config) {
+function getOutlookAllowedMimeTypes(config) {
   const values = Array.isArray(config?.allowedMimeTypes)
     ? config.allowedMimeTypes
     : parseDelimitedList(config?.allowedMimeTypes);
-  const base = values.length ? values : GMAIL_DEFAULT_ALLOWED_MIME_TYPES;
+  const base = values.length ? values : OUTLOOK_DEFAULT_ALLOWED_MIME_TYPES;
   const set = new Set();
   for (const value of base) {
     if (typeof value === 'string' && value.trim()) {
@@ -1891,8 +2466,16 @@ function getGmailAllowedMimeTypes(config) {
   return set;
 }
 
-async function pollAllGmailCompanies() {
-  if (!isGmailMonitoringConfigured()) {
+function getOutlookMaxAttachmentBytes(config) {
+  const value = Number.parseInt(config?.maxAttachmentBytes, 10);
+  if (!Number.isFinite(value) || value <= 0) {
+    return OUTLOOK_DEFAULT_MAX_ATTACHMENT_BYTES;
+  }
+  return Math.max(value, 1024);
+}
+
+async function pollAllOutlookCompanies() {
+  if (!isOutlookMonitoringConfigured()) {
     return;
   }
 
@@ -1902,9 +2485,9 @@ async function pollAllGmailCompanies() {
   } catch (error) {
     if (error?.code === 'QUICKBOOKS_COMPANY_FILE_CORRUPT') {
       console.error(
-        'Gmail polling halted: QuickBooks company store is corrupt. Restore the latest backup before resuming inbox checks.'
+        'Outlook polling halted: QuickBooks company store is corrupt. Restore the latest backup before resuming mailbox checks.'
       );
-      emitHealthMetric('quickbooks.company_file.corrupt', { source: 'gmail_poll' });
+      emitHealthMetric('quickbooks.company_file.corrupt', { source: 'outlook_poll' });
       return;
     }
     throw error;
@@ -1917,38 +2500,42 @@ async function pollAllGmailCompanies() {
       continue;
     }
 
-    const gmailConfig = ensureGmailConfigDefaults(company.gmail);
-    if (!gmailConfig || gmailConfig.enabled === false || !gmailConfig.refreshToken) {
+    const outlookConfig = ensureOutlookConfigDefaults(company.outlook);
+    if (!outlookConfig?.enabled) {
       continue;
     }
 
-    let state;
+    if (!normalizeOutlookFolderMetadata(outlookConfig.monitoredFolder)?.id) {
+      continue;
+    }
+
+    let state = null;
     try {
-      state = await readCompanyGmailState(realmId);
+      state = await readCompanyOutlookState(realmId);
     } catch (error) {
-      console.warn(`Unable to read Gmail state for realm ${realmId}`, error.message || error);
-      state = ensureGmailRuntimeStateDefaults(null);
+      console.warn(`Unable to read Outlook state for realm ${realmId}`, error.message || error);
+      state = ensureOutlookRuntimeStateDefaults(null);
     }
 
     const lastPollMs = state.lastPollAt ? new Date(state.lastPollAt).getTime() : 0;
-    const interval = getGmailPollInterval(gmailConfig);
+    const interval = getOutlookPollInterval(outlookConfig);
     if (lastPollMs && now - lastPollMs < interval) {
       continue;
     }
 
-    queueGmailPoll(realmId, { reason: 'interval' }).catch((error) => {
-      console.error(`Scheduled Gmail poll failed for realm ${realmId}`, error);
+    queueOutlookPoll(realmId, { reason: 'interval' }).catch((error) => {
+      console.error(`Scheduled Outlook poll failed for realm ${realmId}`, error);
     });
   }
 }
 
-async function queueGmailPoll(realmId, { reason = 'manual' } = {}) {
-  if (!isGmailMonitoringConfigured() || !realmId) {
+async function queueOutlookPoll(realmId, { reason = 'manual', forceFullSync = false } = {}) {
+  if (!isOutlookMonitoringConfigured() || !realmId) {
     return null;
   }
 
-  if (activeGmailPolls.has(realmId)) {
-    return activeGmailPolls.get(realmId);
+  if (activeOutlookPolls.has(realmId)) {
+    return activeOutlookPolls.get(realmId);
   }
 
   const task = (async () => {
@@ -1960,18 +2547,19 @@ async function queueGmailPoll(realmId, { reason = 'manual' } = {}) {
         throw error;
       }
 
-      const gmailConfig = ensureGmailConfigDefaults(company.gmail);
-      if (!gmailConfig?.enabled) {
+      const outlookConfig = ensureOutlookConfigDefaults(company.outlook);
+      if (!outlookConfig?.enabled) {
         return null;
       }
 
-      if (!gmailConfig.refreshToken) {
-        const error = new Error('Gmail refresh token is not configured. Connect the mailbox again.');
-        error.code = 'GMAIL_REFRESH_TOKEN_MISSING';
+      const monitoredFolder = normalizeOutlookFolderMetadata(outlookConfig.monitoredFolder);
+      if (!monitoredFolder?.id) {
+        const error = new Error('Select an Outlook folder before syncing.');
+        error.code = 'OUTLOOK_FOLDER_NOT_SELECTED';
         throw error;
       }
 
-      const result = await pollGmailForCompany(company, gmailConfig, { reason });
+      const result = await pollOutlookForCompany(company, outlookConfig, { reason, forceFullSync });
 
       const statusUpdate = {
         status: result.warning ? 'warning' : 'connected',
@@ -1980,220 +2568,241 @@ async function queueGmailPoll(realmId, { reason = 'manual' } = {}) {
         lastSyncAt: result.lastSyncAt,
         lastSyncMetrics: result.metrics,
         lastSyncError: result.warning ? result.lastSyncError : null,
-        historyId: result.historyId || null,
+        deltaLink: result.deltaLink || null,
       };
 
-      await updateQuickBooksCompanyGmail(realmId, statusUpdate);
+      if (result.monitoredFolder) {
+        statusUpdate.monitoredFolder = result.monitoredFolder;
+      }
+
+      await updateQuickBooksCompanyOutlook(realmId, statusUpdate);
       return result;
     } catch (error) {
-      console.error(`Gmail sync failed for realm ${realmId}`, error);
+      console.error(`Outlook sync failed for realm ${realmId}`, error);
       try {
-        await updateQuickBooksCompanyGmail(realmId, {
+        await updateQuickBooksCompanyOutlook(realmId, {
           status: 'error',
           lastSyncStatus: 'error',
           lastSyncReason: reason,
           lastSyncAt: new Date().toISOString(),
-          lastSyncError: { message: error.message || 'Gmail poll failed.' },
+          lastSyncError: { message: error.message || 'Outlook poll failed.' },
         });
       } catch (updateError) {
-        console.warn(`Unable to persist Gmail error state for ${realmId}`, updateError.message || updateError);
+        console.warn(`Unable to persist Outlook error state for ${realmId}`, updateError.message || updateError);
       }
-      gmailTokenCache.delete(realmId);
       throw error;
     } finally {
-      activeGmailPolls.delete(realmId);
+      activeOutlookPolls.delete(realmId);
     }
   })();
 
-  activeGmailPolls.set(realmId, task);
+  activeOutlookPolls.set(realmId, task);
   return task;
 }
 
-async function pollGmailForCompany(company, gmailConfig, { reason = 'manual' } = {}) {
+
+async function pollOutlookForCompany(company, outlookConfig, { reason = 'manual', forceFullSync = false } = {}) {
   const realmId = company.realmId;
   const startedAt = Date.now();
-  const state = await readCompanyGmailState(realmId);
-  const accessToken = await acquireGmailAccessToken(realmId, gmailConfig);
-
-  const maxResults = Number.isFinite(gmailConfig.maxResults) && gmailConfig.maxResults > 0
-    ? Math.min(Math.floor(gmailConfig.maxResults), 100)
-    : GMAIL_DEFAULT_MAX_RESULTS;
-
-  const query = {
-    maxResults,
-    q: gmailConfig.searchQuery || undefined,
-  };
-
-  if (Array.isArray(gmailConfig.labelIds) && gmailConfig.labelIds.length) {
-    query.labelIds = gmailConfig.labelIds;
+  const state = await readCompanyOutlookState(realmId);
+  const { mailboxUserId } = await ensureOutlookMailboxContext(outlookConfig.mailboxUserId);
+  const monitoredFolder = normalizeOutlookFolderMetadata(outlookConfig.monitoredFolder);
+  if (!monitoredFolder?.id) {
+    const error = new Error('Outlook monitored folder is not configured.');
+    error.code = 'OUTLOOK_FOLDER_NOT_SELECTED';
+    throw error;
   }
 
-  const listResponse = await gmailApiRequest('/users/me/messages', { query }, accessToken);
-  const messages = Array.isArray(listResponse?.messages) ? listResponse.messages : [];
+  const allowedMimeTypes = getOutlookAllowedMimeTypes(outlookConfig);
+  const maxAttachmentBytes = getOutlookMaxAttachmentBytes(outlookConfig);
+  const businessType = outlookConfig.businessType || company.businessType || null;
 
-  if (typeof listResponse?.historyId === 'string') {
-    state.lastHistoryId = listResponse.historyId;
+  let deltaLink = !forceFullSync ? outlookConfig.deltaLink || state.deltaLink || null : null;
+  let resource;
+  let query;
+
+  if (deltaLink) {
+    resource = deltaLink;
+  } else {
+    resource = `/users/${encodeURIComponent(mailboxUserId)}/mailFolders/${encodeURIComponent(monitoredFolder.id)}/messages/delta`;
+    query = {
+      $select: 'id,subject,hasAttachments,receivedDateTime,lastModifiedDateTime,webLink,from,bodyPreview',
+      $expand: 'attachments($select=id,name,contentType,size,isInline,@odata.type)',
+      $top: 50,
+    };
   }
+
+  let nextLink = resource;
+  let useAbsolute = Boolean(deltaLink);
+  let newDeltaLink = deltaLink || null;
 
   let processedMessages = 0;
   let processedAttachments = 0;
   let skippedAttachments = 0;
   const attachmentErrors = [];
 
-  const allowedMimeTypes = getGmailAllowedMimeTypes(gmailConfig);
-  const maxAttachmentBytes = Math.max(
-    Number.parseInt(gmailConfig.maxAttachmentBytes, 10) || GMAIL_DEFAULT_MAX_ATTACHMENT_BYTES,
-    1024
-  );
+  const processedMessagesState = state.processedMessages || {};
 
-  for (const messageSummary of messages) {
-    const messageId = messageSummary?.id;
-    if (!messageId) {
-      continue;
-    }
-
-    if (state.processedMessages[messageId]?.processedAt) {
-      continue;
-    }
-
-    let message;
+  while (nextLink) {
+    let response;
     try {
-      message = await gmailApiRequest(`/users/me/messages/${encodeURIComponent(messageId)}`, {
-        query: { format: 'full' },
-      }, accessToken);
+      response = await graphFetch(nextLink, useAbsolute ? {} : { query });
     } catch (error) {
-      console.warn(`Failed to load Gmail message ${messageId} for realm ${realmId}`, error.message || error);
-      attachmentErrors.push({ messageId, error: error.message || 'Unable to load message.' });
-      state.processedMessages[messageId] = {
+      if (!useAbsolute && isOutlookDeltaResetError(error) && !forceFullSync) {
+        console.warn(`Outlook delta cursor expired for realm ${realmId}; restarting with full sync.`);
+        state.deltaLink = null;
+        await persistCompanyOutlookState(realmId, state);
+        return pollOutlookForCompany(company, { ...outlookConfig, deltaLink: null }, { reason, forceFullSync: true });
+      }
+      throw error;
+    }
+
+    const messages = Array.isArray(response?.value) ? response.value : [];
+
+    for (const message of messages) {
+      const messageId = sanitiseOptionalString(message?.id);
+      if (!messageId) {
+        continue;
+      }
+
+      const processedEntry = processedMessagesState[messageId];
+      const previouslyProcessed = processedEntry?.processedAt && !forceFullSync;
+      if (previouslyProcessed) {
+        continue;
+      }
+
+      const attachments = await resolveOutlookAttachments(mailboxUserId, message);
+      if (!attachments.length) {
+        processedMessagesState[messageId] = {
+          processedAt: new Date().toISOString(),
+          attachments: [],
+          status: 'no-attachments',
+          reason,
+          snippet: sanitiseOptionalString(message?.bodyPreview) || null,
+        };
+        continue;
+      }
+
+      const processedAttachmentKeys = new Set(Array.isArray(processedEntry?.attachments) ? processedEntry.attachments : []);
+      let messageHandled = false;
+
+      for (const attachment of attachments) {
+        const attachmentKey = outlookAttachmentKey(messageId, attachment);
+
+        if (processedAttachmentKeys.has(attachmentKey) && !forceFullSync) {
+          continue;
+        }
+
+        const attachmentType = sanitiseOptionalString(attachment?.['@odata.type']) || '';
+        if (attachmentType && !attachmentType.toLowerCase().includes('fileattachment')) {
+          skippedAttachments += 1;
+          continue;
+        }
+
+        if (attachment?.isInline) {
+          skippedAttachments += 1;
+          continue;
+        }
+
+        const mimeType = sanitiseOptionalString(attachment?.contentType)?.toLowerCase();
+        if (!mimeType || (allowedMimeTypes.size && !allowedMimeTypes.has(mimeType))) {
+          skippedAttachments += 1;
+          continue;
+        }
+
+        const declaredSize = Number.isFinite(attachment?.size) ? Number(attachment.size) : null;
+        if (declaredSize && declaredSize > maxAttachmentBytes) {
+          skippedAttachments += 1;
+          continue;
+        }
+
+        let buffer;
+        try {
+          buffer = await downloadOutlookAttachment(mailboxUserId, messageId, attachment);
+        } catch (error) {
+          attachmentErrors.push({
+            messageId,
+            attachmentId: sanitiseOptionalString(attachment?.id) || null,
+            error: error.message || 'Failed to download Outlook attachment.',
+          });
+          skippedAttachments += 1;
+          continue;
+        }
+
+        if (!buffer || !buffer.length) {
+          skippedAttachments += 1;
+          continue;
+        }
+
+        if (buffer.length > maxAttachmentBytes) {
+          skippedAttachments += 1;
+          continue;
+        }
+
+        try {
+          await ingestInvoiceFromSource({
+            buffer,
+            mimeType,
+            originalName: sanitiseOptionalString(attachment?.name) || `${messageId}.bin`,
+            fileSize: buffer.length,
+            realmId,
+            businessType,
+            remoteSource: buildOutlookRemoteSource({
+              mailboxUserId,
+              folder: monitoredFolder,
+              message,
+              attachment,
+              attachmentKey,
+              buffer,
+              mimeType,
+              reason,
+            }),
+          });
+          processedAttachmentKeys.add(attachmentKey);
+          processedAttachments += 1;
+          messageHandled = true;
+        } catch (error) {
+          attachmentErrors.push({
+            messageId,
+            attachmentId: sanitiseOptionalString(attachment?.id) || null,
+            error: error.message || 'Unknown error ingesting Outlook attachment.',
+          });
+        }
+      }
+
+      if (messageHandled) {
+        processedMessages += 1;
+      }
+
+      processedMessagesState[messageId] = {
         processedAt: new Date().toISOString(),
-        attachments: [],
-        status: 'error',
+        attachments: Array.from(processedAttachmentKeys),
+        status: messageHandled ? 'processed' : 'skipped',
         reason,
-        snippet: messageSummary?.snippet || null,
-        historyId: messageSummary?.historyId || null,
+        snippet: sanitiseOptionalString(message?.bodyPreview) || null,
       };
-      continue;
     }
 
-    const attachments = collectGmailAttachments(message?.payload);
-    if (!attachments.length) {
-      state.processedMessages[messageId] = {
-        processedAt: new Date().toISOString(),
-        attachments: [],
-        status: 'no-attachments',
-        reason,
-        snippet: message?.snippet || null,
-        historyId: message?.historyId || null,
-      };
-      continue;
+    if (typeof response?.['@odata.deltaLink'] === 'string') {
+      newDeltaLink = response['@odata.deltaLink'];
     }
 
-    const processedAttachmentKeys = [];
-    let messageHandled = false;
-
-    for (const attachment of attachments) {
-      const filename = attachment.filename || `${messageId}.bin`;
-      const extension = path.extname(filename);
-      const declaredMime = attachment.mimeType || deriveMimeTypeFromExtension(extension);
-      const mimeType = (declaredMime || 'application/octet-stream').toLowerCase();
-
-      if (allowedMimeTypes.size && !allowedMimeTypes.has(mimeType)) {
-        skippedAttachments += 1;
-        continue;
-      }
-
-      const declaredSize = typeof attachment.size === 'number' && Number.isFinite(attachment.size)
-        ? attachment.size
-        : null;
-
-      if (declaredSize && declaredSize > maxAttachmentBytes) {
-        console.warn(
-          `Skipping Gmail attachment ${attachment.attachmentId || attachment.partId || 'unknown'} on ${messageId} for realm ${realmId} because it exceeds the size limit (${declaredSize} bytes).`
-        );
-        skippedAttachments += 1;
-        continue;
-      }
-
-      let buffer;
-      try {
-        buffer = await fetchGmailAttachment(messageId, attachment, accessToken);
-      } catch (error) {
-        console.warn(
-          `Failed to download Gmail attachment ${attachment.attachmentId || attachment.partId || 'unknown'} from ${messageId} (realm ${realmId})`,
-          error.message || error
-        );
-        attachmentErrors.push({
-          messageId,
-          attachmentId: attachment.attachmentId || attachment.partId || null,
-          error: error.message || 'Unknown error downloading attachment.',
-        });
-        continue;
-      }
-
-      if (buffer.length > maxAttachmentBytes) {
-        console.warn(
-          `Skipping Gmail attachment ${attachment.attachmentId || attachment.partId || 'unknown'} for realm ${realmId} because the downloaded size exceeds the limit (${buffer.length} bytes).`
-        );
-        skippedAttachments += 1;
-        continue;
-      }
-
-      const businessType = gmailConfig.businessType || company.businessType || GMAIL_DEFAULT_BUSINESS_TYPE || null;
-
-      const remoteSource = buildGmailRemoteSource({
-        message,
-        attachment,
-        buffer,
-        mimeType,
-        reason,
-        email: gmailConfig.email || null,
-      });
-
-      try {
-        await ingestInvoiceFromSource({
-          buffer,
-          mimeType,
-          originalName: filename,
-          fileSize: buffer.length,
-          realmId: company.realmId,
-          businessType,
-          remoteSource,
-          defaultStatus: 'review',
-        });
-        processedAttachments += 1;
-        messageHandled = true;
-        processedAttachmentKeys.push(gmailAttachmentKey(messageId, attachment));
-      } catch (error) {
-        console.error(
-          `Failed to ingest Gmail attachment ${attachment.attachmentId || attachment.partId || 'unknown'} from ${messageId} (realm ${realmId})`,
-          error.message || error
-        );
-        attachmentErrors.push({
-          messageId,
-          attachmentId: attachment.attachmentId || attachment.partId || null,
-          error: error.message || 'Unknown error ingesting attachment.',
-        });
-      }
+    if (typeof response?.['@odata.nextLink'] === 'string') {
+      nextLink = response['@odata.nextLink'];
+      useAbsolute = true;
+      query = null;
+    } else {
+      nextLink = null;
     }
-
-    if (messageHandled) {
-      processedMessages += 1;
-    }
-
-    state.processedMessages[messageId] = {
-      processedAt: new Date().toISOString(),
-      attachments: processedAttachmentKeys,
-      status: messageHandled ? 'processed' : 'skipped',
-      reason,
-      snippet: message?.snippet || null,
-      historyId: message?.historyId || null,
-    };
   }
 
+  state.deltaLink = newDeltaLink || null;
   state.lastPollAt = new Date().toISOString();
-  await persistCompanyGmailState(realmId, state);
+  state.processedMessages = pruneOutlookProcessedMessages(processedMessagesState, 500);
+  await persistCompanyOutlookState(realmId, state);
 
   const durationMs = Date.now() - startedAt;
+
   const metrics = {
     processedMessages,
     processedAttachments,
@@ -2207,7 +2816,7 @@ async function pollGmailForCompany(company, gmailConfig, { reason = 'manual' } =
     ? {
         message:
           attachmentErrors[0]?.error ||
-          `${attachmentErrors.length} Gmail attachment error${attachmentErrors.length === 1 ? '' : 's'} encountered.`,
+          `${attachmentErrors.length} Outlook attachment error${attachmentErrors.length === 1 ? '' : 's'} encountered.`,
         at: state.lastPollAt,
       }
     : null;
@@ -2217,241 +2826,99 @@ async function pollGmailForCompany(company, gmailConfig, { reason = 'manual' } =
     warning,
     lastSyncError,
     lastSyncAt: state.lastPollAt,
-    historyId: state.lastHistoryId || null,
+    deltaLink: state.deltaLink,
+    monitoredFolder,
   };
 }
 
-async function acquireGmailAccessToken(realmId, gmailConfig) {
-  if (!isGmailMonitoringConfigured()) {
-    throw new Error('Gmail OAuth client is not configured.');
+function isOutlookDeltaResetError(error) {
+  if (!error || typeof error !== 'object') {
+    return false;
   }
 
-  const now = Date.now();
-  const cached = gmailTokenCache.get(realmId);
-  if (cached && cached.expiresAt - 60000 > now) {
-    return cached.token;
+  if (error.status === 410) {
+    return true;
   }
 
-  const refreshToken = gmailConfig?.refreshToken;
-  if (!refreshToken) {
-    const error = new Error('Gmail refresh token is not configured. Connect the mailbox again.');
-    error.code = 'GMAIL_REFRESH_TOKEN_MISSING';
-    throw error;
+  const code = sanitiseOptionalString(error?.body?.error?.code)?.toLowerCase();
+  if (code && code.includes('resyncrequired')) {
+    return true;
   }
 
-  const params = new URLSearchParams();
-  params.set('client_id', GMAIL_CLIENT_ID);
-  params.set('client_secret', GMAIL_CLIENT_SECRET);
-  params.set('grant_type', 'refresh_token');
-  params.set('refresh_token', refreshToken);
-
-  const response = await fetch(GMAIL_TOKEN_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: params.toString(),
-  });
-
-  if (!response.ok) {
-    const errorBody = await safeReadJson(response);
-    const message =
-      errorBody?.error_description ||
-      errorBody?.error ||
-      `Gmail token request failed with status ${response.status}`;
-    const error = new Error(message);
-    error.status = response.status;
-    error.body = errorBody;
-    throw error;
-  }
-
-  const data = await response.json();
-  const expiresIn = typeof data.expires_in === 'number' ? data.expires_in : Number.parseInt(data.expires_in, 10) || 3600;
-  const expiresAt = now + Math.max(expiresIn - 60, 60) * 1000;
-
-  gmailTokenCache.set(realmId, {
-    token: data.access_token,
-    expiresAt,
-  });
-
-  if (typeof data.refresh_token === 'string' && data.refresh_token && data.refresh_token !== refreshToken) {
-    try {
-      await updateQuickBooksCompanyGmail(realmId, {
-        refreshToken: data.refresh_token,
-        lastConnectedAt: new Date().toISOString(),
-      });
-    } catch (error) {
-      console.warn(`Failed to persist updated Gmail refresh token for realm ${realmId}`, error.message || error);
-    }
-  }
-
-  return data.access_token;
+  const message = sanitiseOptionalString(error.message)?.toLowerCase();
+  return Boolean(message && message.includes('resync required'));
 }
 
-async function gmailApiRequest(endpoint, { method = 'GET', query, headers, body } = {}, accessToken) {
-  const pathWithSlash = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
-  const url = new URL(`${GMAIL_API_BASE_URL}${pathWithSlash}`);
-
-  if (query && typeof query === 'object') {
-    for (const [key, value] of Object.entries(query)) {
-      if (value === undefined || value === null) {
-        continue;
-      }
-
-      if (Array.isArray(value)) {
-        for (const item of value) {
-          url.searchParams.append(key, item);
-        }
-      } else {
-        url.searchParams.set(key, value);
-      }
-    }
+async function resolveOutlookAttachments(mailboxUserId, message) {
+  if (Array.isArray(message?.attachments) && message.attachments.length) {
+    return message.attachments;
   }
 
-  const init = {
-    method,
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: 'application/json',
-      ...(headers || {}),
-    },
-  };
-
-  if (body !== undefined && body !== null) {
-    init.body = typeof body === 'string' ? body : JSON.stringify(body);
-    if (!init.headers['Content-Type']) {
-      init.headers['Content-Type'] = 'application/json';
-    }
-  }
-
-  const response = await fetch(url.toString(), init);
-  if (!response.ok) {
-    const errorBody = await safeReadJson(response);
-    const message =
-      errorBody?.error?.message ||
-      errorBody?.error_description ||
-      `Gmail API request failed (${method || 'GET'} ${endpoint}) with status ${response.status}`;
-    const error = new Error(message);
-    error.status = response.status;
-    error.body = errorBody;
-    throw error;
-  }
-
-  if (response.status === 204) {
-    return null;
-  }
-
-  return response.json();
-}
-
-function collectGmailAttachments(payload, parentMimeType = null, pathPrefix = []) {
-  if (!payload || typeof payload !== 'object') {
+  if (!message?.hasAttachments || !message?.id) {
     return [];
   }
 
-  const results = [];
-  const { filename, mimeType, body, parts, partId, headers } = payload;
-  const resolvedMime = mimeType || parentMimeType || null;
+  const response = await graphFetch(`/users/${encodeURIComponent(mailboxUserId)}/messages/${encodeURIComponent(message.id)}/attachments`, {
+    query: {
+      $select: 'id,name,contentType,size,isInline,@odata.type',
+    },
+  });
 
-  const hasAttachmentData = Boolean(body?.attachmentId || body?.data);
-  const hasFilename = typeof filename === 'string' && filename.trim().length > 0;
-  const disposition = extractEmailHeader(headers, 'Content-Disposition') || '';
-  const isInline = disposition.toLowerCase().includes('inline');
-  const size = typeof body?.size === 'number' ? body.size : null;
-
-  if (hasFilename || hasAttachmentData) {
-    results.push({
-      filename: hasFilename ? filename.trim() : null,
-      mimeType: resolvedMime,
-      attachmentId: body?.attachmentId || null,
-      data: body?.data || null,
-      size,
-      partId: partId || pathPrefix.join('.'),
-      isInline,
-    });
-  }
-
-  if (Array.isArray(parts) && parts.length) {
-    const nextPrefix = partId ? [...pathPrefix, partId] : pathPrefix;
-    for (const child of parts) {
-      results.push(...collectGmailAttachments(child, resolvedMime, nextPrefix));
-    }
-  }
-
-  return results;
+  return Array.isArray(response?.value) ? response.value : [];
 }
 
-async function fetchGmailAttachment(messageId, attachment, accessToken) {
-  if (attachment?.data) {
-    return decodeBase64Url(attachment.data);
+async function downloadOutlookAttachment(mailboxUserId, messageId, attachment) {
+  if (!attachment) {
+    throw new Error('Outlook attachment details are missing.');
   }
 
-  if (!attachment?.attachmentId) {
-    throw new Error('Gmail attachment is missing attachmentId and inline data.');
+  if (typeof attachment.contentBytes === 'string' && attachment.contentBytes) {
+    return Buffer.from(attachment.contentBytes, 'base64');
   }
 
-  const attachmentPath = `/users/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachment.attachmentId)}`;
-  const response = await gmailApiRequest(attachmentPath, {}, accessToken);
-  if (!response?.data) {
-    throw new Error('Gmail attachment download did not include data.');
+  if (!attachment.id) {
+    throw new Error('Outlook attachment is missing an identifier.');
   }
 
-  return decodeBase64Url(response.data);
+  const resource = `/users/${encodeURIComponent(mailboxUserId)}/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachment.id)}/$value`;
+  return graphFetch(resource, { responseType: 'buffer' });
 }
 
-function buildGmailRemoteSource({ message, attachment, buffer, mimeType, reason, email }) {
+function buildOutlookRemoteSource({ mailboxUserId, folder, message, attachment, attachmentKey, buffer, mimeType, reason }) {
   if (!message) {
     return null;
   }
 
-  const messageId = message.id || null;
-  const threadId = message.threadId || null;
-  const historyId = message.historyId || null;
-  const subject = extractEmailHeader(message.payload?.headers, 'Subject');
-  const from = extractEmailHeader(message.payload?.headers, 'From');
-  const internalDate = message.internalDate ? new Date(Number(message.internalDate)).toISOString() : null;
-  const attachmentKey = gmailAttachmentKey(messageId, attachment);
+  const sender = message?.from?.emailAddress;
+  const receivedAt = sanitiseIsoString(message?.receivedDateTime);
 
   return {
-    provider: 'gmail',
-    email: email || null,
+    provider: 'outlook',
+    mailboxUserId: mailboxUserId || null,
+    folderId: folder?.id || null,
+    folderPath: folder?.path || folder?.displayName || null,
     itemId: attachmentKey,
-    messageId,
-    threadId,
-    attachmentId: attachment?.attachmentId || null,
+    messageId: message?.id || null,
+    conversationId: message?.conversationId || null,
+    attachmentId: attachment?.id || null,
     attachmentSize: buffer?.length || attachment?.size || null,
-    mimeType,
-    filename: attachment?.filename || null,
-    labelIds: Array.isArray(message.labelIds) ? message.labelIds : null,
-    subject: subject || null,
-    from: from || null,
-    historyId: historyId || null,
-    snippet: message?.snippet || null,
-    receivedAt: internalDate,
-    webUrl: messageId ? `https://mail.google.com/mail/u/0/#inbox/${messageId}` : null,
+    mimeType: mimeType || attachment?.contentType || null,
+    filename: attachment?.name || null,
+    subject: message?.subject || null,
+    from: sender?.address || sender?.name || null,
+    webUrl: message?.webLink || null,
+    receivedAt,
     syncedAt: new Date().toISOString(),
     reason,
   };
 }
 
-function extractEmailHeader(headers, name) {
-  if (!Array.isArray(headers)) {
-    return null;
-  }
-  const target = name.toLowerCase();
-  const entry = headers.find((header) => typeof header?.name === 'string' && header.name.toLowerCase() === target);
-  if (!entry || typeof entry.value !== 'string') {
-    return null;
-  }
-  return entry.value.trim() || null;
-}
-
-function gmailAttachmentKey(messageId, attachment) {
-  const attachmentId = attachment?.attachmentId || attachment?.partId || 'attachment';
+function outlookAttachmentKey(messageId, attachment) {
+  const attachmentId = sanitiseOptionalString(attachment?.id) || 'attachment';
   return [messageId || 'message', attachmentId].join('::');
 }
 
-function pruneGmailProcessedMessages(processedMap, limit = 500) {
+function pruneOutlookProcessedMessages(processedMap, limit = 500) {
   if (!processedMap || typeof processedMap !== 'object') {
     return {};
   }
@@ -2471,25 +2938,25 @@ function pruneGmailProcessedMessages(processedMap, limit = 500) {
   return Object.fromEntries(trimmed);
 }
 
-function startGmailMonitor() {
-  if (!isGmailMonitoringConfigured()) {
+function startOutlookMonitor() {
+  if (!isOutlookMonitoringConfigured()) {
     return;
   }
 
-  if (gmailPollingTimer) {
-    clearInterval(gmailPollingTimer);
+  if (outlookPollingTimer) {
+    clearInterval(outlookPollingTimer);
   }
 
   const tick = () => {
-    pollAllGmailCompanies().catch((error) => {
-      console.error('Scheduled Gmail polling failed', error);
+    pollAllOutlookCompanies().catch((error) => {
+      console.error('Scheduled Outlook polling failed', error);
     });
   };
 
   tick();
-  gmailPollingTimer = setInterval(tick, GMAIL_DEFAULT_POLL_INTERVAL_MS);
+  outlookPollingTimer = setInterval(tick, OUTLOOK_DEFAULT_POLL_INTERVAL_MS);
   console.log(
-    `Gmail inbox monitoring enabled (base interval ${Math.max(Math.round(GMAIL_DEFAULT_POLL_INTERVAL_MS / 1000), 1)}s)`
+    `Outlook mailbox polling enabled (base interval ${Math.max(Math.round(OUTLOOK_DEFAULT_POLL_INTERVAL_MS / 1000), 1)}s)`
   );
 }
 
@@ -3010,6 +3477,143 @@ app.patch('/api/quickbooks/companies/:realmId/onedrive', async (req, res) => {
   }
 });
 
+app.get('/api/outlook/settings', async (req, res) => {
+  try {
+    const settings = await loadGlobalOutlookSettings({ refresh: req.query.refresh === 'true' });
+    res.json({ settings });
+  } catch (error) {
+    console.error('[Outlook] Failed to load settings', error);
+    res.status(500).json({ error: 'Failed to load Outlook mailbox settings.' });
+  }
+});
+
+app.put('/api/outlook/settings', async (req, res) => {
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+
+  const updates = {};
+
+  if (Object.prototype.hasOwnProperty.call(body, 'mailboxUserId')) {
+    const mailboxUserId = sanitiseOptionalString(body.mailboxUserId);
+    updates.mailboxUserId = mailboxUserId || null;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, 'mailboxDisplayName')) {
+    updates.mailboxDisplayName = sanitiseOptionalString(body.mailboxDisplayName) || null;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, 'status')) {
+    updates.status = sanitiseOptionalString(body.status) || null;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, 'baseFolder')) {
+    updates.baseFolder = normalizeOutlookFolderMetadata(body.baseFolder);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, 'lastValidatedAt')) {
+    updates.lastValidatedAt = sanitiseIsoString(body.lastValidatedAt) || null;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, 'lastValidationError')) {
+    const errorValue = body.lastValidationError;
+    if (!errorValue) {
+      updates.lastValidationError = null;
+    } else if (typeof errorValue === 'string') {
+      updates.lastValidationError = { message: sanitiseOptionalString(errorValue) || null };
+    } else if (typeof errorValue === 'object') {
+      updates.lastValidationError = {
+        message: sanitiseOptionalString(errorValue.message) || null,
+        at: sanitiseIsoString(errorValue.at) || null,
+      };
+    }
+  }
+
+  try {
+    const settings = await updateGlobalOutlookSettings(updates);
+    res.json({ settings });
+  } catch (error) {
+    console.error('[Outlook] Failed to update global settings', error);
+    res.status(500).json({ error: 'Failed to update Outlook mailbox settings.' });
+  }
+});
+
+app.get('/api/outlook/folders', async (req, res) => {
+  try {
+    const mailboxId = sanitiseOptionalString(req.query.mailboxId);
+    const folderId = sanitiseOptionalString(req.query.folderId);
+    const folderPath = sanitiseOptionalString(req.query.path || req.query.folderPath);
+    const parentPath = sanitiseOptionalString(req.query.parentPath);
+
+    const response = await graphListMailFolders({ mailboxId, folderId, folderPath, parentPath });
+    res.json(response);
+  } catch (error) {
+    if (error.code === 'OUTLOOK_GLOBAL_UNCONFIGURED') {
+      return res.status(503).json({ error: 'Configure the Outlook mailbox before browsing folders.' });
+    }
+    if (error.code === 'OUTLOOK_FOLDER_NOT_FOUND') {
+      return res.status(404).json({ error: error.message || 'Outlook folder not found.' });
+    }
+    if (error.status === 401) {
+      const detail = extractGraphErrorDetail(error);
+      const message = appendGraphErrorDetail(
+        'Microsoft Graph authentication failed. Verify MS_GRAPH_CLIENT_ID, MS_GRAPH_CLIENT_SECRET, and MS_GRAPH_TENANT_ID.',
+        detail
+      );
+      console.warn('[Outlook] Folder listing authentication failure', message);
+      return res.status(401).json({ error: message });
+    }
+    if (error.status === 403) {
+      const detail = extractGraphErrorDetail(error);
+      const message = appendGraphErrorDetail(
+        'Microsoft Graph denied access to the mailbox. Grant the app registration Mail.Read (application) permission and admin consent for the configured mailbox.',
+        detail
+      );
+      console.warn('[Outlook] Folder listing denied by Microsoft Graph', message);
+      return res.status(403).json({ error: message });
+    }
+    if (error.status === 404) {
+      const detail = extractGraphErrorDetail(error);
+      const message = appendGraphErrorDetail(
+        'Microsoft Graph could not find the configured mailbox. Confirm MS_GRAPH_MAILBOX_USER_ID or the saved mailbox settings.',
+        detail
+      );
+      console.warn('[Outlook] Folder listing mailbox lookup failed', message);
+      return res.status(404).json({ error: message });
+    }
+    console.error('[Outlook] Failed to list folders', error);
+    const detail = extractGraphErrorDetail(error);
+    const message = appendGraphErrorDetail('Failed to load Outlook folder list.', detail);
+    res.status(500).json({ error: message });
+  }
+});
+
+app.post('/api/outlook/resolve', async (req, res) => {
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const folderId = sanitiseOptionalString(body.folderId);
+  const folderPath = sanitiseOptionalString(body.folderPath || body.path);
+  const mailboxId = sanitiseOptionalString(body.mailboxId);
+
+  if (!folderId && !folderPath) {
+    return res.status(400).json({ error: 'Provide a folderId or folderPath to resolve.' });
+  }
+
+  try {
+    const folder = await resolveOutlookFolderReference({ mailboxId, folderId, folderPath });
+    res.json({ folder });
+  } catch (error) {
+    if (error.code === 'OUTLOOK_FOLDER_NOT_FOUND') {
+      return res.status(404).json({ error: error.message || 'Outlook folder not found.' });
+    }
+    if (error.code === 'OUTLOOK_FOLDER_REFERENCE_REQUIRED') {
+      return res.status(400).json({ error: error.message });
+    }
+    if (error.code === 'OUTLOOK_GLOBAL_UNCONFIGURED') {
+      return res.status(503).json({ error: 'Configure the Outlook mailbox before resolving folders.' });
+    }
+    console.error('[Outlook] Failed to resolve folder', error);
+    res.status(500).json({ error: 'Failed to resolve Outlook folder.' });
+  }
+});
+
 app.delete('/api/quickbooks/companies/:realmId/onedrive', async (req, res) => {
   const realmId = req.params.realmId;
   if (!realmId) {
@@ -3101,9 +3705,10 @@ app.post('/api/quickbooks/companies/:realmId/onedrive/resync', (req, res) =>
   handleOneDriveSyncRequest(req, res, { forceFullDefault: true })
 );
 
-app.post('/api/quickbooks/companies/:realmId/gmail/auth-url', async (req, res) => {
-  if (!isGmailMonitoringConfigured()) {
-    return res.status(503).json({ error: 'Gmail OAuth client is not configured on the server.' });
+
+app.patch('/api/quickbooks/companies/:realmId/outlook', async (req, res) => {
+  if (!isOutlookMonitoringConfigured()) {
+    return res.status(503).json({ error: 'Outlook integration is not configured on the server.' });
   }
 
   const realmId = req.params.realmId;
@@ -3116,102 +3721,48 @@ app.post('/api/quickbooks/companies/:realmId/gmail/auth-url', async (req, res) =
     return res.status(404).json({ error: 'QuickBooks company not found.' });
   }
 
-  const emailInput = typeof req.body?.email === 'string' ? req.body.email.trim() : '';
-  const state = createGmailOAuthState(realmId, { email: emailInput });
-
-  const authorizeUrl = new URL(GMAIL_AUTH_URL);
-  authorizeUrl.searchParams.set('client_id', GMAIL_CLIENT_ID);
-  authorizeUrl.searchParams.set('response_type', 'code');
-  authorizeUrl.searchParams.set('scope', GMAIL_SCOPES);
-  authorizeUrl.searchParams.set('redirect_uri', GMAIL_REDIRECT_URI);
-  authorizeUrl.searchParams.set('state', state);
-  authorizeUrl.searchParams.set('access_type', 'offline');
-  authorizeUrl.searchParams.set('prompt', 'consent');
-  authorizeUrl.searchParams.set('include_granted_scopes', 'true');
-  if (emailInput) {
-    authorizeUrl.searchParams.set('login_hint', emailInput);
-  }
-
-  res.json({ url: authorizeUrl.toString(), state });
-});
-
-app.patch('/api/quickbooks/companies/:realmId/gmail', async (req, res) => {
-  if (!isGmailMonitoringConfigured()) {
-    return res.status(503).json({ error: 'Gmail OAuth client is not configured on the server.' });
-  }
-
-  const realmId = req.params.realmId;
-  if (!realmId) {
-    return res.status(400).json({ error: 'Realm ID is required.' });
-  }
-
-  const company = await getQuickBooksCompanyRecord(realmId);
-  if (!company) {
-    return res.status(404).json({ error: 'QuickBooks company not found.' });
-  }
-
-  const body = req.body || {};
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
   const updates = {};
 
-  if (body.email !== undefined) {
-    if (body.email === null) {
-      updates.email = null;
-    } else if (typeof body.email === 'string' && body.email.trim()) {
-      updates.email = body.email.trim();
-    } else {
-      return res.status(400).json({ error: 'Email must be a non-empty string when provided.' });
-    }
-  }
-
-  if (body.enabled !== undefined) {
+  if (Object.prototype.hasOwnProperty.call(body, 'enabled')) {
     updates.enabled = body.enabled !== false;
   }
 
-  if (body.searchQuery !== undefined) {
-    if (body.searchQuery === null) {
-      updates.searchQuery = null;
-    } else if (typeof body.searchQuery === 'string') {
-      updates.searchQuery = body.searchQuery.trim();
-    } else {
-      return res.status(400).json({ error: 'searchQuery must be a string when provided.' });
-    }
+  if (Object.prototype.hasOwnProperty.call(body, 'mailboxUserId')) {
+    updates.mailboxUserId = sanitiseOptionalString(body.mailboxUserId) || null;
   }
 
-  if (body.labelIds !== undefined) {
-    let labels;
-    if (Array.isArray(body.labelIds)) {
-      labels = body.labelIds;
-    } else if (typeof body.labelIds === 'string') {
-      labels = parseDelimitedList(body.labelIds);
-    } else {
-      return res.status(400).json({ error: 'labelIds must be a string or array of labels.' });
-    }
-    updates.labelIds = labels;
+  if (Object.prototype.hasOwnProperty.call(body, 'mailboxDisplayName')) {
+    updates.mailboxDisplayName = sanitiseOptionalString(body.mailboxDisplayName) || null;
   }
 
-  if (body.allowedMimeTypes !== undefined) {
-    let allowed;
-    if (Array.isArray(body.allowedMimeTypes)) {
-      allowed = body.allowedMimeTypes;
-    } else if (typeof body.allowedMimeTypes === 'string') {
-      allowed = parseDelimitedList(body.allowedMimeTypes);
-    } else {
-      return res.status(400).json({ error: 'allowedMimeTypes must be a string or array of MIME types.' });
-    }
-    updates.allowedMimeTypes = allowed;
+  if (Object.prototype.hasOwnProperty.call(body, 'monitoredFolder')) {
+    updates.monitoredFolder = normalizeOutlookFolderMetadata(body.monitoredFolder);
   }
 
-  if (body.pollIntervalMs !== undefined) {
+  if (Object.prototype.hasOwnProperty.call(body, 'pollIntervalMs')) {
     const interval = Number.parseInt(body.pollIntervalMs, 10);
-    if (!Number.isFinite(interval) || interval < GMAIL_POLL_MIN_INTERVAL_MS) {
+    if (!Number.isFinite(interval) || interval < OUTLOOK_POLL_MIN_INTERVAL_MS) {
       return res
         .status(400)
-        .json({ error: `pollIntervalMs must be a number greater than or equal to ${GMAIL_POLL_MIN_INTERVAL_MS}.` });
+        .json({ error: `pollIntervalMs must be a number greater than or equal to ${OUTLOOK_POLL_MIN_INTERVAL_MS}.` });
     }
     updates.pollIntervalMs = interval;
   }
 
-  if (body.maxAttachmentBytes !== undefined) {
+  if (Object.prototype.hasOwnProperty.call(body, 'allowedMimeTypes')) {
+    const allowed = Array.isArray(body.allowedMimeTypes)
+      ? body.allowedMimeTypes
+      : typeof body.allowedMimeTypes === 'string'
+        ? parseDelimitedList(body.allowedMimeTypes)
+        : null;
+    if (!allowed) {
+      return res.status(400).json({ error: 'allowedMimeTypes must be an array or comma-separated string.' });
+    }
+    updates.allowedMimeTypes = allowed;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, 'maxAttachmentBytes')) {
     const maxBytes = Number.parseInt(body.maxAttachmentBytes, 10);
     if (!Number.isFinite(maxBytes) || maxBytes < 1024) {
       return res.status(400).json({ error: 'maxAttachmentBytes must be a number >= 1024.' });
@@ -3219,15 +3770,7 @@ app.patch('/api/quickbooks/companies/:realmId/gmail', async (req, res) => {
     updates.maxAttachmentBytes = maxBytes;
   }
 
-  if (body.maxResults !== undefined) {
-    const maxResults = Number.parseInt(body.maxResults, 10);
-    if (!Number.isFinite(maxResults) || maxResults <= 0) {
-      return res.status(400).json({ error: 'maxResults must be a positive number.' });
-    }
-    updates.maxResults = maxResults;
-  }
-
-  if (body.businessType !== undefined) {
+  if (Object.prototype.hasOwnProperty.call(body, 'businessType')) {
     if (body.businessType === null) {
       updates.businessType = null;
     } else if (typeof body.businessType === 'string') {
@@ -3237,61 +3780,31 @@ app.patch('/api/quickbooks/companies/:realmId/gmail', async (req, res) => {
     }
   }
 
-  const currentConfig = ensureGmailConfigDefaults(company.gmail);
-  const willEnable = updates.enabled !== undefined
-    ? updates.enabled
-    : currentConfig
-      ? currentConfig.enabled !== false
-      : false;
-  if (willEnable && !(currentConfig?.refreshToken || updates.refreshToken)) {
-    return res.status(409).json({ error: 'Connect Gmail before enabling inbox monitoring.' });
+  if (Object.prototype.hasOwnProperty.call(body, 'deltaLink')) {
+    updates.deltaLink = sanitiseOptionalString(body.deltaLink) || null;
   }
 
   try {
-    const updated = await updateQuickBooksCompanyGmail(realmId, updates);
-    const gmailConfig = ensureGmailConfigDefaults(updated.gmail);
-    if (gmailConfig?.enabled && gmailConfig.refreshToken) {
-      queueGmailPoll(realmId, { reason: 'configuration' }).catch((error) => {
-        console.warn(`Unable to trigger Gmail sync for ${realmId}`, error.message || error);
+    const updated = await updateQuickBooksCompanyOutlook(realmId, updates);
+    const outlookConfig = ensureOutlookConfigDefaults(updated.outlook);
+    if (outlookConfig?.enabled && normalizeOutlookFolderMetadata(outlookConfig.monitoredFolder)?.id) {
+      queueOutlookPoll(realmId, { reason: 'configuration' }).catch((error) => {
+        console.warn(`Unable to trigger Outlook sync for ${realmId}`, error.message || error);
       });
     }
-    res.json({ gmail: sanitizeGmailSettings(updated.gmail) });
+    res.json({ outlook: sanitizeOutlookSettings(updated.outlook) });
   } catch (error) {
     if (error.code === 'NOT_FOUND') {
       return res.status(404).json({ error: 'QuickBooks company not found.' });
     }
-    console.error('Failed to update Gmail settings', error);
-    res.status(500).json({ error: 'Failed to update Gmail settings.' });
+    console.error('Failed to update Outlook settings', error);
+    res.status(500).json({ error: 'Failed to update Outlook settings.' });
   }
 });
 
-app.delete('/api/quickbooks/companies/:realmId/gmail', async (req, res) => {
-  const realmId = req.params.realmId;
-  if (!realmId) {
-    return res.status(400).json({ error: 'Realm ID is required.' });
-  }
-
-  try {
-    await updateQuickBooksCompanyGmail(realmId, null, { replace: true });
-    gmailTokenCache.delete(realmId);
-    try {
-      await deleteCompanyGmailState(realmId);
-    } catch (stateError) {
-      console.warn(`Unable to remove Gmail polling state for ${realmId}`, stateError.message || stateError);
-    }
-    res.json({ gmail: null });
-  } catch (error) {
-    if (error.code === 'NOT_FOUND') {
-      return res.status(404).json({ error: 'QuickBooks company not found.' });
-    }
-    console.error('Failed to remove Gmail settings', error);
-    res.status(500).json({ error: 'Failed to remove Gmail settings.' });
-  }
-});
-
-app.post('/api/quickbooks/companies/:realmId/gmail/sync', async (req, res) => {
-  if (!isGmailMonitoringConfigured()) {
-    return res.status(503).json({ error: 'Gmail OAuth client is not configured on the server.' });
+app.post('/api/quickbooks/companies/:realmId/outlook/sync', async (req, res) => {
+  if (!isOutlookMonitoringConfigured()) {
+    return res.status(503).json({ error: 'Outlook integration is not configured on the server.' });
   }
 
   const realmId = req.params.realmId;
@@ -3304,23 +3817,62 @@ app.post('/api/quickbooks/companies/:realmId/gmail/sync', async (req, res) => {
     return res.status(404).json({ error: 'QuickBooks company not found.' });
   }
 
-  const gmailConfig = ensureGmailConfigDefaults(company.gmail);
-  if (!gmailConfig?.enabled) {
-    return res.status(400).json({ error: 'Enable Gmail monitoring before requesting a manual sync.' });
+  const outlookConfig = ensureOutlookConfigDefaults(company.outlook);
+  if (!outlookConfig?.enabled) {
+    return res.status(400).json({ error: 'Enable Outlook monitoring before requesting a manual sync.' });
   }
 
-  if (!gmailConfig.refreshToken) {
-    return res.status(409).json({ error: 'Connect Gmail to obtain a refresh token before syncing.' });
+  if (!normalizeOutlookFolderMetadata(outlookConfig.monitoredFolder)?.id) {
+    return res.status(409).json({ error: 'Select an Outlook folder before syncing.' });
   }
 
   try {
-    queueGmailPoll(realmId, { reason: 'manual' }).catch((error) => {
-      console.warn(`Unable to trigger manual Gmail sync for ${realmId}`, error.message || error);
+    queueOutlookPoll(realmId, { reason: 'manual' }).catch((error) => {
+      console.warn(`Unable to trigger manual Outlook sync for ${realmId}`, error.message || error);
     });
-    res.status(202).json({ accepted: true, gmail: sanitizeGmailSettings(gmailConfig) });
+    res.status(202).json({ accepted: true, outlook: sanitizeOutlookSettings(outlookConfig) });
   } catch (error) {
-    console.error('Failed to schedule Gmail sync', error);
-    res.status(500).json({ error: 'Failed to schedule Gmail sync.' });
+    console.error('Failed to schedule Outlook sync', error);
+    res.status(500).json({ error: 'Failed to schedule Outlook sync.' });
+  }
+});
+
+app.post('/api/quickbooks/companies/:realmId/outlook/resync', async (req, res) => {
+  if (!isOutlookMonitoringConfigured()) {
+    return res.status(503).json({ error: 'Outlook integration is not configured on the server.' });
+  }
+
+  const realmId = req.params.realmId;
+  if (!realmId) {
+    return res.status(400).json({ error: 'Realm ID is required.' });
+  }
+
+  const company = await getQuickBooksCompanyRecord(realmId);
+  if (!company) {
+    return res.status(404).json({ error: 'QuickBooks company not found.' });
+  }
+
+  const outlookConfig = ensureOutlookConfigDefaults(company.outlook);
+  if (!outlookConfig?.enabled) {
+    return res.status(400).json({ error: 'Enable Outlook monitoring before requesting a resync.' });
+  }
+
+  if (!normalizeOutlookFolderMetadata(outlookConfig.monitoredFolder)?.id) {
+    return res.status(409).json({ error: 'Select an Outlook folder before performing a resync.' });
+  }
+
+  try {
+    await updateQuickBooksCompanyOutlook(realmId, { deltaLink: null, lastSyncStatus: null, lastSyncError: null });
+    queueOutlookPoll(realmId, { reason: 'full-resync', forceFullSync: true }).catch((error) => {
+      console.warn(`Unable to trigger Outlook resync for ${realmId}`, error.message || error);
+    });
+    res.status(202).json({ accepted: true });
+  } catch (error) {
+    if (error.code === 'NOT_FOUND') {
+      return res.status(404).json({ error: 'QuickBooks company not found.' });
+    }
+    console.error('Failed to schedule Outlook resync', error);
+    res.status(500).json({ error: 'Failed to schedule Outlook resync.' });
   }
 });
 
@@ -3974,6 +4526,40 @@ app.delete('/api/invoices/:checksum', async (req, res) => {
   }
 });
 
+// Bulk deletion endpoint
+app.post('/api/invoices/bulk-delete', async (req, res) => {
+  const { checksums } = req.body;
+
+  if (!Array.isArray(checksums) || checksums.length === 0) {
+    return res.status(400).json({ error: 'Checksums array is required.' });
+  }
+
+  const results = {
+    successful: 0,
+    failed: 0,
+    errors: []
+  };
+
+  // Process each deletion
+  for (const checksum of checksums) {
+    try {
+      const deleted = await deleteStoredInvoice(checksum);
+      if (deleted) {
+        results.successful++;
+      } else {
+        results.failed++;
+        results.errors.push(`Invoice ${checksum}: Not found`);
+      }
+    } catch (error) {
+      results.failed++;
+      results.errors.push(`Invoice ${checksum}: ${error.message}`);
+      console.error(`Failed to delete invoice ${checksum}:`, error);
+    }
+  }
+
+  res.json(results);
+});
+
 app.get('/api/quickbooks/connect', (req, res) => {
   if (!QUICKBOOKS_CLIENT_ID || !QUICKBOOKS_CLIENT_SECRET) {
     return res.status(500).send('QuickBooks API credentials are not configured.');
@@ -4003,9 +4589,6 @@ quickBooksCallbackPaths.forEach((callbackPath) => {
   app.get(callbackPath, handleQuickBooksCallback);
 });
 
-gmailCallbackPaths.forEach((callbackPath) => {
-  app.get(callbackPath, handleGmailCallback);
-});
 
 async function handleQuickBooksCallback(req, res) {
   const { code, state, realmId } = req.query;
@@ -4059,86 +4642,7 @@ async function handleQuickBooksCallback(req, res) {
   }
 }
 
-function createGmailOAuthState(realmId, payload = {}) {
-  const state = crypto.randomBytes(16).toString('hex');
-  const now = Date.now();
-  gmailStates.set(state, { realmId, createdAt: now, ...payload });
-  for (const [key, entry] of gmailStates.entries()) {
-    if (now - entry.createdAt > GMAIL_STATE_TTL_MS) {
-      gmailStates.delete(key);
-    }
-  }
-  return state;
-}
 
-function consumeGmailOAuthState(state) {
-  if (!state) {
-    return null;
-  }
-
-  const entry = gmailStates.get(state);
-  if (!entry) {
-    return null;
-  }
-
-  gmailStates.delete(state);
-  if (Date.now() - entry.createdAt > GMAIL_STATE_TTL_MS) {
-    return null;
-  }
-
-  return entry;
-}
-
-async function handleGmailCallback(req, res) {
-  const { code, state } = req.query;
-  if (!code || !state) {
-    return res.status(400).send('Missing required parameters from Gmail.');
-  }
-
-  const entry = consumeGmailOAuthState(state);
-  if (!entry?.realmId) {
-    return res.status(400).send('Gmail authorization state is invalid or has expired. Please try again.');
-  }
-
-  const realmId = entry.realmId;
-
-  try {
-    const tokenSet = await exchangeGmailCode(code);
-    if (!tokenSet.refreshToken) {
-      throw new Error('Gmail authorization did not return a refresh token. Ensure offline access is granted.');
-    }
-
-    const updatePayload = {
-      refreshToken: tokenSet.refreshToken,
-      enabled: true,
-      status: 'connected',
-      lastSyncStatus: null,
-      lastSyncError: null,
-      lastSyncAt: null,
-      lastSyncMetrics: null,
-      lastSyncReason: 'oauth',
-      lastConnectedAt: new Date().toISOString(),
-      email: entry.email ? entry.email.trim() : null,
-      historyId: null,
-    };
-
-    const updated = await updateQuickBooksCompanyGmail(realmId, updatePayload);
-    gmailTokenCache.delete(realmId);
-    try {
-      await deleteCompanyGmailState(realmId);
-    } catch (stateError) {
-      console.warn(`Unable to reset Gmail polling state for ${realmId}`, stateError.message || stateError);
-    }
-
-    const companyName = updated?.companyName || updated?.legalName || realmId;
-    return res.redirect(
-      `/?gmail=connected&realmId=${encodeURIComponent(realmId)}&company=${encodeURIComponent(companyName)}`
-    );
-  } catch (error) {
-    console.error('Gmail OAuth callback failed', error);
-    return res.redirect(`/?gmail=error&message=${encodeURIComponent('Failed to connect Gmail inbox.')}`);
-  }
-}
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found' });
@@ -4159,11 +4663,11 @@ if (require.main === module) {
     console.warn('OneDrive sync is not enabled. Provide MS_GRAPH_CLIENT_ID, MS_GRAPH_CLIENT_SECRET, and MS_GRAPH_TENANT_ID to activate folder monitoring.');
   }
 
-  if (isGmailMonitoringConfigured()) {
-    startGmailMonitor();
-  } else if (GMAIL_CLIENT_ID || GMAIL_CLIENT_SECRET) {
+  if (isOutlookMonitoringConfigured()) {
+    startOutlookMonitor();
+  } else if (MS_GRAPH_MAILBOX_USER_ID) {
     console.warn(
-      'Gmail monitoring is not enabled. Provide both GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET to activate inbox polling.'
+      'Outlook monitoring is not enabled. Ensure MS_GRAPH_CLIENT_ID, MS_GRAPH_CLIENT_SECRET, MS_GRAPH_TENANT_ID, and MS_GRAPH_MAILBOX_USER_ID are configured to activate mailbox polling.'
     );
   }
 }
@@ -4181,6 +4685,12 @@ module.exports = {
   getHealthMetricHistory,
   attemptQuickBooksCompaniesRepair,
   QUICKBOOKS_COMPANIES_FILE,
+  DATA_FILE,
+  INVOICE_STORAGE_DIR,
+  readStoredInvoices,
+  writeStoredInvoices,
+  deleteStoredInvoice,
+  deleteStoredInvoiceFile,
 };
 
 async function exchangeQuickBooksCode(code) {
@@ -4228,51 +4738,6 @@ async function exchangeQuickBooksCode(code) {
     refreshTokenExpiresAt: data.refresh_token_expires_in
       ? new Date(now + data.refresh_token_expires_in * 1000).toISOString()
       : null,
-  };
-}
-
-async function exchangeGmailCode(code) {
-  if (!isGmailMonitoringConfigured()) {
-    throw new Error('Gmail OAuth client is not configured.');
-  }
-
-  const params = new URLSearchParams({
-    code,
-    client_id: GMAIL_CLIENT_ID,
-    client_secret: GMAIL_CLIENT_SECRET,
-    redirect_uri: GMAIL_REDIRECT_URI,
-    grant_type: 'authorization_code',
-  });
-
-  const response = await fetch(GMAIL_TOKEN_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: params.toString(),
-  });
-
-  if (!response.ok) {
-    const errorBody = await safeReadJson(response);
-    const message =
-      errorBody?.error_description ||
-      errorBody?.error ||
-      `Gmail token exchange failed with status ${response.status}`;
-    const error = new Error(message);
-    error.body = errorBody;
-    error.status = response.status;
-    throw error;
-  }
-
-  const data = await response.json();
-  const now = Date.now();
-
-  return {
-    accessToken: data.access_token,
-    refreshToken: data.refresh_token || null,
-    scope: data.scope || null,
-    tokenType: data.token_type || null,
-    expiresAt: data.expires_in ? new Date(now + data.expires_in * 1000).toISOString() : null,
   };
 }
 
@@ -4579,7 +5044,7 @@ async function storeQuickBooksCompany({ realmId, companyName, legalName, tokens 
   };
 
   record.oneDrive = ensureOneDriveStateDefaults(record.oneDrive || existing.oneDrive || null);
-  record.gmail = ensureGmailConfigDefaults(record.gmail || existing.gmail || null);
+  record.outlook = ensureOutlookConfigDefaults(record.outlook || existing.outlook || null);
 
   if (existingIndex >= 0) {
     companies[existingIndex] = record;
@@ -4653,7 +5118,7 @@ async function updateQuickBooksCompanyFields(realmId, updates) {
   };
 
   next.oneDrive = ensureOneDriveStateDefaults(next.oneDrive || companies[index].oneDrive || null);
-  next.gmail = ensureGmailConfigDefaults(next.gmail || companies[index].gmail || null);
+  next.outlook = ensureOutlookConfigDefaults(next.outlook || companies[index].outlook || null);
 
   companies[index] = next;
   await persistQuickBooksCompanies(companies);
@@ -4702,19 +5167,47 @@ async function updateQuickBooksCompanyOneDrive(realmId, updates, { replace = fal
     }
   }
 
+  if (nextState) {
+    applyLegacyOneDriveFolderAliases(nextState);
+  }
+
   companies[index] = {
     ...companies[index],
     oneDrive: nextState,
     updatedAt: now,
   };
 
-  companies[index].gmail = ensureGmailConfigDefaults(companies[index].gmail || null);
+  companies[index].outlook = ensureOutlookConfigDefaults(companies[index].outlook || null);
 
   await persistQuickBooksCompanies(companies);
   return companies[index];
 }
 
-async function updateQuickBooksCompanyGmail(realmId, updates, { replace = false } = {}) {
+function applyLegacyOneDriveFolderAliases(state) {
+  if (!state || typeof state !== 'object') {
+    return;
+  }
+
+  const monitored = normalizeOneDriveFolderConfig(state.monitoredFolder) || null;
+  state.monitoredFolder = monitored;
+  state.folderId = monitored?.id || null;
+  state.folderPath = monitored?.path || null;
+  state.folderName = monitored?.name || null;
+  state.webUrl = monitored?.webUrl || null;
+  state.parentId = monitored?.parentId || null;
+
+  if (Object.prototype.hasOwnProperty.call(state, 'processedFolder')) {
+    const processed = normalizeOneDriveFolderConfig(state.processedFolder) || null;
+    state.processedFolder = processed;
+    state.processedFolderId = processed?.id || null;
+    state.processedFolderPath = processed?.path || null;
+    state.processedFolderName = processed?.name || null;
+    state.processedFolderWebUrl = processed?.webUrl || null;
+    state.processedFolderParentId = processed?.parentId || null;
+  }
+}
+
+async function updateQuickBooksCompanyOutlook(realmId, updates, { replace = false } = {}) {
   const companies = await readQuickBooksCompanies();
   const index = companies.findIndex((entry) => entry.realmId === realmId);
 
@@ -4725,24 +5218,21 @@ async function updateQuickBooksCompanyGmail(realmId, updates, { replace = false 
   }
 
   const now = new Date().toISOString();
-  const currentNormalised = normalizeGmailConfig(companies[index].gmail || null);
-  const current = ensureGmailConfigDefaults(currentNormalised);
+  const currentNormalised = normalizeOutlookConfig(companies[index].outlook || null);
+  const current = ensureOutlookConfigDefaults(currentNormalised);
   let nextState = null;
 
   if (replace) {
-    const replacement = normalizeGmailConfig(updates);
-    nextState = replacement ? ensureGmailConfigDefaults(replacement) : null;
+    const replacement = normalizeOutlookConfig(updates);
+    nextState = replacement ? ensureOutlookConfigDefaults(replacement) : null;
     if (nextState) {
       nextState.updatedAt = now;
       if (!nextState.createdAt) {
         nextState.createdAt = now;
       }
-      if (nextState.refreshToken) {
-        nextState.lastConnectedAt = nextState.lastConnectedAt || now;
-      }
     }
   } else {
-    const updateFragment = normalizeGmailConfig(updates || {});
+    const updateFragment = normalizeOutlookConfig(updates || {});
     if (current || (updateFragment && Object.keys(updateFragment).length)) {
       const merged = {
         ...(current || {}),
@@ -4750,29 +5240,34 @@ async function updateQuickBooksCompanyGmail(realmId, updates, { replace = false 
         updatedAt: now,
       };
 
-      if (!updateFragment?.refreshToken && current?.refreshToken) {
-        merged.refreshToken = current.refreshToken;
-      }
-
       if (!merged.createdAt) {
         merged.createdAt = current?.createdAt || now;
       }
 
-      if (updateFragment?.refreshToken) {
-        merged.lastConnectedAt = now;
+      if (updateFragment?.monitoredFolder) {
+        merged.monitoredFolder = normalizeOutlookFolderMetadata(updateFragment.monitoredFolder);
       }
 
-      nextState = ensureGmailConfigDefaults(merged);
+      nextState = ensureOutlookConfigDefaults(merged);
     }
   }
 
   companies[index] = {
     ...companies[index],
-    gmail: nextState,
+    outlook: nextState,
     updatedAt: now,
   };
 
   await persistQuickBooksCompanies(companies);
+
+  if (!nextState || nextState.enabled === false) {
+    try {
+      await deleteCompanyOutlookState(realmId);
+    } catch (stateError) {
+      console.warn(`Unable to clear Outlook polling state for ${realmId}`, stateError.message || stateError);
+    }
+  }
+
   return companies[index];
 }
 
@@ -4797,7 +5292,7 @@ async function updateQuickBooksCompanyTokens(realmId, tokens) {
   };
 
   companies[index].oneDrive = ensureOneDriveStateDefaults(companies[index].oneDrive || null);
-  companies[index].gmail = ensureGmailConfigDefaults(companies[index].gmail || null);
+  companies[index].outlook = ensureOutlookConfigDefaults(companies[index].outlook || null);
 
   await persistQuickBooksCompanies(companies);
   return companies[index];
@@ -5645,12 +6140,12 @@ function sanitizeQuickBooksCompany(company) {
     return company;
   }
 
-  const { tokens, oneDrive, gmail, ...rest } = company;
+  const { tokens, oneDrive, outlook, ...rest } = company;
   return {
     ...rest,
     businessType: rest.businessType ?? null,
     oneDrive: sanitizeOneDriveSettings(oneDrive),
-    gmail: sanitizeGmailSettings(gmail),
+    outlook: sanitizeOutlookSettings(outlook),
   };
 }
 
@@ -5664,14 +6159,13 @@ function sanitizeOneDriveSettings(config) {
   return rest;
 }
 
-function sanitizeGmailSettings(config) {
-  const normalized = ensureGmailConfigDefaults(config);
+function sanitizeOutlookSettings(config) {
+  const normalized = ensureOutlookConfigDefaults(config);
   if (!normalized) {
     return null;
   }
 
-  const { refreshToken, ...rest } = normalized;
-  return rest;
+  return normalized;
 }
 
 function normalizeOneDriveFolderConfig(folder) {
@@ -5985,31 +6479,28 @@ function isOneDriveDeltaResetError(error) {
   return Boolean(message && message.includes('resync required'));
 }
 
-function ensureGmailConfigDefaults(config) {
-  const normalized = normalizeGmailConfig(config);
+function ensureOutlookConfigDefaults(config) {
+  const normalized = normalizeOutlookConfig(config);
   if (!normalized) {
     return null;
   }
 
   const result = { ...normalized };
   result.enabled = result.enabled !== false;
-  result.searchQuery = result.searchQuery || GMAIL_DEFAULT_SEARCH_QUERY;
-  result.labelIds = Array.isArray(result.labelIds) ? result.labelIds : [];
+  result.mailboxUserId = sanitiseOptionalString(result.mailboxUserId) || MS_GRAPH_MAILBOX_USER_ID || null;
+  result.mailboxDisplayName = sanitiseOptionalString(result.mailboxDisplayName) || null;
   result.pollIntervalMs = Math.max(
-    Number.isFinite(result.pollIntervalMs) ? result.pollIntervalMs : GMAIL_DEFAULT_POLL_INTERVAL_MS,
-    GMAIL_POLL_MIN_INTERVAL_MS
+    Number.isFinite(result.pollIntervalMs) ? result.pollIntervalMs : OUTLOOK_DEFAULT_POLL_INTERVAL_MS,
+    OUTLOOK_POLL_MIN_INTERVAL_MS
   );
-  result.maxResults = Number.isFinite(result.maxResults) && result.maxResults > 0
-    ? Math.floor(result.maxResults)
-    : GMAIL_DEFAULT_MAX_RESULTS;
   result.maxAttachmentBytes = Math.max(
-    Number.isFinite(result.maxAttachmentBytes) ? result.maxAttachmentBytes : GMAIL_DEFAULT_MAX_ATTACHMENT_BYTES,
+    Number.isFinite(result.maxAttachmentBytes) ? result.maxAttachmentBytes : OUTLOOK_DEFAULT_MAX_ATTACHMENT_BYTES,
     1024
   );
 
   const allowed = Array.isArray(result.allowedMimeTypes) && result.allowedMimeTypes.length
     ? result.allowedMimeTypes
-    : GMAIL_DEFAULT_ALLOWED_MIME_TYPES.slice();
+    : OUTLOOK_DEFAULT_ALLOWED_MIME_TYPES.slice();
   result.allowedMimeTypes = Array.from(
     new Set(
       allowed
@@ -6018,8 +6509,23 @@ function ensureGmailConfigDefaults(config) {
     )
   );
 
-  result.lastSyncError = normalizeGmailSyncError(result.lastSyncError);
-  result.lastSyncMetrics = normalizeGmailMetrics(result.lastSyncMetrics);
+  result.monitoredFolder = normalizeOutlookFolderMetadata(result.monitoredFolder);
+
+  if (!result.enabled) {
+    result.status = 'disabled';
+  } else if (!result.monitoredFolder?.id) {
+    result.status = 'unconfigured';
+  } else {
+    result.status = sanitiseOptionalString(result.status) || 'connected';
+  }
+
+  result.deltaLink = sanitiseOptionalString(result.deltaLink) || null;
+  result.lastSyncReason = sanitiseOptionalString(result.lastSyncReason) || null;
+  result.lastSyncStatus = sanitiseOptionalString(result.lastSyncStatus) || null;
+  result.lastSyncAt = sanitiseIsoString(result.lastSyncAt);
+  result.lastSyncError = normalizeOutlookSyncError(result.lastSyncError);
+  result.lastSyncMetrics = normalizeOutlookMetrics(result.lastSyncMetrics);
+  result.businessType = sanitiseOptionalString(result.businessType) || null;
 
   if (!result.createdAt) {
     result.createdAt = new Date().toISOString();
@@ -6032,7 +6538,7 @@ function ensureGmailConfigDefaults(config) {
   return result;
 }
 
-function normalizeGmailConfig(config) {
+function normalizeOutlookConfig(config) {
   if (!config || typeof config !== 'object') {
     return null;
   }
@@ -6043,35 +6549,21 @@ function normalizeGmailConfig(config) {
     result.enabled = config.enabled === false ? false : true;
   }
 
-  result.email = sanitiseOptionalString(config.email);
-
-  if (Object.prototype.hasOwnProperty.call(config, 'refreshToken')) {
-    const token = sanitiseOptionalString(config.refreshToken);
-    result.refreshToken = token;
+  if (Object.prototype.hasOwnProperty.call(config, 'mailboxUserId')) {
+    result.mailboxUserId = sanitiseOptionalString(config.mailboxUserId);
   }
 
-  result.searchQuery = sanitiseOptionalString(config.searchQuery);
+  if (Object.prototype.hasOwnProperty.call(config, 'mailboxDisplayName')) {
+    result.mailboxDisplayName = sanitiseOptionalString(config.mailboxDisplayName);
+  }
 
-  if (Object.prototype.hasOwnProperty.call(config, 'labelIds')) {
-    const labels = Array.isArray(config.labelIds)
-      ? config.labelIds
-      : parseDelimitedList(config.labelIds);
-    result.labelIds = labels.map((value) => sanitiseOptionalString(value)).filter(Boolean);
+  if (Object.prototype.hasOwnProperty.call(config, 'monitoredFolder')) {
+    result.monitoredFolder = normalizeOutlookFolderMetadata(config.monitoredFolder);
   }
 
   if (Object.prototype.hasOwnProperty.call(config, 'pollIntervalMs')) {
     const interval = Number.parseInt(config.pollIntervalMs, 10);
     result.pollIntervalMs = Number.isFinite(interval) ? interval : null;
-  }
-
-  if (Object.prototype.hasOwnProperty.call(config, 'maxResults')) {
-    const maxResults = Number.parseInt(config.maxResults, 10);
-    result.maxResults = Number.isFinite(maxResults) ? maxResults : null;
-  }
-
-  if (Object.prototype.hasOwnProperty.call(config, 'maxAttachmentBytes')) {
-    const maxBytes = Number.parseInt(config.maxAttachmentBytes, 10);
-    result.maxAttachmentBytes = Number.isFinite(maxBytes) ? maxBytes : null;
   }
 
   if (Object.prototype.hasOwnProperty.call(config, 'allowedMimeTypes')) {
@@ -6081,42 +6573,72 @@ function normalizeGmailConfig(config) {
     result.allowedMimeTypes = allowed.map((value) => sanitiseOptionalString(value)).filter(Boolean);
   }
 
-  result.status = sanitiseOptionalString(config.status);
-  result.lastSyncAt = sanitiseIsoString(config.lastSyncAt);
-  result.lastSyncStatus = sanitiseOptionalString(config.lastSyncStatus);
-  result.lastSyncReason = sanitiseOptionalString(config.lastSyncReason);
-  result.lastSyncError = normalizeGmailSyncError(config.lastSyncError);
-  result.lastSyncMetrics = normalizeGmailMetrics(config.lastSyncMetrics);
-  result.historyId = sanitiseOptionalString(config.historyId);
-  result.createdAt = sanitiseIsoString(config.createdAt);
-  result.updatedAt = sanitiseIsoString(config.updatedAt);
-  result.lastConnectedAt = sanitiseIsoString(config.lastConnectedAt);
-  result.businessType = sanitiseOptionalString(config.businessType);
+  if (Object.prototype.hasOwnProperty.call(config, 'maxAttachmentBytes')) {
+    const maxBytes = Number.parseInt(config.maxAttachmentBytes, 10);
+    result.maxAttachmentBytes = Number.isFinite(maxBytes) ? maxBytes : null;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'businessType')) {
+    result.businessType = sanitiseOptionalString(config.businessType);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'status')) {
+    result.status = sanitiseOptionalString(config.status);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'lastSyncAt')) {
+    result.lastSyncAt = sanitiseIsoString(config.lastSyncAt);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'lastSyncStatus')) {
+    result.lastSyncStatus = sanitiseOptionalString(config.lastSyncStatus);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'lastSyncReason')) {
+    result.lastSyncReason = sanitiseOptionalString(config.lastSyncReason);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'lastSyncError')) {
+    result.lastSyncError = normalizeOutlookSyncError(config.lastSyncError);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'lastSyncMetrics')) {
+    result.lastSyncMetrics = normalizeOutlookMetrics(config.lastSyncMetrics);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'deltaLink')) {
+    result.deltaLink = sanitiseOptionalString(config.deltaLink);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'createdAt')) {
+    result.createdAt = sanitiseIsoString(config.createdAt);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'updatedAt')) {
+    result.updatedAt = sanitiseIsoString(config.updatedAt);
+  }
 
   return result;
 }
 
-function normalizeGmailSyncError(error) {
+function normalizeOutlookSyncError(error) {
   if (!error || typeof error !== 'object') {
     return null;
   }
 
-  const message = sanitiseOptionalString(error.message);
+  const message = sanitiseOptionalString(error.message || error.error);
   if (!message) {
     return null;
   }
 
   const at = sanitiseIsoString(error.at || error.timestamp) || new Date().toISOString();
-  const code = sanitiseOptionalString(error.code);
-
   return {
     message,
     at,
-    code: code || null,
   };
 }
 
-function normalizeGmailMetrics(metrics) {
+function normalizeOutlookMetrics(metrics) {
   if (!metrics || typeof metrics !== 'object') {
     return null;
   }
@@ -6125,7 +6647,7 @@ function normalizeGmailMetrics(metrics) {
   const processedAttachments = Number.isFinite(metrics.processedAttachments) ? Number(metrics.processedAttachments) : 0;
   const skippedAttachments = Number.isFinite(metrics.skippedAttachments) ? Number(metrics.skippedAttachments) : 0;
   const errorCount = Number.isFinite(metrics.errorCount) ? Number(metrics.errorCount) : 0;
-  const durationMs = Number.isFinite(metrics.durationMs) ? Number(metrics.durationMs) : null;
+  const durationMs = Number.isFinite(metrics.durationMs) ? Number(metrics.durationMs) : 0;
 
   return {
     processedMessages,
@@ -6135,6 +6657,7 @@ function normalizeGmailMetrics(metrics) {
     durationMs,
   };
 }
+
 
 function sanitiseIsoString(value) {
   const text = sanitiseOptionalString(value);
@@ -6578,6 +7101,31 @@ function sanitiseOptionalString(value) {
   return text ? text : null;
 }
 
+function extractGraphErrorDetail(error) {
+  if (!error || typeof error !== 'object') {
+    return null;
+  }
+
+  const detail =
+    sanitiseOptionalString(error?.body?.error?.message) ||
+    sanitiseOptionalString(error?.body?.error_description) ||
+    sanitiseOptionalString(error?.message);
+
+  return detail || null;
+}
+
+function appendGraphErrorDetail(message, detail) {
+  if (!detail) {
+    return message;
+  }
+
+  if (!message) {
+    return detail;
+  }
+
+  return `${message} (${detail})`;
+}
+
 function normalizeRemoteSourceMetadata(remoteSource) {
   if (!remoteSource || typeof remoteSource !== 'object') {
     return null;
@@ -6606,29 +7154,21 @@ function normalizeRemoteSourceMetadata(remoteSource) {
     reason: sanitiseOptionalString(remoteSource.reason),
   };
 
-  if (provider === 'gmail') {
+  if (provider === 'outlook') {
+    entry.mailboxUserId = sanitiseOptionalString(remoteSource.mailboxUserId);
+    entry.folderId = sanitiseOptionalString(remoteSource.folderId);
+    entry.folderPath = sanitiseOptionalString(remoteSource.folderPath);
     entry.messageId = sanitiseOptionalString(remoteSource.messageId);
-    entry.threadId = sanitiseOptionalString(remoteSource.threadId);
     entry.attachmentId = sanitiseOptionalString(remoteSource.attachmentId);
     entry.filename = sanitiseOptionalString(remoteSource.filename);
     entry.mimeType = sanitiseOptionalString(remoteSource.mimeType);
-    entry.historyId = sanitiseOptionalString(remoteSource.historyId);
     entry.subject = sanitiseOptionalString(remoteSource.subject);
     entry.from = sanitiseOptionalString(remoteSource.from);
-    entry.snippet = sanitiseOptionalString(remoteSource.snippet);
-    entry.receivedAt = sanitiseOptionalString(remoteSource.receivedAt);
-    entry.email = sanitiseOptionalString(remoteSource.email);
+    entry.receivedAt = sanitiseIsoString(remoteSource.receivedAt);
+    entry.webUrl = entry.webUrl || sanitiseOptionalString(remoteSource.webUrl);
+
     const attachmentSize = remoteSource.attachmentSize;
     entry.attachmentSize = typeof attachmentSize === 'number' && Number.isFinite(attachmentSize) ? attachmentSize : null;
-
-    if (Array.isArray(remoteSource.labelIds)) {
-      const labels = remoteSource.labelIds
-        .map((value) => sanitiseOptionalString(value))
-        .filter(Boolean);
-      entry.labelIds = labels.length ? labels : null;
-    } else {
-      entry.labelIds = null;
-    }
 
     if (!entry.itemId && entry.messageId && entry.attachmentId) {
       entry.itemId = `${entry.messageId}::${entry.attachmentId}`;
@@ -6665,7 +7205,7 @@ function isSameRemoteSource(existing, candidate) {
     return false;
   }
 
-  if (existing.provider === 'gmail') {
+  if (existing.provider === 'outlook') {
     if (existing.itemId && candidate.itemId && existing.itemId === candidate.itemId) {
       return true;
     }

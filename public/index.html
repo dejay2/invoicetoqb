@@ -4,6 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Invoice Tools</title>
+  <!-- Bootstrap CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous">
   <link rel="stylesheet" href="styles.css?v=20241010" />
 </head>
 <body>
@@ -61,15 +63,15 @@
           <section class="onedrive-shared-card" aria-labelledby="onedrive-shared-heading">
             <div class="onedrive-shared-row">
               <div class="onedrive-shared-heading">
-                <h3 id="onedrive-shared-heading">Shared drive</h3>
-                <span id="onedrive-shared-status" class="status-pill status-pill--muted">Unconfigured</span>
+                <h3 id="onedrive-shared-heading">OneDrive account</h3>
+                <span id="onedrive-shared-status" class="status-pill status-pill--muted">Not connected</span>
               </div>
               <div class="onedrive-shared-actions">
-                <button type="button" id="onedrive-shared-connect" class="secondary-button">Connect shared drive</button>
-                <button type="button" id="onedrive-shared-validate" class="secondary-button" disabled>Validate</button>
+                <button type="button" id="onedrive-shared-connect" class="secondary-button">Connect OneDrive account</button>
+                <button type="button" id="onedrive-shared-validate" class="secondary-button" disabled>Run connection check</button>
               </div>
             </div>
-            <p id="onedrive-shared-summary-text" class="onedrive-shared-summary">Shared OneDrive drive is not configured yet.</p>
+            <p id="onedrive-shared-summary-text" class="onedrive-shared-summary">Connect the OneDrive account that stores your invoice folders. Each company can choose its own monitored and processed folders below.</p>
             <dl class="onedrive-shared-meta">
               <div>
                 <dt>Last validated</dt>
@@ -77,7 +79,7 @@
               </div>
               <div>
                 <dt>Status</dt>
-                <dd id="onedrive-shared-last-result">No status yet.</dd>
+                <dd id="onedrive-shared-last-result">No checks yet.</dd>
               </div>
             </dl>
           </section>
@@ -105,64 +107,16 @@
               <input id="onedrive-enabled" name="enabled" type="checkbox" />
               <span>Enable automatic imports from this folder</span>
             </label>
-            <details class="onedrive-advanced">
-              <summary>Advanced: paste OneDrive values manually</summary>
-              <div class="onedrive-advanced-grid">
-                <div class="input-group">
-                  <label for="onedrive-share-url">Sharing link (optional)</label>
-                  <input id="onedrive-share-url" name="shareUrl" type="url" placeholder="https://onedrive.live.com/..." autocomplete="off" />
-                  <span>Provide a sharing link or specify the Drive and folder details below.</span>
-                </div>
-                <div class="input-row">
-                  <div class="input-group">
-                    <label for="onedrive-drive-id">Drive ID</label>
-                    <input id="onedrive-drive-id" name="driveId" type="text" autocomplete="off" />
-                  </div>
-                  <div class="input-group">
-                    <label for="onedrive-folder-id">Folder ID</label>
-                    <input id="onedrive-folder-id" name="folderId" type="text" autocomplete="off" />
-                  </div>
-                </div>
-                <div class="input-group">
-                  <label for="onedrive-folder-path">Folder path (optional)</label>
-                  <input id="onedrive-folder-path" name="folderPath" type="text" placeholder="/Invoices/Incoming" autocomplete="off" />
-                  <span>Use when the folder ID is unknown. The path is relative to the drive root.</span>
-                </div>
-                <div class="input-group">
-                  <label for="onedrive-folder-name">Folder name (optional)</label>
-                  <input id="onedrive-folder-name" name="folderName" type="text" autocomplete="off" />
-                </div>
-                <div class="input-group">
-                  <label for="onedrive-folder-weburl">Folder web URL (optional)</label>
-                  <input id="onedrive-folder-weburl" name="folderWebUrl" type="url" autocomplete="off" />
-                </div>
-                <div class="input-group">
-                  <label for="onedrive-folder-parent-id">Folder parent ID (optional)</label>
-                  <input id="onedrive-folder-parent-id" name="folderParentId" type="text" autocomplete="off" />
-                </div>
-                <div class="advanced-divider" role="presentation"></div>
-                <div class="input-group">
-                  <label for="onedrive-processed-folder-id">Processed folder ID (optional)</label>
-                  <input id="onedrive-processed-folder-id" name="processedFolderId" type="text" autocomplete="off" />
-                </div>
-                <div class="input-group">
-                  <label for="onedrive-processed-folder-path">Processed folder path (optional)</label>
-                  <input id="onedrive-processed-folder-path" name="processedFolderPath" type="text" autocomplete="off" />
-                </div>
-                <div class="input-group">
-                  <label for="onedrive-processed-folder-name">Processed folder name (optional)</label>
-                  <input id="onedrive-processed-folder-name" name="processedFolderName" type="text" autocomplete="off" />
-                </div>
-                <div class="input-group">
-                  <label for="onedrive-processed-folder-weburl">Processed folder web URL (optional)</label>
-                  <input id="onedrive-processed-folder-weburl" name="processedFolderWebUrl" type="url" autocomplete="off" />
-                </div>
-                <div class="input-group">
-                  <label for="onedrive-processed-folder-parent-id">Processed parent ID (optional)</label>
-                  <input id="onedrive-processed-folder-parent-id" name="processedFolderParentId" type="text" autocomplete="off" />
-                </div>
-              </div>
-            </details>
+            <input id="onedrive-folder-id" name="folderId" type="hidden" />
+            <input id="onedrive-folder-path" name="folderPath" type="hidden" />
+            <input id="onedrive-folder-name" name="folderName" type="hidden" />
+            <input id="onedrive-folder-weburl" name="folderWebUrl" type="hidden" />
+            <input id="onedrive-folder-parent-id" name="folderParentId" type="hidden" />
+            <input id="onedrive-processed-folder-id" name="processedFolderId" type="hidden" />
+            <input id="onedrive-processed-folder-path" name="processedFolderPath" type="hidden" />
+            <input id="onedrive-processed-folder-name" name="processedFolderName" type="hidden" />
+            <input id="onedrive-processed-folder-weburl" name="processedFolderWebUrl" type="hidden" />
+            <input id="onedrive-processed-folder-parent-id" name="processedFolderParentId" type="hidden" />
             <div class="onedrive-actions">
               <button type="submit" id="onedrive-save" class="primary-button">Save OneDrive settings</button>
               <button type="button" id="onedrive-sync-now" class="secondary-button">Sync now</button>
@@ -194,60 +148,114 @@
           </form>
         </div>
         <div class="panel-card">
-          <h2>Gmail inbox monitoring</h2>
-          <p class="panel-summary">Connect a Gmail mailbox to watch for new invoice attachments and ingest them automatically.</p>
-          <form id="gmail-settings-form" class="gmail-form">
-            <div class="input-group">
-              <label for="gmail-email">Mailbox email address</label>
-              <input id="gmail-email" name="email" type="email" placeholder="accounts@yourcompany.com" autocomplete="off" />
-              <span>The connected Google account should have access to the inbox you want to monitor.</span>
+          <h2>Outlook mailbox monitoring</h2>
+          <p class="panel-summary">Monitor a shared Outlook mailbox folder and import new invoice attachments automatically.</p>
+          <section class="outlook-shared-card" aria-labelledby="outlook-shared-heading">
+            <div class="outlook-shared-row">
+              <div class="outlook-shared-heading">
+                <h3 id="outlook-shared-heading">Shared mailbox</h3>
+                <span id="outlook-shared-status" class="status-pill status-pill--muted">Unconfigured</span>
+              </div>
+              <div class="outlook-shared-actions">
+                <button type="button" id="outlook-shared-edit" class="secondary-button">Configure mailbox</button>
+              </div>
+            </div>
+            <p id="outlook-shared-summary-text" class="outlook-shared-summary">Shared Outlook mailbox is not configured yet.</p>
+            <dl class="outlook-shared-meta">
+              <div>
+                <dt>Mailbox</dt>
+                <dd id="outlook-shared-mailbox">—</dd>
+              </div>
+              <div>
+                <dt>Base folder</dt>
+                <dd id="outlook-shared-base-folder">—</dd>
+              </div>
+              <div>
+                <dt>Last validation</dt>
+                <dd id="outlook-shared-last-validated">Never</dd>
+              </div>
+            </dl>
+            <form id="outlook-shared-form" class="outlook-shared-form" hidden>
+              <div class="input-group">
+                <label for="outlook-shared-mailbox-input">Mailbox user ID or UPN</label>
+                <input id="outlook-shared-mailbox-input" name="mailboxUserId" type="text" autocomplete="off" placeholder="invoices@contoso.com" />
+                <span>Provide the Exchange Online shared mailbox identifier or user principal name.</span>
+              </div>
+              <div class="input-group">
+                <label for="outlook-shared-display-name">Display name (optional)</label>
+                <input id="outlook-shared-display-name" name="mailboxDisplayName" type="text" autocomplete="off" />
+              </div>
+              <div class="outlook-shared-form-footer">
+                <button type="button" id="outlook-shared-browse-base" class="secondary-button">Choose base folder</button>
+                <div class="outlook-shared-form-actions">
+                  <button type="button" id="outlook-shared-cancel" class="ghost-button">Cancel</button>
+                  <button type="submit" id="outlook-shared-save" class="primary-button">Save mailbox</button>
+                </div>
+              </div>
+              <input id="outlook-shared-base-id" name="baseFolderId" type="hidden" />
+              <input id="outlook-shared-base-path" name="baseFolderPath" type="hidden" />
+              <input id="outlook-shared-base-name" name="baseFolderName" type="hidden" />
+              <input id="outlook-shared-base-weburl" name="baseFolderWebUrl" type="hidden" />
+            </form>
+          </section>
+          <form id="outlook-settings-form" class="outlook-form">
+            <div class="outlook-field-group">
+              <div class="outlook-summary">
+                <h3>Monitored folder</h3>
+                <p id="outlook-folder-summary" class="outlook-summary-text">No folder selected.</p>
+              </div>
+              <div class="outlook-selector-actions">
+                <button type="button" id="outlook-browse-folder" class="secondary-button" disabled>Select folder</button>
+                <button type="button" id="outlook-clear-folder" class="ghost-button">Clear</button>
+              </div>
+            </div>
+            <div class="input-row">
+              <div class="input-group">
+                <label for="outlook-poll-interval">Polling interval (seconds)</label>
+                <input id="outlook-poll-interval" name="pollInterval" type="number" min="15" step="15" autocomplete="off" />
+              </div>
+              <div class="input-group">
+                <label for="outlook-max-attachment">Attachment size limit (MB)</label>
+                <input id="outlook-max-attachment" name="maxAttachmentMb" type="number" min="1" step="1" autocomplete="off" />
+              </div>
             </div>
             <div class="input-group">
-              <label for="gmail-search-query">Search query</label>
-              <input id="gmail-search-query" name="searchQuery" type="text" placeholder="in:inbox has:attachment" autocomplete="off" />
-              <span>Uses Gmail search syntax to limit which messages are processed. Leave blank to use the default.</span>
-            </div>
-            <div class="input-group">
-              <label for="gmail-label-ids">Label filters (optional)</label>
-              <input id="gmail-label-ids" name="labelIds" type="text" placeholder="INBOX,Finance" autocomplete="off" />
-              <span>Comma-separated label IDs or names. Leave blank to include all labels.</span>
-            </div>
-            <div class="input-group">
-              <label for="gmail-mime-types">Allowed MIME types</label>
-              <input id="gmail-mime-types" name="allowedMimeTypes" type="text" placeholder="application/pdf,image/png,image/jpeg" autocomplete="off" />
+              <label for="outlook-mime-types">Allowed MIME types</label>
+              <input id="outlook-mime-types" name="allowedMimeTypes" type="text" placeholder="application/pdf,image/png,image/jpeg" autocomplete="off" />
               <span>Comma-separated list. Attachments with other types are skipped.</span>
             </div>
-            <div class="input-group">
-              <label for="gmail-poll-interval">Polling interval (seconds)</label>
-              <input id="gmail-poll-interval" name="pollInterval" type="number" min="15" step="15" autocomplete="off" />
-            </div>
             <label class="checkbox-group">
-              <input id="gmail-enabled" name="enabled" type="checkbox" />
-              <span>Enable automatic imports from this mailbox</span>
+              <input id="outlook-enabled" name="enabled" type="checkbox" />
+              <span>Enable automatic imports from this folder</span>
             </label>
-            <div class="gmail-actions">
-              <button type="button" id="gmail-connect" class="primary-button">Connect Gmail inbox</button>
-              <button type="submit" id="gmail-save" class="primary-button">Save Gmail settings</button>
-              <button type="button" id="gmail-sync-now" class="secondary-button">Sync now</button>
-              <button type="button" id="gmail-disconnect" class="danger-button">Disconnect</button>
+            <div class="outlook-actions">
+              <button type="submit" id="outlook-save" class="primary-button">Save Outlook settings</button>
+              <button type="button" id="outlook-sync-now" class="secondary-button">Sync now</button>
+              <button type="button" id="outlook-resync" class="secondary-button">Request full resync</button>
+              <button type="button" id="outlook-disconnect" class="danger-button">Disconnect</button>
             </div>
+            <input id="outlook-folder-id" name="folderId" type="hidden" />
+            <input id="outlook-folder-path" name="folderPath" type="hidden" />
+            <input id="outlook-folder-name" name="folderName" type="hidden" />
+            <input id="outlook-folder-weburl" name="folderWebUrl" type="hidden" />
+            <input id="outlook-folder-parent-id" name="folderParentId" type="hidden" />
           </form>
-          <dl class="gmail-status" id="gmail-status" hidden>
+          <dl class="outlook-status" id="outlook-status" hidden>
             <div>
               <dt>Status</dt>
-              <dd id="gmail-status-state">Not connected</dd>
+              <dd id="outlook-status-state">Not connected</dd>
             </div>
             <div>
-              <dt>Mailbox</dt>
-              <dd id="gmail-status-email">—</dd>
+              <dt>Folder</dt>
+              <dd id="outlook-status-folder">—</dd>
             </div>
             <div>
               <dt>Last sync</dt>
-              <dd id="gmail-status-last-sync">—</dd>
+              <dd id="outlook-status-last-sync">—</dd>
             </div>
             <div>
               <dt>Last result</dt>
-              <dd id="gmail-status-result">—</dd>
+              <dd id="outlook-status-result">—</dd>
             </div>
           </dl>
         </div>
@@ -380,6 +388,29 @@
     </div>
   </div>
 
+  <div id="outlook-browse-modal" class="modal" hidden aria-hidden="true">
+    <div class="modal-overlay" data-modal-dismiss></div>
+    <div class="modal-window outlook-browser-window" role="dialog" aria-modal="true" aria-labelledby="outlook-browse-title">
+      <header class="modal-header">
+        <h2 id="outlook-browse-title">Choose Outlook folder</h2>
+        <button type="button" id="outlook-browse-close" class="icon-button" aria-label="Close folder browser">&times;</button>
+      </header>
+      <div class="modal-body">
+        <div class="outlook-browser-toolbar">
+          <button type="button" id="outlook-browse-back" class="secondary-button">Back</button>
+          <span id="outlook-browse-path" class="outlook-browser-path">Mailbox root</span>
+        </div>
+        <p id="outlook-browse-warning" class="outlook-browser-warning" hidden></p>
+        <p id="outlook-browse-status" class="outlook-browser-status" hidden></p>
+        <ul id="outlook-browse-list" class="outlook-browser-list" role="listbox"></ul>
+      </div>
+      <footer class="modal-footer">
+        <button type="button" id="outlook-browse-cancel" class="secondary-button">Cancel</button>
+        <button type="button" id="outlook-browse-confirm" class="primary-button" disabled>Select folder</button>
+      </footer>
+    </div>
+  </div>
+
   <div id="qb-preview-modal" class="modal" hidden aria-hidden="true">
     <div class="modal-overlay" data-modal-dismiss></div>
     <div class="modal-window" role="dialog" aria-modal="true" aria-labelledby="qb-preview-title">
@@ -401,6 +432,8 @@
     </div>
   </div>
 
+  <!-- Bootstrap JS Bundle with UMD -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js" integrity="sha384-C6RzsynM9kWDrMNeT87bh95OGNyZPhcTNXj1NW7RuBCsyN/o0jlpcV8Qyq46cDfL" crossorigin="anonymous"></script>
   <script src="app.js?v=20241216" defer></script>
 </body>
 </html>

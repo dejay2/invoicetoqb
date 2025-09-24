@@ -67,22 +67,58 @@ const oneDriveBrowseStatus = document.getElementById('onedrive-browse-status');
 const oneDriveBrowsePath = document.getElementById('onedrive-browse-path');
 const oneDriveBrowseTitle = document.getElementById('onedrive-browse-title');
 const oneDriveBrowseModalOverlay = oneDriveBrowseModal?.querySelector('[data-modal-dismiss]') || null;
-const gmailForm = document.getElementById('gmail-settings-form');
-const gmailEmailInput = document.getElementById('gmail-email');
-const gmailSearchInput = document.getElementById('gmail-search-query');
-const gmailLabelIdsInput = document.getElementById('gmail-label-ids');
-const gmailMimeTypesInput = document.getElementById('gmail-mime-types');
-const gmailPollIntervalInput = document.getElementById('gmail-poll-interval');
-const gmailEnabledInput = document.getElementById('gmail-enabled');
-const gmailConnectButton = document.getElementById('gmail-connect');
-const gmailSaveButton = document.getElementById('gmail-save');
-const gmailSyncButton = document.getElementById('gmail-sync-now');
-const gmailDisconnectButton = document.getElementById('gmail-disconnect');
-const gmailStatusContainer = document.getElementById('gmail-status');
-const gmailStatusState = document.getElementById('gmail-status-state');
-const gmailStatusEmail = document.getElementById('gmail-status-email');
-const gmailStatusLastSync = document.getElementById('gmail-status-last-sync');
-const gmailStatusResult = document.getElementById('gmail-status-result');
+const outlookSharedCard = document.querySelector('.outlook-shared-card');
+const outlookSharedEditButton = document.getElementById('outlook-shared-edit');
+const outlookSharedForm = document.getElementById('outlook-shared-form');
+const outlookSharedMailboxInput = document.getElementById('outlook-shared-mailbox-input');
+const outlookSharedDisplayNameInput = document.getElementById('outlook-shared-display-name');
+const outlookSharedBrowseBaseButton = document.getElementById('outlook-shared-browse-base');
+const outlookSharedSaveButton = document.getElementById('outlook-shared-save');
+const outlookSharedCancelButton = document.getElementById('outlook-shared-cancel');
+const outlookSharedSummaryText = document.getElementById('outlook-shared-summary-text');
+const outlookSharedStatus = document.getElementById('outlook-shared-status');
+const outlookSharedMailbox = document.getElementById('outlook-shared-mailbox');
+const outlookSharedBaseFolder = document.getElementById('outlook-shared-base-folder');
+const outlookSharedLastValidated = document.getElementById('outlook-shared-last-validated');
+const outlookSharedBaseIdInput = document.getElementById('outlook-shared-base-id');
+const outlookSharedBasePathInput = document.getElementById('outlook-shared-base-path');
+const outlookSharedBaseNameInput = document.getElementById('outlook-shared-base-name');
+const outlookSharedBaseWebUrlInput = document.getElementById('outlook-shared-base-weburl');
+
+const outlookForm = document.getElementById('outlook-settings-form');
+const outlookPollIntervalInput = document.getElementById('outlook-poll-interval');
+const outlookMaxAttachmentInput = document.getElementById('outlook-max-attachment');
+const outlookMimeTypesInput = document.getElementById('outlook-mime-types');
+const outlookEnabledInput = document.getElementById('outlook-enabled');
+const outlookBrowseButton = document.getElementById('outlook-browse-folder');
+const outlookClearFolderButton = document.getElementById('outlook-clear-folder');
+const outlookSaveButton = document.getElementById('outlook-save');
+const outlookSyncButton = document.getElementById('outlook-sync-now');
+const outlookResyncButton = document.getElementById('outlook-resync');
+const outlookDisconnectButton = document.getElementById('outlook-disconnect');
+const outlookFolderSummary = document.getElementById('outlook-folder-summary');
+const outlookStatusContainer = document.getElementById('outlook-status');
+const outlookStatusState = document.getElementById('outlook-status-state');
+const outlookStatusFolder = document.getElementById('outlook-status-folder');
+const outlookStatusLastSync = document.getElementById('outlook-status-last-sync');
+const outlookStatusResult = document.getElementById('outlook-status-result');
+const outlookFolderIdInput = document.getElementById('outlook-folder-id');
+const outlookFolderPathInput = document.getElementById('outlook-folder-path');
+const outlookFolderNameInput = document.getElementById('outlook-folder-name');
+const outlookFolderWebUrlInput = document.getElementById('outlook-folder-weburl');
+const outlookFolderParentIdInput = document.getElementById('outlook-folder-parent-id');
+
+const outlookBrowseModal = document.getElementById('outlook-browse-modal');
+const outlookBrowseTitle = document.getElementById('outlook-browse-title');
+const outlookBrowseList = document.getElementById('outlook-browse-list');
+const outlookBrowsePath = document.getElementById('outlook-browse-path');
+const outlookBrowseBackButton = document.getElementById('outlook-browse-back');
+const outlookBrowseCancelButton = document.getElementById('outlook-browse-cancel');
+const outlookBrowseConfirmButton = document.getElementById('outlook-browse-confirm');
+const outlookBrowseCloseButton = document.getElementById('outlook-browse-close');
+const outlookBrowseWarning = document.getElementById('outlook-browse-warning');
+const outlookBrowseStatus = document.getElementById('outlook-browse-status');
+const outlookBrowseModalOverlay = outlookBrowseModal?.querySelector('.modal-overlay');
 const qbPreviewModal = document.getElementById('qb-preview-modal');
 const qbPreviewMethod = document.getElementById('qb-preview-method');
 const qbPreviewSummary = document.getElementById('qb-preview-summary');
@@ -108,6 +144,10 @@ let oneDriveBrowseState = null;
 let lastOneDriveBrowseTrigger = null;
 let oneDriveBrowseEscapeHandler = null;
 let sharedOneDriveSettings = null;
+let sharedOutlookSettings = null;
+let outlookBrowseState = null;
+let lastOutlookBrowseTrigger = null;
+let outlookBrowseEscapeHandler = null;
 
 const MATCH_BADGE_LABELS = {
   exact: 'Exact match',
@@ -160,9 +200,10 @@ function bootstrap() {
   attachEventListeners();
   handleQuickBooksCallback();
   refreshSharedOneDriveSettings();
+  refreshSharedOutlookSettings({ silent: true });
   renderBusinessProfile();
   renderOneDriveSettings();
-  renderGmailSettings();
+  renderOutlookSettings();
   refreshQuickBooksCompanies();
   loadStoredInvoices();
 }
@@ -198,24 +239,26 @@ function renderSharedOneDriveSummary() {
   }
 
   if (oneDriveSharedConnectButton) {
-    oneDriveSharedConnectButton.textContent = configured ? 'Change shared drive' : 'Connect shared drive';
+    oneDriveSharedConnectButton.textContent = configured
+      ? 'Switch OneDrive account'
+      : 'Connect OneDrive account';
   }
 
   if (oneDriveSharedValidateButton) {
     oneDriveSharedValidateButton.disabled = !configured;
+    oneDriveSharedValidateButton.textContent = 'Run connection check';
   }
 
   if (oneDriveSharedSummaryText) {
     oneDriveSharedSummaryText.textContent = '';
 
     if (!configured) {
-      oneDriveSharedSummaryText.textContent = 'Shared OneDrive drive is not configured yet.';
+      oneDriveSharedSummaryText.textContent =
+        'Connect the OneDrive account that stores your invoice folders. Each company can pick its own monitored and processed folders below.';
     } else {
       const label = settings.driveName || settings.driveId;
-      const summaryParts = [`Using shared drive: ${label}`];
-      const breadcrumb = formatOneDriveBreadcrumb(
-        deriveOneDriveBreadcrumbFromPath(settings.folderPath || '')
-      );
+      const summaryParts = [`Connected to OneDrive account: ${label}`];
+      const breadcrumb = formatOneDriveBreadcrumb(deriveOneDriveBreadcrumbFromPath(settings.folderPath || ''));
       const folderLabels = [];
       if (settings.folderName) {
         folderLabels.push(settings.folderName);
@@ -226,8 +269,11 @@ function renderSharedOneDriveSummary() {
       if (!folderLabels.length && settings.folderId) {
         folderLabels.push(settings.folderId);
       }
+
       if (folderLabels.length) {
-        summaryParts.push(`Base folder: ${folderLabels.join(' • ')}`);
+        summaryParts.push(`Company browsing is limited to ${folderLabels.join(' • ')}`);
+      } else {
+        summaryParts.push('Use the selectors below to choose folders per company');
       }
 
       const text = `${summaryParts.join('. ')}.`;
@@ -240,7 +286,7 @@ function renderSharedOneDriveSummary() {
         link.href = targetUrl;
         link.target = '_blank';
         link.rel = 'noopener noreferrer';
-        link.textContent = folderLabels.length ? 'Open folder' : 'Open drive';
+        link.textContent = 'Open in OneDrive';
         oneDriveSharedSummaryText.appendChild(link);
       }
 
@@ -270,7 +316,7 @@ function setSharedOneDriveStatusBadge(status) {
   }
 
   const value = typeof status === 'string' ? status.trim().toLowerCase() : '';
-  const label = formatStatusLabel(value, 'Unconfigured');
+  const label = formatStatusLabel(value, 'Not connected');
   oneDriveSharedStatusBadge.textContent = label;
   oneDriveSharedStatusBadge.dataset.status = value || 'unconfigured';
 
@@ -290,7 +336,7 @@ function setSharedOneDriveStatusBadge(status) {
 
 function formatSharedOneDriveResult(settings) {
   if (!settings || !settings.driveId) {
-    return 'Configure the shared drive to enable browsing.';
+    return 'Connect the OneDrive account to enable company folder browsing.';
   }
 
   const error = settings.lastValidationError;
@@ -419,20 +465,74 @@ function attachEventListeners() {
     oneDriveClearButton.addEventListener('click', handleOneDriveDisconnect);
   }
 
-  if (gmailForm) {
-    gmailForm.addEventListener('submit', handleGmailSettingsSave);
+  if (outlookSharedEditButton) {
+    outlookSharedEditButton.addEventListener('click', handleOutlookSharedEdit);
   }
 
-  if (gmailConnectButton) {
-    gmailConnectButton.addEventListener('click', handleGmailConnectClick);
+  if (outlookSharedForm) {
+    outlookSharedForm.addEventListener('submit', handleOutlookSharedSave);
   }
 
-  if (gmailSyncButton) {
-    gmailSyncButton.addEventListener('click', handleGmailSyncClick);
+  if (outlookSharedCancelButton) {
+    outlookSharedCancelButton.addEventListener('click', handleOutlookSharedCancel);
   }
 
-  if (gmailDisconnectButton) {
-    gmailDisconnectButton.addEventListener('click', handleGmailDisconnect);
+  if (outlookSharedBrowseBaseButton) {
+    outlookSharedBrowseBaseButton.addEventListener('click', () => openOutlookBrowser('shared-base'));
+  }
+
+  if (outlookForm) {
+    outlookForm.addEventListener('submit', handleOutlookSettingsSave);
+  }
+
+  if (outlookBrowseButton) {
+    outlookBrowseButton.addEventListener('click', () => {
+      if (!outlookBrowseButton.disabled) {
+        openOutlookBrowser('company');
+      }
+    });
+  }
+
+  if (outlookClearFolderButton) {
+    outlookClearFolderButton.addEventListener('click', handleOutlookClearFolder);
+  }
+
+  if (outlookSyncButton) {
+    outlookSyncButton.addEventListener('click', handleOutlookSyncClick);
+  }
+
+  if (outlookResyncButton) {
+    outlookResyncButton.addEventListener('click', handleOutlookResync);
+  }
+
+  if (outlookDisconnectButton) {
+    outlookDisconnectButton.addEventListener('click', handleOutlookDisconnect);
+  }
+
+  if (outlookBrowseConfirmButton) {
+    outlookBrowseConfirmButton.addEventListener('click', applyOutlookBrowserSelection);
+  }
+
+  if (outlookBrowseCancelButton) {
+    outlookBrowseCancelButton.addEventListener('click', closeOutlookBrowser);
+  }
+
+  if (outlookBrowseCloseButton) {
+    outlookBrowseCloseButton.addEventListener('click', closeOutlookBrowser);
+  }
+
+  if (outlookBrowseModalOverlay) {
+    outlookBrowseModalOverlay.addEventListener('click', closeOutlookBrowser);
+  }
+
+  if (outlookBrowseBackButton) {
+    outlookBrowseBackButton.addEventListener('click', handleOutlookBrowseBack);
+  }
+
+  if (outlookBrowseList) {
+    outlookBrowseList.addEventListener('click', handleOutlookBrowseListClick);
+    outlookBrowseList.addEventListener('dblclick', handleOutlookBrowseListDoubleClick);
+    outlookBrowseList.addEventListener('keydown', handleOutlookBrowseListKeydown);
   }
 
   if (importVendorDefaultsButton) {
@@ -532,17 +632,17 @@ function handleQuickBooksCallback() {
     }
   }
 
-  if (params.has('gmail')) {
-    const status = params.get('gmail');
+  if (params.has('outlook')) {
+    const status = params.get('outlook');
     const companyName = params.get('company');
     const message = params.get('message');
     shouldClear = true;
 
     if (status === 'connected') {
       const name = companyName || 'the selected company';
-      showStatus(globalStatus, `Gmail inbox connected for ${name}.`, 'success');
+      showStatus(globalStatus, `Outlook mailbox connected for ${name}.`, 'success');
     } else if (status === 'error') {
-      showStatus(globalStatus, message || 'Gmail connection failed. Please try again.', 'error');
+      showStatus(globalStatus, message || 'Outlook connection failed. Please try again.', 'error');
     }
   }
 
@@ -885,7 +985,10 @@ async function refreshQuickBooksCompanies(preferredRealmId = selectedRealmId) {
     if (!Array.isArray(payload?.companies)) {
       throw new Error('QuickBooks companies response did not include any connections.');
     }
-    quickBooksCompanies = payload.companies;
+    quickBooksCompanies = payload.companies.map((company) => ({
+      ...company,
+      outlook: company.outlook || null,
+    }));
 
     const activeRealms = new Set(quickBooksCompanies.map((company) => company.realmId));
     Array.from(companyMetadataCache.keys()).forEach((realmId) => {
@@ -982,7 +1085,7 @@ function resetCompanyPanels() {
   renderAccountList(null, 'Select a company to load account details.');
   renderBusinessProfile();
   renderOneDriveSettings();
-  renderGmailSettings();
+  renderOutlookSettings();
 }
 
 function activateCompanyTab(targetId) {
@@ -1024,7 +1127,7 @@ function renderCompanySettings() {
     connectionStatus.textContent = 'Select a company to view connection details.';
     renderBusinessProfile();
     renderOneDriveSettings();
-    renderGmailSettings();
+    renderOutlookSettings();
     return;
   }
 
@@ -1065,7 +1168,7 @@ function renderCompanySettings() {
   connectionStatus.textContent = lines.join('\n');
   renderBusinessProfile();
   renderOneDriveSettings();
-  renderGmailSettings();
+  renderOutlookSettings();
 }
 
 function renderBusinessProfile() {
@@ -1084,6 +1187,89 @@ function renderBusinessProfile() {
   businessTypeInput.disabled = false;
   businessTypeInput.value = company.businessType || '';
   businessProfileSubmit.disabled = false;
+}
+
+async function handleBusinessProfileSave(event) {
+  event.preventDefault();
+
+  if (!selectedRealmId) {
+    showStatus(globalStatus, 'Select a company before updating the business profile.', 'error');
+    return;
+  }
+
+  const currentCompany = getSelectedCompany();
+  const rawValue = businessTypeInput ? businessTypeInput.value : '';
+  const trimmedValue = typeof rawValue === 'string' ? rawValue.trim() : '';
+  const nextBusinessType = trimmedValue || null;
+  const currentBusinessType = currentCompany?.businessType || null;
+
+  if ((currentBusinessType || null) === nextBusinessType) {
+    showStatus(globalStatus, 'Business profile is already up to date.', 'info');
+    return;
+  }
+
+  const endpoint = `/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}`;
+  const originalLabel = businessProfileSubmit ? businessProfileSubmit.textContent : '';
+
+  if (businessProfileSubmit) {
+    businessProfileSubmit.disabled = true;
+    businessProfileSubmit.textContent = 'Saving…';
+  }
+  if (businessTypeInput) {
+    businessTypeInput.disabled = true;
+  }
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ businessType: nextBusinessType }),
+    });
+
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch (parseError) {
+      payload = null;
+    }
+
+    if (!response.ok) {
+      const message = payload?.error || 'Failed to update business profile.';
+      throw new Error(message);
+    }
+
+    const updatedCompany = payload?.company;
+    if (updatedCompany) {
+      const index = quickBooksCompanies.findIndex((entry) => entry.realmId === updatedCompany.realmId);
+      if (index >= 0) {
+        quickBooksCompanies[index] = {
+          ...quickBooksCompanies[index],
+          ...updatedCompany,
+        };
+      } else {
+        quickBooksCompanies.push(updatedCompany);
+      }
+      renderCompanySettings();
+    } else {
+      await refreshQuickBooksCompanies(selectedRealmId);
+    }
+
+    showStatus(globalStatus, 'Business profile saved.', 'success');
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, error.message || 'Failed to update business profile.', 'error');
+  } finally {
+    if (businessTypeInput) {
+      businessTypeInput.disabled = !selectedRealmId;
+    }
+    if (businessProfileSubmit) {
+      businessProfileSubmit.disabled = !selectedRealmId;
+      businessProfileSubmit.textContent = originalLabel || 'Save profile';
+    }
+    renderBusinessProfile();
+  }
 }
 
 function renderOneDriveSettings() {
@@ -1280,7 +1466,7 @@ function updateOneDriveSelectionPreviewFromInputs() {
   }
 
   if (!isSharedOneDriveConfigured()) {
-    oneDriveMonitoredSummary.textContent = 'Connect the shared OneDrive drive before choosing a folder.';
+    oneDriveMonitoredSummary.textContent = 'Connect the OneDrive account before choosing a folder for this company.';
     return;
   }
 
@@ -1382,6 +1568,1335 @@ function collectProcessedFolderFromInputs() {
     folder.parentId = parentId;
   }
   return folder;
+}
+
+async function handleOneDriveSettingsSave(event) {
+  event.preventDefault();
+
+  if (!selectedRealmId) {
+    showStatus(globalStatus, 'Select a company before updating OneDrive settings.', 'error');
+    return;
+  }
+
+  const enableSync = Boolean(oneDriveEnabledInput?.checked);
+  const monitoredFolder = collectMonitoredFolderFromInputs();
+  const processedFolder = collectProcessedFolderFromInputs();
+  const processedCleared = Boolean(oneDriveProcessedFolderIdInput?.dataset?.cleared);
+
+  if (enableSync && !isSharedOneDriveConfigured()) {
+    showStatus(globalStatus, 'Connect the OneDrive account before enabling sync.', 'error');
+    return;
+  }
+
+  if (enableSync && !monitoredFolder) {
+    showStatus(globalStatus, 'Select a OneDrive folder to monitor before enabling sync.', 'error');
+    return;
+  }
+
+  const payload = {
+    enabled: enableSync,
+  };
+
+  if (monitoredFolder) {
+    payload.monitoredFolder = monitoredFolder;
+  }
+
+  if (processedFolder) {
+    payload.processedFolder = processedFolder;
+  } else if (processedCleared) {
+    payload.processedFolder = null;
+  }
+
+  const originalLabel = oneDriveSaveButton ? oneDriveSaveButton.textContent : '';
+
+  if (oneDriveSaveButton) {
+    oneDriveSaveButton.disabled = true;
+    oneDriveSaveButton.textContent = 'Saving…';
+  }
+
+  try {
+    const response = await fetch(
+      `/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/onedrive`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      }
+    );
+
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = body?.error || 'Failed to update OneDrive settings.';
+      throw new Error(message);
+    }
+
+    let stateForMessage = null;
+    if (body?.oneDrive !== undefined) {
+      stateForMessage = body.oneDrive;
+      updateLocalCompanyOneDrive(selectedRealmId, body.oneDrive);
+    } else {
+      await refreshQuickBooksCompanies(selectedRealmId);
+      stateForMessage = getSelectedCompany()?.oneDrive || null;
+    }
+
+    const isEnabled = stateForMessage ? stateForMessage.enabled !== false : enableSync;
+    showStatus(
+      globalStatus,
+      isEnabled
+        ? 'OneDrive settings saved. Sync will run shortly.'
+        : 'OneDrive sync disabled for this company.',
+      'success'
+    );
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, error.message || 'Failed to update OneDrive settings.', 'error');
+  } finally {
+    if (oneDriveSaveButton) {
+      oneDriveSaveButton.disabled = false;
+      oneDriveSaveButton.textContent = originalLabel || 'Save OneDrive settings';
+    }
+  }
+}
+
+async function handleOneDriveSyncClick() {
+  if (!selectedRealmId) {
+    showStatus(globalStatus, 'Select a company before triggering a OneDrive sync.', 'error');
+    return;
+  }
+
+  if (!oneDriveSyncButton || oneDriveSyncButton.disabled) {
+    return;
+  }
+
+  const originalLabel = oneDriveSyncButton.textContent;
+  oneDriveSyncButton.disabled = true;
+  oneDriveSyncButton.textContent = 'Syncing…';
+
+  try {
+    const response = await fetch(
+      `/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/onedrive/sync`,
+      { method: 'POST' }
+    );
+
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = body?.error || 'Failed to start OneDrive sync.';
+      throw new Error(message);
+    }
+
+    if (body?.oneDrive !== undefined) {
+      updateLocalCompanyOneDrive(selectedRealmId, body.oneDrive);
+    }
+
+    showStatus(globalStatus, 'OneDrive sync queued. Check the status card for updates.', 'success');
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, error.message || 'Failed to start OneDrive sync.', 'error');
+  } finally {
+    if (oneDriveSyncButton) {
+      oneDriveSyncButton.disabled = false;
+      oneDriveSyncButton.textContent = originalLabel || 'Sync now';
+    }
+    renderOneDriveSettings();
+  }
+}
+
+async function handleOneDriveFullResync() {
+  if (!selectedRealmId) {
+    showStatus(globalStatus, 'Select a company before requesting a OneDrive resync.', 'error');
+    return;
+  }
+
+  if (!oneDriveResyncButton || oneDriveResyncButton.disabled) {
+    return;
+  }
+
+  const originalLabel = oneDriveResyncButton.textContent;
+  oneDriveResyncButton.disabled = true;
+  oneDriveResyncButton.textContent = 'Queuing…';
+
+  try {
+    const response = await fetch(
+      `/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/onedrive/resync`,
+      { method: 'POST' }
+    );
+
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = body?.error || 'Failed to start OneDrive resync.';
+      throw new Error(message);
+    }
+
+    if (body?.oneDrive !== undefined) {
+      updateLocalCompanyOneDrive(selectedRealmId, body.oneDrive);
+    }
+
+    showStatus(globalStatus, 'OneDrive full resync queued. This may take a few minutes.', 'success');
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, error.message || 'Failed to start OneDrive resync.', 'error');
+  } finally {
+    if (oneDriveResyncButton) {
+      oneDriveResyncButton.disabled = false;
+      oneDriveResyncButton.textContent = originalLabel || 'Request full resync';
+    }
+    renderOneDriveSettings();
+  }
+}
+
+async function handleOneDriveDisconnect() {
+  if (!selectedRealmId) {
+    showStatus(globalStatus, 'Select a company before disconnecting OneDrive.', 'error');
+    return;
+  }
+
+  if (!oneDriveClearButton || oneDriveClearButton.disabled) {
+    return;
+  }
+
+  const confirmed = window.confirm('Disconnect OneDrive for this company?');
+  if (!confirmed) {
+    return;
+  }
+
+  const originalLabel = oneDriveClearButton.textContent;
+  oneDriveClearButton.disabled = true;
+  oneDriveClearButton.textContent = 'Disconnecting…';
+
+  try {
+    const response = await fetch(
+      `/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/onedrive`,
+      { method: 'DELETE' }
+    );
+
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = body?.error || 'Failed to disconnect OneDrive.';
+      throw new Error(message);
+    }
+
+    updateLocalCompanyOneDrive(selectedRealmId, body?.oneDrive || null);
+    showStatus(globalStatus, 'OneDrive settings cleared for this company.', 'success');
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, error.message || 'Failed to disconnect OneDrive.', 'error');
+  } finally {
+    if (oneDriveClearButton) {
+      oneDriveClearButton.disabled = false;
+      oneDriveClearButton.textContent = originalLabel || 'Disconnect OneDrive';
+    }
+    renderOneDriveSettings();
+  }
+}
+
+function formatStatusLabel(status, fallback = 'Unknown') {
+  const value = typeof status === 'string' ? status.trim() : '';
+  if (!value) {
+    return fallback;
+  }
+
+  return value
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(' ');
+}
+
+function buildOneDriveResultText(config, { enabled = true } = {}) {
+  if (!config) {
+    return enabled ? 'Not connected.' : 'Disabled.';
+  }
+
+  if (config.lastSyncError?.message) {
+    const label = config.lastSyncStatus ? formatStatusLabel(config.lastSyncStatus, 'Error') : 'Error';
+    return `${label} • ${config.lastSyncError.message}`;
+  }
+
+  if (!config.lastSyncStatus) {
+    return enabled ? 'No syncs yet.' : 'Disabled.';
+  }
+
+  const metrics = config.lastSyncMetrics || {};
+  const parts = [];
+
+  if (typeof metrics.createdCount === 'number' && metrics.createdCount > 0) {
+    parts.push(`${metrics.createdCount} new ${metrics.createdCount === 1 ? 'invoice' : 'invoices'}`);
+  }
+
+  if (typeof metrics.processedItems === 'number' && metrics.processedItems > 0) {
+    if (!parts.length || metrics.processedItems !== metrics.createdCount) {
+      parts.push(`${metrics.processedItems} file${metrics.processedItems === 1 ? '' : 's'} processed`);
+    }
+  }
+
+  if (typeof metrics.duplicateCount === 'number' && metrics.duplicateCount > 0) {
+    parts.push(`${metrics.duplicateCount} duplicate${metrics.duplicateCount === 1 ? '' : 's'} skipped`);
+  }
+
+  const processed = config.processedFolder || null;
+  const moveTarget = processed?.path || processed?.name;
+  if (moveTarget) {
+    let label = processed?.name || moveTarget;
+    if (processed?.path) {
+      const friendly = formatOneDriveBreadcrumb(deriveOneDriveBreadcrumbFromPath(processed.path));
+      label = friendly || processed.path;
+    }
+    parts.push(`Moved to ${label}`);
+  }
+
+  if (!parts.length && config.lastSyncStatus === 'success') {
+    parts.push('Completed without errors');
+  }
+
+  const label = formatStatusLabel(config.lastSyncStatus, enabled ? 'Success' : 'Disabled');
+  return parts.length ? `${label} • ${parts.join(', ')}` : label;
+}
+
+function normaliseTextInput(value) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+
+  return String(value).trim();
+}
+
+function renderEntityEmptyState(target, message) {
+  if (!target) {
+    return;
+  }
+
+  target.innerHTML = '';
+  const entry = document.createElement('li');
+  entry.className = 'empty';
+  entry.textContent = message;
+  target.appendChild(entry);
+}
+
+function normaliseCompanyMetadata(raw = {}) {
+  const vendors = prepareMetadataSection(raw.vendors);
+  const accounts = prepareMetadataSection(raw.accounts);
+  const taxCodes = prepareMetadataSection(raw.taxCodes);
+  const vendorSettings = prepareVendorSettings(raw.vendorSettings, { vendors, accounts, taxCodes });
+
+  return {
+    vendors,
+    accounts,
+    taxCodes,
+    vendorSettings,
+    refreshedAt: raw.refreshedAt || raw.updatedAt || raw.syncedAt || null,
+  };
+}
+
+async function loadCompanyMetadata(realmId, { force = false } = {}) {
+  if (!realmId) {
+    return null;
+  }
+
+  const cached = companyMetadataCache.get(realmId) || null;
+  if (cached && !force) {
+    if (selectedRealmId === realmId) {
+      renderVendorList(cached, 'No vendors available for this company.');
+      renderAccountList(cached, 'No accounts available for this company.');
+    }
+    return cached;
+  }
+
+  if (metadataRequests.has(realmId)) {
+    return metadataRequests.get(realmId);
+  }
+
+  const request = (async () => {
+    try {
+      const response = await fetch(
+        `/api/quickbooks/companies/${encodeURIComponent(realmId)}/metadata`
+      );
+      const payload = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        const message = payload?.error || 'Failed to load QuickBooks metadata.';
+        throw new Error(message);
+      }
+
+      const metadata = normaliseCompanyMetadata(payload?.metadata || {});
+      companyMetadataCache.set(realmId, metadata);
+
+      if (selectedRealmId === realmId) {
+        renderVendorList(metadata, 'No vendors available for this company.');
+        renderAccountList(metadata, 'No accounts available for this company.');
+      }
+
+      return metadata;
+    } catch (error) {
+      if (selectedRealmId === realmId) {
+        console.error(error);
+        showStatus(globalStatus, error.message || 'Failed to load QuickBooks metadata.', 'error');
+        renderVendorList(null, 'Unable to load vendor list. Try refreshing metadata.');
+        renderAccountList(null, 'Unable to load account list. Try refreshing metadata.');
+      }
+      throw error;
+    } finally {
+      metadataRequests.delete(realmId);
+    }
+  })();
+
+  metadataRequests.set(realmId, request);
+  return request;
+}
+
+async function refreshCompanyMetadata(realmId) {
+  if (!realmId) {
+    showStatus(globalStatus, 'Select a company before refreshing metadata.', 'error');
+    return;
+  }
+
+  const originalLabel = refreshMetadataButton ? refreshMetadataButton.textContent : '';
+  if (refreshMetadataButton) {
+    refreshMetadataButton.disabled = true;
+    refreshMetadataButton.textContent = 'Refreshing…';
+  }
+
+  try {
+    const response = await fetch(
+      `/api/quickbooks/companies/${encodeURIComponent(realmId)}/metadata/refresh`,
+      { method: 'POST' }
+    );
+    const body = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      const message = body?.error || 'Failed to refresh QuickBooks metadata.';
+      throw new Error(message);
+    }
+
+    const metadata = normaliseCompanyMetadata(body?.metadata || {});
+    companyMetadataCache.set(realmId, metadata);
+
+    if (selectedRealmId === realmId) {
+      renderVendorList(metadata, 'No vendors available for this company.');
+      renderAccountList(metadata, 'No accounts available for this company.');
+    }
+
+    showStatus(globalStatus, 'QuickBooks metadata refreshed.', 'success');
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, error.message || 'Failed to refresh QuickBooks metadata.', 'error');
+  } finally {
+    if (refreshMetadataButton) {
+      refreshMetadataButton.disabled = !selectedRealmId;
+      refreshMetadataButton.textContent = originalLabel || 'Refresh metadata';
+    }
+  }
+}
+
+function renderVendorList(metadata, emptyMessage) {
+  if (!vendorList) {
+    return;
+  }
+
+  vendorList.innerHTML = '';
+
+  const vendors = metadata?.vendors?.items || [];
+  if (!vendors.length) {
+    renderEntityEmptyState(vendorList, emptyMessage || 'No vendors available for this company.');
+    return;
+  }
+
+  const vendorSettingsEntries = metadata?.vendorSettings?.entries || {};
+  const accountOptions = buildAccountOptions(metadata?.accounts?.items || []);
+  const taxCodeOptions = buildTaxCodeOptions(metadata?.taxCodes?.items || []);
+
+  const sorted = [...vendors].sort((a, b) => {
+    const left = (a.displayName || a.companyName || a.fullyQualifiedName || a.id || '').toLowerCase();
+    const right = (b.displayName || b.companyName || b.fullyQualifiedName || b.id || '').toLowerCase();
+    return left.localeCompare(right, undefined, { sensitivity: 'base' });
+  });
+
+  sorted.forEach((vendor) => {
+    const item = document.createElement('li');
+    item.className = 'entity-item';
+
+    const vendorName =
+      vendor.displayName || vendor.companyName || vendor.fullyQualifiedName || `Vendor ${vendor.id}`;
+
+    const name = document.createElement('div');
+    name.className = 'entity-name';
+    name.textContent = vendorName;
+    item.appendChild(name);
+
+    const metaParts = [];
+    if (vendor.companyName && vendor.companyName !== vendor.displayName) {
+      metaParts.push(vendor.companyName);
+    }
+    if (vendor.email) {
+      metaParts.push(vendor.email);
+    }
+    if (vendor.phone) {
+      metaParts.push(vendor.phone);
+    }
+    if (metaParts.length) {
+      const meta = document.createElement('div');
+      meta.className = 'entity-meta';
+      meta.textContent = metaParts.join(' • ');
+      item.appendChild(meta);
+    }
+
+    const controls = createVendorSettingsControls({
+      vendorId: vendor.id,
+      vendorName,
+      defaults: vendorSettingsEntries[vendor.id] || {},
+      accountOptions,
+      taxCodeOptions,
+    });
+    item.appendChild(controls);
+
+    vendorList.appendChild(item);
+  });
+}
+
+function buildAccountOptions(accounts) {
+  const options = [{ value: '', label: 'No default' }];
+  const sorted = [...accounts].sort((a, b) => {
+    const left = (a.fullyQualifiedName || a.name || a.id || '').toLowerCase();
+    const right = (b.fullyQualifiedName || b.name || b.id || '').toLowerCase();
+    return left.localeCompare(right, undefined, { sensitivity: 'base' });
+  });
+
+  sorted.forEach((account) => {
+    if (!account?.id) {
+      return;
+    }
+    const baseLabel = account.fullyQualifiedName || account.name || `Account ${account.id}`;
+    const parts = [baseLabel];
+    if (account.accountType) {
+      parts.push(account.accountType);
+    }
+    if (account.accountSubType && account.accountSubType !== account.accountType) {
+      parts.push(account.accountSubType);
+    }
+    options.push({ value: account.id, label: parts.join(' • ') });
+  });
+
+  return options;
+}
+
+function buildTaxCodeOptions(taxCodes) {
+  const options = [{ value: '', label: 'No default' }];
+  const sorted = [...taxCodes].sort((a, b) => {
+    const left = (a.name || a.id || '').toLowerCase();
+    const right = (b.name || b.id || '').toLowerCase();
+    return left.localeCompare(right, undefined, { sensitivity: 'base' });
+  });
+
+  sorted.forEach((code) => {
+    if (!code?.id) {
+      return;
+    }
+
+    const baseLabel = code.name || `Tax Code ${code.id}`;
+    const numericRate = typeof code.rate === 'number' ? code.rate : null;
+    const hasEmbeddedRate =
+      numericRate !== null && ratesApproximatelyEqual(numericRate, parsePercentageFromLabel(baseLabel));
+    const suffix = numericRate !== null && !hasEmbeddedRate ? `${formatRateValue(numericRate)}%` : null;
+    const label = suffix ? `${baseLabel} • ${suffix}` : baseLabel;
+
+    options.push({ value: code.id, label });
+  });
+
+  return options;
+}
+
+function createVendorSettingsControls({ vendorId, vendorName, defaults, accountOptions, taxCodeOptions }) {
+  const container = document.createElement('div');
+  container.className = 'vendor-settings-grid';
+
+  const categorySelect = createVendorSettingSelect({
+    options: accountOptions,
+    value: defaults.accountId || '',
+    vendorId,
+    vendorName,
+    field: 'accountId',
+    disabled: accountOptions.length <= 1,
+    disabledHint: 'No QuickBooks accounts available. Refresh metadata to sync accounts.',
+  });
+
+  const vatBasisSelect = createVendorSettingSelect({
+    options: VAT_TREATMENT_OPTIONS,
+    value: defaults.vatTreatment || '',
+    vendorId,
+    vendorName,
+    field: 'vatTreatment',
+  });
+
+  const taxCodeSelect = createVendorSettingSelect({
+    options: taxCodeOptions,
+    value: defaults.taxCodeId || '',
+    vendorId,
+    vendorName,
+    field: 'taxCodeId',
+    disabled: taxCodeOptions.length <= 1,
+    disabledHint: 'No QuickBooks tax codes available. Refresh metadata to sync tax codes.',
+  });
+
+  container.appendChild(createVendorSettingGroup('Category', categorySelect));
+  container.appendChild(createVendorSettingGroup('Amounts are', vatBasisSelect));
+  container.appendChild(createVendorSettingGroup('VAT code', taxCodeSelect));
+
+  return container;
+}
+
+function createVendorSettingGroup(labelText, control) {
+  const wrapper = document.createElement('label');
+  wrapper.className = 'vendor-setting-group';
+
+  const heading = document.createElement('span');
+  heading.className = 'vendor-setting-heading';
+  heading.textContent = labelText;
+
+  wrapper.appendChild(heading);
+  wrapper.appendChild(control);
+
+  return wrapper;
+}
+
+function createVendorSettingSelect({
+  options,
+  value,
+  vendorId,
+  vendorName,
+  field,
+  disabled = false,
+  disabledHint = '',
+}) {
+  const select = document.createElement('select');
+  select.className = 'vendor-setting-select';
+  select.dataset.vendorId = vendorId;
+  select.dataset.settingField = field;
+  select.dataset.vendorName = vendorName;
+
+  options.forEach((option) => {
+    const optionElement = document.createElement('option');
+    optionElement.value = option.value;
+    optionElement.textContent = option.label;
+    if (option.disabled) {
+      optionElement.disabled = true;
+    }
+    select.appendChild(optionElement);
+  });
+
+  const availableValues = options.map((option) => option.value);
+  const initialValue = availableValues.includes(value) ? value : '';
+  select.value = initialValue;
+  select.dataset.previousValue = initialValue;
+
+  if (disabled) {
+    select.disabled = true;
+    if (disabledHint) {
+      select.title = disabledHint;
+    }
+  }
+
+  return select;
+}
+
+function resolveVendorSettingFieldValue(field, settings) {
+  if (field === 'accountId' || field === 'taxCodeId') {
+    return sanitizeReviewSelectionId(settings?.[field]) || '';
+  }
+  if (field === 'vatTreatment') {
+    return VENDOR_VAT_TREATMENT_VALUES.has(settings?.vatTreatment) ? settings.vatTreatment : '';
+  }
+  return '';
+}
+
+function applyVendorSettingUpdate(realmId, vendorId, settings) {
+  const metadata = companyMetadataCache.get(realmId);
+  if (!metadata) {
+    return;
+  }
+
+  const vendorSettingsEntries = { ...(metadata.vendorSettings?.entries || {}) };
+  const canonicalVendorId = sanitizeReviewSelectionId(vendorId);
+  if (!canonicalVendorId) {
+    return;
+  }
+
+  const accountLookup = metadata.accounts?.lookup || new Map();
+  const taxLookup = metadata.taxCodes?.lookup || new Map();
+
+  const accountId = sanitizeReviewSelectionId(settings?.accountId);
+  const validAccountId = accountId && accountLookup.has(accountId) ? accountId : null;
+
+  const taxCodeId = sanitizeReviewSelectionId(settings?.taxCodeId);
+  const validTaxCodeId = taxCodeId && taxLookup.has(taxCodeId) ? taxCodeId : null;
+
+  const vatTreatment = VENDOR_VAT_TREATMENT_VALUES.has(settings?.vatTreatment)
+    ? settings.vatTreatment
+    : null;
+
+  if (validAccountId || validTaxCodeId || vatTreatment) {
+    vendorSettingsEntries[canonicalVendorId] = {
+      accountId: validAccountId,
+      taxCodeId: validTaxCodeId,
+      vatTreatment,
+    };
+  } else {
+    delete vendorSettingsEntries[canonicalVendorId];
+  }
+
+  applyVendorSettingsStructure(metadata, vendorSettingsEntries);
+}
+
+function parsePercentageFromLabel(label) {
+  if (typeof label !== 'string') {
+    return null;
+  }
+
+  const match = label.match(/(-?\d+(?:\.\d+)?)\s*%/);
+  if (!match) {
+    return null;
+  }
+
+  const numeric = Number(match[1]);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function formatRateValue(rate) {
+  if (!Number.isFinite(rate)) {
+    return String(rate);
+  }
+
+  return rate % 1 === 0 ? rate.toString() : rate.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+function ratesApproximatelyEqual(a, b) {
+  if (!Number.isFinite(a) || !Number.isFinite(b)) {
+    return false;
+  }
+
+  return Math.abs(a - b) < 0.0001;
+}
+
+function renderAccountList(metadata, emptyMessage) {
+  if (!accountList) {
+    return;
+  }
+
+  accountList.innerHTML = '';
+
+  const accounts = metadata?.accounts?.items || [];
+  if (!accounts.length) {
+    renderEntityEmptyState(accountList, emptyMessage || 'No accounts available for this company.');
+    return;
+  }
+
+  const sorted = [...accounts].sort((a, b) => {
+    const left = (a.fullyQualifiedName || a.name || a.id || '').toLowerCase();
+    const right = (b.fullyQualifiedName || b.name || b.id || '').toLowerCase();
+    return left.localeCompare(right, undefined, { sensitivity: 'base' });
+  });
+
+  sorted.forEach((account) => {
+    const item = document.createElement('li');
+    item.className = 'entity-item';
+
+    const name = document.createElement('div');
+    name.className = 'entity-name';
+    name.textContent = account.fullyQualifiedName || account.name || `Account ${account.id}`;
+    item.appendChild(name);
+
+    const metaParts = [];
+    if (account.accountType) {
+      metaParts.push(account.accountType);
+    }
+    if (account.accountSubType) {
+      metaParts.push(account.accountSubType);
+    }
+    if (typeof account.currentBalance === 'number') {
+      metaParts.push(`Balance: ${formatAmount(account.currentBalance)}`);
+    }
+
+    if (metaParts.length) {
+      const meta = document.createElement('div');
+      meta.className = 'entity-meta';
+      meta.textContent = metaParts.join(' • ');
+      item.appendChild(meta);
+    }
+
+    accountList.appendChild(item);
+  });
+}
+
+async function loadStoredInvoices() {
+  try {
+    const response = await fetch('/api/invoices');
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload?.error || 'Failed to load stored invoices.');
+    }
+    storedInvoices = Array.isArray(payload?.invoices) ? payload.invoices : [];
+    renderInvoices();
+  } catch (error) {
+    storedInvoices = [];
+    console.warn('Unable to load stored invoices', error);
+    renderInvoices();
+  }
+}
+
+function renderInvoices() {
+  // Clear existing content
+  if (reviewTableBody) {
+    reviewTableBody.innerHTML = '';
+  }
+  if (archiveTableBody) {
+    archiveTableBody.innerHTML = '';
+  }
+
+  if (!storedInvoices || storedInvoices.length === 0) {
+    if (reviewTableBody) {
+      reviewTableBody.innerHTML = '<tr><td colspan="6" class="text-center">No invoices in review</td></tr>';
+    }
+    if (archiveTableBody) {
+      archiveTableBody.innerHTML = '<tr><td colspan="5" class="text-center">No archived invoices</td></tr>';
+    }
+    return;
+  }
+
+  // Separate invoices by status
+  const reviewInvoices = storedInvoices.filter(invoice => invoice.metadata?.status === 'review');
+  const archiveInvoices = storedInvoices.filter(invoice => invoice.metadata?.status === 'archive');
+
+  // Render review invoices
+  if (reviewTableBody) {
+    if (reviewInvoices.length === 0) {
+      reviewTableBody.innerHTML = '<tr><td colspan="6" class="text-center">No invoices in review</td></tr>';
+    } else {
+      reviewInvoices.forEach(invoice => {
+        const row = createInvoiceRow(invoice, true);
+        reviewTableBody.appendChild(row);
+      });
+    }
+  }
+
+  // Render archive invoices
+  if (archiveTableBody) {
+    if (archiveInvoices.length === 0) {
+      archiveTableBody.innerHTML = '<tr><td colspan="5" class="text-center">No archived invoices</td></tr>';
+    } else {
+      archiveInvoices.forEach(invoice => {
+        const row = createInvoiceRow(invoice, false);
+        archiveTableBody.appendChild(row);
+      });
+    }
+  }
+
+  // Update bulk actions state
+  updateBulkActionsState();
+}
+
+function createInvoiceRow(invoice, isReview) {
+  const row = document.createElement('tr');
+  row.dataset.checksum = invoice.metadata?.checksum || '';
+
+  const metadata = invoice.metadata || {};
+  const extracted = invoice.extracted || {};
+
+  if (isReview) {
+    // Review table row with checkbox
+    row.innerHTML = `
+      <td>
+        <input type="checkbox" class="form-check-input review-checkbox"
+               data-checksum="${metadata.checksum || ''}"
+               ${reviewSelectedChecksums.has(metadata.checksum) ? 'checked' : ''}>
+      </td>
+      <td>${extracted.vendor || metadata.invoiceFilename || 'Unknown'}</td>
+      <td>${extracted.invoiceNumber || '-'}</td>
+      <td>${extracted.invoiceDate || '-'}</td>
+      <td>$${Number(extracted.totalAmount || 0).toFixed(2)}</td>
+      <td>
+        <div class="btn-group btn-group-sm">
+          <button type="button" class="btn btn-outline-primary"
+                  data-action="preview" data-checksum="${metadata.checksum || ''}">
+            Preview
+          </button>
+          <button type="button" class="btn btn-outline-secondary"
+                  data-action="edit" data-checksum="${metadata.checksum || ''}">
+            Edit
+          </button>
+          <button type="button" class="btn btn-outline-danger"
+                  data-action="delete" data-checksum="${metadata.checksum || ''}">
+            Delete
+          </button>
+        </div>
+      </td>
+    `;
+  } else {
+    // Archive table row without checkbox
+    row.innerHTML = `
+      <td>${extracted.vendor || metadata.invoiceFilename || 'Unknown'}</td>
+      <td>${extracted.invoiceNumber || '-'}</td>
+      <td>${extracted.invoiceDate || '-'}</td>
+      <td>$${Number(extracted.totalAmount || 0).toFixed(2)}</td>
+      <td>
+        <div class="btn-group btn-group-sm">
+          <button type="button" class="btn btn-outline-primary"
+                  data-action="preview" data-checksum="${metadata.checksum || ''}">
+            Preview
+          </button>
+          <button type="button" class="btn btn-outline-danger"
+                  data-action="delete" data-checksum="${metadata.checksum || ''}">
+            Delete
+          </button>
+        </div>
+      </td>
+    `;
+  }
+
+  return row;
+}
+
+function updateBulkActionsState() {
+  const hasSelections = reviewSelectedChecksums.size > 0;
+
+  if (reviewBulkActions) {
+    reviewBulkActions.style.display = hasSelections ? 'flex' : 'none';
+  }
+
+  if (reviewSelectionCount) {
+    reviewSelectionCount.textContent = reviewSelectedChecksums.size;
+  }
+}
+
+async function handleImportVendorDefaults() {
+  if (!selectedRealmId) {
+    showStatus(globalStatus, 'Select a company before importing vendor defaults.', 'error');
+    return;
+  }
+
+  if (!importVendorDefaultsButton) {
+    return;
+  }
+
+  const originalLabel = importVendorDefaultsButton.textContent;
+  importVendorDefaultsButton.disabled = true;
+  importVendorDefaultsButton.textContent = 'Importing…';
+
+  try {
+    const response = await fetch(
+      `/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/vendors/import-defaults`,
+      { method: 'POST' }
+    );
+    const body = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      const message = body?.error || 'Failed to import vendor defaults.';
+      throw new Error(message);
+    }
+
+    const metadata = companyMetadataCache.get(selectedRealmId) || null;
+    if (metadata) {
+      const vendorSettingsMap =
+        body?.vendorSettings && typeof body.vendorSettings === 'object'
+          ? body.vendorSettings
+          : metadata.vendorSettings?.entries || {};
+      applyVendorSettingsStructure(metadata, vendorSettingsMap);
+      companyMetadataCache.set(selectedRealmId, metadata);
+      renderVendorList(metadata, 'No vendors available for this company.');
+    }
+
+    const appliedCount = Array.isArray(body?.applied) ? body.applied.length : 0;
+    if (appliedCount > 0) {
+      showStatus(
+        globalStatus,
+        `Imported defaults for ${appliedCount} vendor${appliedCount === 1 ? '' : 's'}.`,
+        'success'
+      );
+    } else {
+      showStatus(globalStatus, 'No new defaults were found for your vendors.', 'info');
+    }
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, error.message || 'Failed to import vendor defaults.', 'error');
+  } finally {
+    importVendorDefaultsButton.disabled = false;
+    importVendorDefaultsButton.textContent = originalLabel || 'Import suggested defaults';
+  }
+}
+
+async function handleVendorSettingChange(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLSelectElement)) {
+    return;
+  }
+
+  if (!target.classList.contains('vendor-setting-select')) {
+    return;
+  }
+
+  const vendorId = target.dataset.vendorId;
+  const field = target.dataset.settingField;
+  if (!vendorId || !field) {
+    return;
+  }
+
+  const previousValue = target.dataset.previousValue ?? '';
+  const nextValue = target.value ?? '';
+
+  if (nextValue === previousValue) {
+    return;
+  }
+
+  if (!selectedRealmId) {
+    target.value = previousValue;
+    return;
+  }
+
+  if (target.disabled) {
+    return;
+  }
+
+  const payload = {};
+  if (field === 'accountId' || field === 'taxCodeId') {
+    payload[field] = nextValue || null;
+  } else if (field === 'vatTreatment') {
+    payload.vatTreatment = nextValue || null;
+  } else {
+    return;
+  }
+
+  const vendorName = target.dataset.vendorName || 'Vendor';
+
+  target.disabled = true;
+  target.classList.add('is-pending');
+  target.setAttribute('aria-busy', 'true');
+
+  try {
+    const response = await fetch(
+      `/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/vendors/${encodeURIComponent(vendorId)}/settings`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      }
+    );
+
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = body?.error || 'Failed to update vendor defaults.';
+      throw new Error(message);
+    }
+
+    const settings = body?.settings || {};
+    const resolvedValue = resolveVendorSettingFieldValue(field, settings);
+    target.value = resolvedValue;
+    target.dataset.previousValue = resolvedValue;
+
+    applyVendorSettingUpdate(selectedRealmId, vendorId, settings);
+    showStatus(globalStatus, `Saved defaults for ${vendorName}.`, 'success');
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, error.message || 'Failed to update vendor defaults.', 'error');
+    target.value = previousValue;
+    target.dataset.previousValue = previousValue;
+  } finally {
+    target.classList.remove('is-pending');
+    target.removeAttribute('aria-busy');
+    target.disabled = false;
+  }
+}
+
+async function handleArchiveAction(event) {
+  event.preventDefault();
+  const target = event.target;
+  const button = target.closest('button');
+
+  if (!button || !button.dataset.action || !button.dataset.checksum) {
+    return;
+  }
+
+  const action = button.dataset.action;
+  const checksum = button.dataset.checksum;
+
+  if (action === 'delete') {
+    await handleIndividualDelete(checksum);
+  } else if (action === 'preview') {
+    showStatus(globalStatus, 'Preview functionality not yet implemented.', 'info');
+  }
+}
+
+async function handleReviewAction(event) {
+  event.preventDefault();
+  const target = event.target;
+  const button = target.closest('button');
+
+  if (!button || !button.dataset.action || !button.dataset.checksum) {
+    return;
+  }
+
+  const action = button.dataset.action;
+  const checksum = button.dataset.checksum;
+
+  if (action === 'delete') {
+    await handleIndividualDelete(checksum);
+  } else if (action === 'preview') {
+    showStatus(globalStatus, 'Preview functionality not yet implemented.', 'info');
+  } else if (action === 'edit') {
+    showStatus(globalStatus, 'Edit functionality not yet implemented.', 'info');
+  }
+}
+
+async function handleIndividualDelete(checksum) {
+  const confirmed = await showDeleteConfirmation('invoice');
+
+  if (!confirmed) {
+    return;
+  }
+
+  showStatus(globalStatus, 'Deleting invoice...', 'info');
+
+  try {
+    await deleteInvoice(checksum);
+    showStatus(globalStatus, 'Invoice deleted successfully.', 'success');
+    await loadStoredInvoices();
+  } catch (error) {
+    console.error('Individual delete error:', error);
+    showStatus(globalStatus, 'Failed to delete invoice. Please try again.', 'error');
+  }
+}
+
+function handleReviewChange(event) {
+  const checkbox = event.target && event.target.matches ? event.target : null;
+  if (!checkbox || checkbox.type !== 'checkbox' || !checkbox.dataset.checksum) {
+    return;
+  }
+
+  const checksum = checkbox.dataset.checksum;
+  if (checkbox.checked) {
+    reviewSelectedChecksums.add(checksum);
+  } else {
+    reviewSelectedChecksums.delete(checksum);
+  }
+
+  if (reviewSelectionCount) {
+    reviewSelectionCount.textContent = `${reviewSelectedChecksums.size} selected`;
+  }
+}
+
+function handleReviewSelectAllChange(event) {
+  event.preventDefault();
+  if (reviewSelectAllCheckbox) {
+    reviewSelectAllCheckbox.checked = false;
+  }
+  showStatus(globalStatus, 'Select individual invoices to apply actions.', 'info');
+}
+
+function handleBulkArchiveSelected() {
+  if (!reviewSelectedChecksums.size) {
+    showStatus(globalStatus, 'Select invoices before running a bulk action.', 'info');
+    return;
+  }
+  showStatus(globalStatus, 'Bulk archive is not available in this preview build.', 'info');
+}
+
+async function handleBulkDeleteSelected() {
+  if (!reviewSelectedChecksums.size) {
+    showStatus(globalStatus, 'Select invoices before running a bulk action.', 'info');
+    return;
+  }
+
+  const checksums = Array.from(reviewSelectedChecksums);
+  const confirmed = await showDeleteConfirmation(`${checksums.length} invoice${checksums.length === 1 ? '' : 's'}`);
+
+  if (!confirmed) {
+    return;
+  }
+
+  // Show progress
+  showStatus(globalStatus, `Deleting ${checksums.length} invoice${checksums.length === 1 ? '' : 's'}...`, 'info');
+
+  try {
+    // Try bulk delete endpoint first
+    const response = await fetch('/api/invoices/bulk-delete', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ checksums })
+    });
+
+    if (response.ok) {
+      const result = await response.json();
+      const successful = result.successful || 0;
+      const failed = result.failed || 0;
+
+      if (failed === 0) {
+        showStatus(globalStatus, `Successfully deleted ${successful} invoice${successful === 1 ? '' : 's'}.`, 'success');
+      } else {
+        showStatus(globalStatus, `Deleted ${successful} invoice${successful === 1 ? '' : 's'}. ${failed} failed.`, 'warning');
+      }
+
+      // Clear selections and refresh
+      reviewSelectedChecksums.clear();
+      await loadStoredInvoices();
+    } else {
+      // Fallback to individual deletions
+      await performBulkDeleteIndividual(checksums);
+    }
+  } catch (error) {
+    console.error('Bulk delete error:', error);
+    // Fallback to individual deletions
+    await performBulkDeleteIndividual(checksums);
+  }
+}
+
+async function performBulkDeleteIndividual(checksums) {
+  const results = await Promise.allSettled(
+    checksums.map(checksum => deleteInvoice(checksum))
+  );
+
+  const successful = results.filter(r => r.status === 'fulfilled').length;
+  const failed = results.filter(r => r.status === 'rejected').length;
+
+  if (failed === 0) {
+    showStatus(globalStatus, `Successfully deleted ${successful} invoice${successful === 1 ? '' : 's'}.`, 'success');
+  } else {
+    showStatus(globalStatus, `Deleted ${successful} invoice${successful === 1 ? '' : 's'}. ${failed} failed.`, 'warning');
+  }
+
+  // Clear selections and refresh
+  reviewSelectedChecksums.clear();
+  await loadStoredInvoices();
+}
+
+async function deleteInvoice(checksum) {
+  try {
+    const response = await fetch(`/api/invoices/${checksum}`, {
+      method: 'DELETE'
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to delete invoice: ${response.status}`);
+    }
+
+    return true;
+  } catch (error) {
+    console.error(`Error deleting invoice ${checksum}:`, error);
+    throw error;
+  }
+}
+
+function showDeleteConfirmation(itemDescription) {
+  return new Promise((resolve) => {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('delete-confirmation-modal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'delete-confirmation-modal';
+      modal.className = 'modal';
+      modal.style.display = 'none';
+      modal.style.position = 'fixed';
+      modal.style.zIndex = '1050';
+      modal.style.left = '0';
+      modal.style.top = '0';
+      modal.style.width = '100%';
+      modal.style.height = '100%';
+      modal.style.backgroundColor = 'rgba(0,0,0,0.5)';
+      modal.innerHTML = `
+        <div style="position: relative; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;">
+          <div style="background: white; padding: 20px; border-radius: 8px; max-width: 400px; width: 90%;">
+            <div style="margin-bottom: 15px;">
+              <h5 style="margin: 0;">Confirm Delete</h5>
+            </div>
+            <div style="margin-bottom: 15px;">
+              <p style="margin: 0;">Are you sure you want to delete <strong class="item-description"></strong>?</p>
+              <p style="margin: 5px 0 0 0; color: #856404;">This action cannot be undone.</p>
+            </div>
+            <div style="display: flex; gap: 10px; justify-content: flex-end;">
+              <button type="button" class="cancel-delete" style="padding: 8px 16px; border: 1px solid #ccc; background: #6c757d; color: white; border-radius: 4px; cursor: pointer;">Cancel</button>
+              <button type="button" class="confirm-delete" style="padding: 8px 16px; border: none; background: #dc3545; color: white; border-radius: 4px; cursor: pointer;">Delete</button>
+            </div>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+
+      // Handle confirm button
+      const confirmBtn = modal.querySelector('.confirm-delete');
+      confirmBtn.addEventListener('click', () => {
+        modal.style.display = 'none';
+        resolve(true);
+      });
+
+      // Handle cancel button
+      const cancelBtn = modal.querySelector('.cancel-delete');
+      cancelBtn.addEventListener('click', () => {
+        modal.style.display = 'none';
+        resolve(false);
+      });
+
+      // Handle backdrop click
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+          modal.style.display = 'none';
+          resolve(false);
+        }
+      });
+    }
+
+    // Update description
+    const descriptionEl = modal.querySelector('.item-description');
+    descriptionEl.textContent = itemDescription;
+
+    // Show modal
+    modal.style.display = 'block';
+  });
+}
+
+async function copyQuickBooksPreviewPayload() {
+  if (!lastQuickBooksPreviewPayload) {
+    showStatus(globalStatus, 'Nothing to copy yet.', 'info');
+    return;
+  }
+
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(lastQuickBooksPreviewPayload);
+    } else {
+      const textarea = document.createElement('textarea');
+      textarea.value = lastQuickBooksPreviewPayload;
+      textarea.setAttribute('readonly', 'true');
+      textarea.style.position = 'absolute';
+      textarea.style.left = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
+    showStatus(globalStatus, 'QuickBooks payload copied to clipboard.', 'success');
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, 'Failed to copy QuickBooks payload.', 'error');
+  }
+}
+
+function hideQuickBooksPreviewModal() {
+  if (!qbPreviewModal) {
+    return;
+  }
+
+  qbPreviewModal.hidden = true;
+  qbPreviewModal.setAttribute('aria-hidden', 'true');
+
+  if (quickBooksPreviewEscapeHandler) {
+    document.removeEventListener('keydown', quickBooksPreviewEscapeHandler);
+    quickBooksPreviewEscapeHandler = null;
+  }
 }
 
 function deriveOneDriveBreadcrumbFromPath(rawPath) {
@@ -1531,7 +3046,7 @@ function openOneDriveBrowser(target) {
   }
 
   if ((target === 'monitored' || target === 'processed') && !isSharedOneDriveConfigured()) {
-    showStatus(globalStatus, 'Connect the shared OneDrive drive before browsing folders.', 'error');
+    showStatus(globalStatus, 'Connect the OneDrive account before browsing folders.', 'error');
     return;
   }
 
@@ -1571,7 +3086,7 @@ function openOneDriveBrowser(target) {
     if (target === 'processed') {
       oneDriveBrowseConfirmButton.textContent = 'Select processed folder';
     } else if (target === 'shared') {
-      oneDriveBrowseConfirmButton.textContent = 'Set shared drive folder';
+      oneDriveBrowseConfirmButton.textContent = 'Use this base folder';
     } else {
       oneDriveBrowseConfirmButton.textContent = 'Select folder';
     }
@@ -1581,7 +3096,7 @@ function openOneDriveBrowser(target) {
     if (target === 'processed') {
       oneDriveBrowseTitle.textContent = 'Choose processed OneDrive folder';
     } else if (target === 'shared') {
-      oneDriveBrowseTitle.textContent = 'Choose shared OneDrive folder';
+      oneDriveBrowseTitle.textContent = 'Choose OneDrive base folder (optional)';
     } else {
       oneDriveBrowseTitle.textContent = 'Choose OneDrive folder';
     }
@@ -1704,7 +3219,7 @@ function renderOneDriveBrowserBreadcrumb() {
   if (!oneDriveBrowseState || !Array.isArray(oneDriveBrowseState.stack) || !oneDriveBrowseState.stack.length) {
     const fallbackLabel =
       oneDriveBrowseState?.driveFilter && oneDriveBrowseState.target !== 'shared'
-        ? sharedOneDriveSettings?.driveName || 'Shared drive'
+        ? sharedOneDriveSettings?.driveName || 'OneDrive account'
         : 'All drives';
     oneDriveBrowsePath.textContent = fallbackLabel;
     return;
@@ -2002,7 +3517,7 @@ async function loadOneDriveDrives() {
 
     if (!normalised.length && !payload?.warning) {
       const emptyMessage = driveFilter
-        ? 'Shared drive is unavailable or you lack access.'
+        ? 'The OneDrive account or selected folder is unavailable or access is denied.'
         : 'No drives available for browsing.';
       setOneDriveBrowseStatus(emptyMessage, { tone: 'info' });
     } else if (!payload?.warning) {
@@ -2204,7 +3719,7 @@ async function persistSharedOneDriveSelection(item) {
     oneDriveBrowseConfirmButton.disabled = true;
   }
   setOneDriveBrowseWarning('');
-  setOneDriveBrowseLoading(true, 'Saving shared drive…');
+  setOneDriveBrowseLoading(true, 'Saving OneDrive connection…');
 
   try {
     const response = await fetch('/api/onedrive/settings', {
@@ -2218,18 +3733,18 @@ async function persistSharedOneDriveSelection(item) {
     const body = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      const message = body?.error || 'Failed to update shared drive.';
+      const message = body?.error || 'Failed to update the OneDrive connection.';
       throw new Error(message);
     }
 
     sharedOneDriveSettings = body?.settings || sharedOneDriveSettings;
-    showStatus(globalStatus, 'Shared OneDrive drive updated.', 'success');
+    showStatus(globalStatus, 'OneDrive account connection updated.', 'success');
     closeOneDriveBrowser();
     renderSharedOneDriveSummary();
     renderOneDriveSettings();
   } catch (error) {
     console.error(error);
-    setOneDriveBrowseStatus(error.message || 'Failed to update shared drive.', { tone: 'error' });
+    setOneDriveBrowseStatus(error.message || 'Failed to update the OneDrive connection.', { tone: 'error' });
     if (oneDriveBrowseConfirmButton) {
       oneDriveBrowseConfirmButton.disabled = false;
     }
@@ -2244,7 +3759,7 @@ function handleSharedOneDriveConnect() {
 
 async function handleSharedOneDriveValidate() {
   if (!isSharedOneDriveConfigured()) {
-    showStatus(globalStatus, 'Connect the shared OneDrive drive before validating.', 'error');
+    showStatus(globalStatus, 'Connect the OneDrive account before running a connection check.', 'error');
     return;
   }
 
@@ -2279,40 +3794,237 @@ async function handleSharedOneDriveValidate() {
     const body = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      const message = body?.error || 'Failed to validate shared drive.';
+      const message = body?.error || 'Failed to run the OneDrive connection check.';
       throw new Error(message);
     }
 
     sharedOneDriveSettings = body?.settings || sharedOneDriveSettings;
     renderSharedOneDriveSummary();
     renderOneDriveSettings();
-    showStatus(globalStatus, 'Shared drive revalidated.', 'success');
+    showStatus(globalStatus, 'Connection check completed.', 'success');
   } catch (error) {
     console.error(error);
-    showStatus(globalStatus, error.message || 'Failed to validate shared drive.', 'error');
+    showStatus(globalStatus, error.message || 'Failed to run the OneDrive connection check.', 'error');
   } finally {
     if (oneDriveSharedValidateButton) {
       oneDriveSharedValidateButton.disabled = false;
-      oneDriveSharedValidateButton.textContent = originalLabel || 'Validate';
+      oneDriveSharedValidateButton.textContent = originalLabel || 'Run connection check';
     }
   }
 }
 
-function renderGmailSettings() {
-  if (!gmailForm || !gmailEnabledInput) {
+
+async function refreshSharedOutlookSettings({ silent = false } = {}) {
+  if (!outlookSharedCard) {
+    sharedOutlookSettings = null;
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/outlook/settings');
+    if (!response.ok) {
+      throw new Error('Unable to load Outlook mailbox settings.');
+    }
+    const payload = await response.json().catch(() => ({}));
+    sharedOutlookSettings = payload?.settings || null;
+  } catch (error) {
+    if (!silent) {
+      console.error('Failed to load shared Outlook settings', error);
+      showStatus(globalStatus, error.message || 'Failed to load Outlook mailbox settings.', 'error');
+    }
+    sharedOutlookSettings = null;
+  } finally {
+    renderSharedOutlookSummary();
+    renderOutlookSettings();
+  }
+}
+
+function renderSharedOutlookSummary() {
+  if (!outlookSharedCard) {
+    return;
+  }
+
+  const settings = sharedOutlookSettings || null;
+  const configured = Boolean(settings?.mailboxUserId);
+  const status = settings?.status || (configured ? 'ready' : 'unconfigured');
+  const baseFolder = settings?.baseFolder || null;
+
+  setOutlookSharedStatusBadge(status);
+
+  if (configured) {
+    const mailboxLabel = settings.mailboxDisplayName || settings.mailboxUserId;
+    outlookSharedSummaryText.textContent = `Monitoring mailbox ${mailboxLabel}.`;
+    outlookSharedMailbox.textContent = mailboxLabel;
+  } else {
+    outlookSharedSummaryText.textContent = 'Shared Outlook mailbox is not configured yet.';
+    outlookSharedMailbox.textContent = '—';
+  }
+
+  if (baseFolder?.path) {
+    outlookSharedBaseFolder.textContent = formatOutlookFolderBreadcrumb(baseFolder.path);
+  } else if (baseFolder?.displayName) {
+    outlookSharedBaseFolder.textContent = baseFolder.displayName;
+  } else {
+    outlookSharedBaseFolder.textContent = configured ? 'Mailbox root' : '—';
+  }
+
+  if (settings?.lastValidatedAt) {
+    outlookSharedLastValidated.textContent = formatTimestamp(settings.lastValidatedAt);
+  } else {
+    outlookSharedLastValidated.textContent = configured ? 'Not validated yet' : 'Never';
+  }
+
+  outlookSharedForm.hidden = true;
+  outlookSharedForm.setAttribute('aria-hidden', 'true');
+  outlookSharedForm.reset();
+  outlookSharedMailboxInput.value = settings?.mailboxUserId || '';
+  if (outlookSharedBrowseBaseButton) {
+    outlookSharedBrowseBaseButton.disabled = !configured;
+  }
+  outlookSharedDisplayNameInput.value = settings?.mailboxDisplayName || '';
+  outlookSharedBaseIdInput.value = baseFolder?.id || '';
+  outlookSharedBasePathInput.value = baseFolder?.path || '';
+  outlookSharedBaseNameInput.value = baseFolder?.displayName || '';
+  outlookSharedBaseWebUrlInput.value = baseFolder?.webUrl || '';
+
+  if (outlookSharedEditButton) {
+    outlookSharedEditButton.disabled = false;
+  }
+}
+
+function setOutlookSharedStatusBadge(status) {
+  if (!outlookSharedStatus) {
+    return;
+  }
+
+  outlookSharedStatus.classList.remove('status-pill--ready', 'status-pill--error', 'status-pill--warning', 'status-pill--muted');
+  outlookSharedStatus.textContent = status === 'ready' ? 'Ready' : status === 'error' ? 'Error' : status === 'warning' ? 'Warning' : 'Unconfigured';
+
+  if (status === 'ready') {
+    outlookSharedStatus.classList.add('status-pill--ready');
+  } else if (status === 'error') {
+    outlookSharedStatus.classList.add('status-pill--error');
+  } else if (status === 'warning') {
+    outlookSharedStatus.classList.add('status-pill--warning');
+  } else {
+    outlookSharedStatus.classList.add('status-pill--muted');
+  }
+}
+
+function handleOutlookSharedEdit() {
+  if (!outlookSharedForm) {
+    return;
+  }
+
+  outlookSharedForm.hidden = false;
+  outlookSharedForm.setAttribute('aria-hidden', 'false');
+  outlookSharedMailboxInput.focus();
+}
+
+function handleOutlookSharedCancel() {
+  if (!outlookSharedForm) {
+    return;
+  }
+  outlookSharedForm.hidden = true;
+  outlookSharedForm.setAttribute('aria-hidden', 'true');
+}
+
+async function handleOutlookSharedSave(event) {
+  event.preventDefault();
+  if (!outlookSharedForm) {
+    return;
+  }
+
+  const mailboxUserId = normaliseTextInput(outlookSharedMailboxInput?.value);
+  const mailboxDisplayName = normaliseTextInput(outlookSharedDisplayNameInput?.value);
+  const baseFolderId = normaliseTextInput(outlookSharedBaseIdInput?.value);
+  const baseFolderPath = normaliseTextInput(outlookSharedBasePathInput?.value);
+  const baseFolderName = normaliseTextInput(outlookSharedBaseNameInput?.value);
+  const baseFolderWebUrl = normaliseTextInput(outlookSharedBaseWebUrlInput?.value);
+
+  if (!mailboxUserId) {
+    showStatus(globalStatus, 'Enter the mailbox user ID or UPN.', 'error');
+    return;
+  }
+
+  const payload = {
+    mailboxUserId,
+    mailboxDisplayName: mailboxDisplayName || null,
+  };
+
+  if (baseFolderId || baseFolderPath) {
+    payload.baseFolder = {
+      id: baseFolderId || null,
+      path: baseFolderPath || null,
+      displayName: baseFolderName || null,
+      webUrl: baseFolderWebUrl || null,
+    };
+  } else {
+    payload.baseFolder = null;
+  }
+
+  const originalLabel = outlookSharedSaveButton ? outlookSharedSaveButton.textContent : '';
+  if (outlookSharedSaveButton) {
+    outlookSharedSaveButton.disabled = true;
+    outlookSharedSaveButton.textContent = 'Saving…';
+  }
+
+  try {
+    const response = await fetch('/api/outlook/settings', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = body?.error || 'Failed to update Outlook mailbox settings.';
+      throw new Error(message);
+    }
+
+    sharedOutlookSettings = body?.settings || payload;
+    renderSharedOutlookSummary();
+    renderOutlookSettings();
+    showStatus(globalStatus, 'Outlook mailbox settings saved.', 'success');
+    outlookSharedForm.hidden = true;
+    outlookSharedForm.setAttribute('aria-hidden', 'true');
+  } catch (error) {
+    console.error(error);
+    showStatus(globalStatus, error.message || 'Failed to update Outlook mailbox settings.', 'error');
+  } finally {
+    if (outlookSharedSaveButton) {
+      outlookSharedSaveButton.disabled = false;
+      outlookSharedSaveButton.textContent = originalLabel || 'Save mailbox';
+    }
+  }
+}
+
+function handleOutlookSharedBrowseBase() {
+  if (!sharedOutlookSettings?.mailboxUserId) {
+    showStatus(globalStatus, 'Configure the mailbox user before choosing a base folder.', 'error');
+    return;
+  }
+  openOutlookBrowser('shared-base');
+}
+
+function renderOutlookSettings() {
+  if (!outlookForm || !outlookEnabledInput) {
     return;
   }
 
   const company = getSelectedCompany();
+  const config = company?.outlook || null;
   const hasCompany = Boolean(company);
 
   const inputs = [
-    gmailEmailInput,
-    gmailSearchInput,
-    gmailLabelIdsInput,
-    gmailMimeTypesInput,
-    gmailPollIntervalInput,
-    gmailEnabledInput,
+    outlookPollIntervalInput,
+    outlookMaxAttachmentInput,
+    outlookMimeTypesInput,
+    outlookEnabledInput,
+    outlookBrowseButton,
+    outlookClearFolderButton,
   ];
 
   inputs.forEach((input) => {
@@ -2321,4132 +4033,722 @@ function renderGmailSettings() {
     }
   });
 
-  if (gmailSaveButton) {
-    gmailSaveButton.disabled = !hasCompany;
+  if (outlookBrowseButton) {
+    outlookBrowseButton.disabled = !hasCompany || !sharedOutlookSettings?.mailboxUserId;
+  }
+  if (outlookClearFolderButton) {
+    outlookClearFolderButton.disabled = !hasCompany;
   }
 
-  if (gmailConnectButton) {
-    gmailConnectButton.disabled = !hasCompany;
+  if (outlookSaveButton) {
+    outlookSaveButton.disabled = !hasCompany;
+  }
+  if (outlookSyncButton) {
+    outlookSyncButton.disabled = !hasCompany;
+  }
+  if (outlookResyncButton) {
+    outlookResyncButton.disabled = !hasCompany;
+  }
+  if (outlookDisconnectButton) {
+    outlookDisconnectButton.disabled = !hasCompany;
   }
 
   if (!hasCompany) {
-    gmailForm.reset();
-    if (gmailStatusContainer) {
-      gmailStatusContainer.hidden = true;
-    }
-    if (gmailSyncButton) {
-      gmailSyncButton.disabled = true;
-    }
-    if (gmailDisconnectButton) {
-      gmailDisconnectButton.disabled = true;
+    outlookForm.reset();
+    outlookFolderSummary.textContent = MONITORED_DEFAULT_SUMMARY;
+    if (outlookStatusContainer) {
+      outlookStatusContainer.hidden = true;
     }
     return;
   }
 
-  const config = company.gmail || null;
-
-  if (gmailEmailInput) {
-    gmailEmailInput.value = config?.email || '';
+  const monitoredFolder = config?.monitoredFolder || null;
+  if (outlookFolderIdInput) {
+    outlookFolderIdInput.value = monitoredFolder?.id || '';
+  }
+  if (outlookFolderPathInput) {
+    outlookFolderPathInput.value = monitoredFolder?.path || '';
+  }
+  if (outlookFolderNameInput) {
+    outlookFolderNameInput.value = monitoredFolder?.displayName || '';
+  }
+  if (outlookFolderWebUrlInput) {
+    outlookFolderWebUrlInput.value = monitoredFolder?.webUrl || '';
+  }
+  if (outlookFolderParentIdInput) {
+    outlookFolderParentIdInput.value = monitoredFolder?.parentId || '';
   }
 
-  if (gmailSearchInput) {
-    gmailSearchInput.value = config?.searchQuery || '';
+  const pollIntervalMs = Number.parseInt(config?.pollIntervalMs, 10);
+  if (outlookPollIntervalInput) {
+    outlookPollIntervalInput.value = Number.isFinite(pollIntervalMs) ? Math.round(pollIntervalMs / 1000) : '';
   }
 
-  if (gmailLabelIdsInput) {
-    const labels = Array.isArray(config?.labelIds) ? config.labelIds : [];
-    gmailLabelIdsInput.value = labels.length ? labels.join(', ') : '';
+  const maxBytes = Number.parseInt(config?.maxAttachmentBytes, 10);
+  if (outlookMaxAttachmentInput) {
+    outlookMaxAttachmentInput.value = Number.isFinite(maxBytes)
+      ? Math.max(1, Math.round(maxBytes / (1024 * 1024)))
+      : '';
   }
 
-  if (gmailMimeTypesInput) {
+  if (outlookMimeTypesInput) {
     const allowed = Array.isArray(config?.allowedMimeTypes) ? config.allowedMimeTypes : [];
-    gmailMimeTypesInput.value = allowed.length ? allowed.join(', ') : '';
+    outlookMimeTypesInput.value = allowed.length ? allowed.join(', ') : '';
   }
 
-  if (gmailPollIntervalInput) {
-    const seconds = config?.pollIntervalMs ? Math.round(config.pollIntervalMs / 1000) : '';
-    gmailPollIntervalInput.value = seconds;
+  outlookEnabledInput.checked = config ? config.enabled !== false : false;
+  updateOutlookFolderSummaryFromInputs();
+
+  if (outlookSyncButton) {
+    outlookSyncButton.disabled = !config || !outlookEnabledInput.checked;
+  }
+  if (outlookResyncButton) {
+    outlookResyncButton.disabled = !config || !outlookEnabledInput.checked;
+  }
+  if (outlookDisconnectButton) {
+    outlookDisconnectButton.disabled = !config;
   }
 
-  const isEnabled = config ? config.enabled !== false : false;
-  gmailEnabledInput.checked = isEnabled;
-
-  if (gmailConnectButton) {
-    gmailConnectButton.textContent = config ? 'Reconnect Gmail inbox' : 'Connect Gmail inbox';
-  }
-
-  if (gmailSyncButton) {
-    gmailSyncButton.disabled = !config || !isEnabled;
-  }
-
-  if (gmailDisconnectButton) {
-    gmailDisconnectButton.disabled = !config;
-  }
-
-  if (!gmailStatusContainer) {
+  if (!outlookStatusContainer) {
     return;
   }
 
-  if (!config) {
-    gmailStatusContainer.hidden = true;
+  const hasStatus = Boolean(config);
+  outlookStatusContainer.hidden = !hasStatus;
+  if (!hasStatus) {
     return;
   }
 
-  gmailStatusContainer.hidden = false;
+  outlookStatusState.textContent = formatStatusLabel(config.status, outlookEnabledInput.checked ? 'Connected' : 'Disabled');
 
-  if (gmailStatusState) {
-    gmailStatusState.textContent = formatStatusLabel(config.status, isEnabled ? 'Connected' : 'Disabled');
+  const folderLabel = monitoredFolder?.path
+    ? formatOutlookFolderBreadcrumb(monitoredFolder.path)
+    : monitoredFolder?.displayName || 'Not selected';
+  outlookStatusFolder.textContent = folderLabel;
+
+  if (config.lastSyncAt) {
+    outlookStatusLastSync.textContent = formatTimestamp(config.lastSyncAt);
+  } else if (outlookEnabledInput.checked) {
+    outlookStatusLastSync.textContent = 'Not run yet';
+  } else {
+    outlookStatusLastSync.textContent = 'Disabled';
   }
 
-  if (gmailStatusEmail) {
-    gmailStatusEmail.textContent = config.email || 'Not specified';
-  }
-
-  if (gmailStatusLastSync) {
-    if (config.lastSyncAt) {
-      gmailStatusLastSync.textContent = formatTimestamp(config.lastSyncAt);
-    } else if (isEnabled) {
-      gmailStatusLastSync.textContent = 'Not run yet';
-    } else {
-      gmailStatusLastSync.textContent = 'Disabled';
-    }
-  }
-
-  if (gmailStatusResult) {
-    gmailStatusResult.textContent = buildGmailResultText(config, { enabled: isEnabled });
-  }
+  outlookStatusResult.textContent = buildOutlookResultText(config, { enabled: outlookEnabledInput.checked });
 }
 
-async function handleBusinessProfileSave(event) {
+function updateOutlookFolderSummaryFromInputs() {
+  const id = normaliseTextInput(outlookFolderIdInput?.value);
+  const path = normaliseTextInput(outlookFolderPathInput?.value);
+  const name = normaliseTextInput(outlookFolderNameInput?.value);
+
+  if (!id && !path) {
+    outlookFolderSummary.textContent = MONITORED_DEFAULT_SUMMARY;
+    return;
+  }
+
+  const label = formatOutlookFolderBreadcrumb(path || name || '');
+  outlookFolderSummary.textContent = label || name || path || 'Selected folder';
+}
+
+function handleOutlookClearFolder() {
+  if (!outlookFolderIdInput) {
+    return;
+  }
+  outlookFolderIdInput.value = '';
+  outlookFolderPathInput.value = '';
+  outlookFolderNameInput.value = '';
+  outlookFolderWebUrlInput.value = '';
+  outlookFolderParentIdInput.value = '';
+  updateOutlookFolderSummaryFromInputs();
+}
+
+async function handleOutlookSettingsSave(event) {
   event.preventDefault();
-
   if (!selectedRealmId) {
-    showStatus(globalStatus, 'Select a company before updating the business profile.', 'error');
+    showStatus(globalStatus, 'Select a company before updating Outlook settings.', 'error');
     return;
   }
 
-  const company = getSelectedCompany();
-  const rawValue = businessTypeInput ? businessTypeInput.value : '';
-  const trimmedValue = typeof rawValue === 'string' ? rawValue.trim() : '';
-  const nextBusinessType = trimmedValue || null;
-  const currentBusinessType = company?.businessType || null;
+  const allowedMimeTypes = parseCommaSeparatedList(outlookMimeTypesInput?.value).map((value) => value.toLowerCase());
+  const pollIntervalSeconds = outlookPollIntervalInput?.value
+    ? Number.parseInt(outlookPollIntervalInput.value, 10)
+    : null;
+  const maxAttachmentMb = outlookMaxAttachmentInput?.value
+    ? Number.parseInt(outlookMaxAttachmentInput.value, 10)
+    : null;
+  const enabled = outlookEnabledInput ? outlookEnabledInput.checked : false;
 
-  if ((currentBusinessType || null) === nextBusinessType) {
-    showStatus(globalStatus, 'Business profile is already up to date.', 'info');
+  const payload = {
+    enabled,
+    allowedMimeTypes,
+  };
+
+  if (enabled && !folderSelection?.id) {
+    showStatus(globalStatus, 'Choose an Outlook folder before enabling automation.', 'error');
     return;
   }
-
-  const endpoint = `/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}`;
-  const originalLabel = businessProfileSubmit ? businessProfileSubmit.textContent : '';
-
-  if (businessProfileSubmit) {
-    businessProfileSubmit.disabled = true;
-    businessProfileSubmit.textContent = 'Saving…';
-  }
-  if (businessTypeInput) {
-    businessTypeInput.disabled = true;
-  }
-
-  try {
-    const response = await fetch(endpoint, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ businessType: nextBusinessType }),
-    });
-
-    let payload = null;
-    try {
-      payload = await response.json();
-    } catch (error) {
-      payload = null;
-    }
-
-    if (!response.ok) {
-      const message = payload?.error || 'Failed to update business profile.';
-      throw new Error(message);
-    }
-
-    const updatedCompany = payload?.company;
-    if (updatedCompany) {
-      const index = quickBooksCompanies.findIndex((entry) => entry.realmId === updatedCompany.realmId);
-      if (index >= 0) {
-        quickBooksCompanies[index] = updatedCompany;
-      } else {
-        quickBooksCompanies.push(updatedCompany);
-      }
-      renderCompanySettings();
-    } else {
-      await refreshQuickBooksCompanies(selectedRealmId);
-    }
-
-    showStatus(globalStatus, 'Business profile saved.', 'success');
-  } catch (error) {
-    console.error(error);
-    showStatus(globalStatus, error.message || 'Failed to update business profile.', 'error');
-  } finally {
-    if (businessTypeInput) {
-      businessTypeInput.disabled = !selectedRealmId;
-    }
-    if (businessProfileSubmit) {
-      businessProfileSubmit.disabled = !selectedRealmId;
-      businessProfileSubmit.textContent = originalLabel || 'Save profile';
-    }
-    renderBusinessProfile();
-  }
-}
-
-async function handleOneDriveSettingsSave(event) {
-  event.preventDefault();
-
-  if (!selectedRealmId) {
-    showStatus(globalStatus, 'Select a company before updating OneDrive settings.', 'error');
-    return;
-  }
-
-  const enabled = oneDriveEnabledInput ? oneDriveEnabledInput.checked : false;
-  const monitoredFolder = collectMonitoredFolderFromInputs();
-  const processedFolderCleared = oneDriveProcessedFolderIdInput?.dataset?.cleared === 'true';
-  const processedFolder = collectProcessedFolderFromInputs();
-
-  if (enabled && (!monitoredFolder || (!monitoredFolder.id && !monitoredFolder.path))) {
-    showStatus(globalStatus, 'Choose a OneDrive folder before enabling automation.', 'error');
-    return;
-  }
-
-  const payload = { enabled };
-  if (monitoredFolder && (monitoredFolder.id || monitoredFolder.path)) {
-    payload.monitoredFolder = monitoredFolder;
-  }
-  if (processedFolderCleared) {
-    payload.processedFolder = null;
-  } else if (processedFolder && (processedFolder.id || processedFolder.path)) {
-    payload.processedFolder = processedFolder;
-  }
-
-  const endpoint = `/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/onedrive`;
-  const originalLabel = oneDriveSaveButton ? oneDriveSaveButton.textContent : '';
-
-  if (oneDriveSaveButton) {
-    oneDriveSaveButton.disabled = true;
-    oneDriveSaveButton.textContent = 'Saving…';
-  }
-
-  try {
-    const response = await fetch(endpoint, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    });
-
-    let body = null;
-    try {
-      body = await response.json();
-    } catch (error) {
-      body = null;
-    }
-
-    if (!response.ok) {
-      const message = body?.error || 'Failed to update OneDrive settings.';
-      throw new Error(message);
-    }
-
-    if (body?.oneDrive !== undefined) {
-      updateLocalCompanyOneDrive(selectedRealmId, body.oneDrive);
-    } else {
-      await refreshQuickBooksCompanies(selectedRealmId);
-    }
-
-    if (processedFolderCleared && oneDriveProcessedFolderIdInput?.dataset) {
-      delete oneDriveProcessedFolderIdInput.dataset.cleared;
-    }
-
-    showStatus(
-      globalStatus,
-      enabled ? 'OneDrive folder connected. Sync will run shortly.' : 'OneDrive automation disabled.',
-      'success'
-    );
-  } catch (error) {
-    console.error(error);
-    showStatus(globalStatus, error.message || 'Failed to update OneDrive settings.', 'error');
-  } finally {
-    if (oneDriveSaveButton) {
-      oneDriveSaveButton.disabled = !selectedRealmId;
-      oneDriveSaveButton.textContent = originalLabel || 'Save OneDrive settings';
-    }
-    renderOneDriveSettings();
-  }
-}
-
-async function handleOneDriveSyncClick() {
-  if (!selectedRealmId) {
-    showStatus(globalStatus, 'Select a company before triggering a OneDrive sync.', 'error');
-    return;
-  }
-
-  if (!oneDriveSyncButton || oneDriveSyncButton.disabled) {
-    return;
-  }
-
-  const originalLabel = oneDriveSyncButton.textContent;
-  oneDriveSyncButton.disabled = true;
-  oneDriveSyncButton.textContent = 'Syncing…';
-
-  try {
-    const response = await fetch(`/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/onedrive/sync`, {
-      method: 'POST',
-    });
-
-    let payload = null;
-    try {
-      payload = await response.json();
-    } catch (error) {
-      payload = null;
-    }
-
-    if (!response.ok) {
-      const message = payload?.error || 'Failed to start OneDrive sync.';
-      throw new Error(message);
-    }
-
-    if (payload?.oneDrive !== undefined) {
-      updateLocalCompanyOneDrive(selectedRealmId, payload.oneDrive);
-    } else {
-      await refreshQuickBooksCompanies(selectedRealmId);
-    }
-
-    showStatus(globalStatus, 'OneDrive sync queued. This may take a minute to complete.', 'success');
-    scheduleOneDriveStatusRefresh();
-  } catch (error) {
-    console.error(error);
-    showStatus(globalStatus, error.message || 'Failed to start OneDrive sync.', 'error');
-  } finally {
-    if (oneDriveSyncButton) {
-      oneDriveSyncButton.textContent = originalLabel || 'Sync now';
-      oneDriveSyncButton.disabled = false;
-    }
-    renderOneDriveSettings();
-  }
-}
-
-async function handleOneDriveFullResync() {
-  if (!selectedRealmId) {
-    showStatus(globalStatus, 'Select a company before requesting a full OneDrive resync.', 'error');
-    return;
-  }
-
-  if (!oneDriveResyncButton || oneDriveResyncButton.disabled) {
-    return;
-  }
-
-  const originalLabel = oneDriveResyncButton.textContent;
-  oneDriveResyncButton.disabled = true;
-  oneDriveResyncButton.textContent = 'Resyncing…';
-
-  try {
-    const response = await fetch(`/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/onedrive/sync`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ forceFull: true }),
-    });
-
-    let payload = null;
-    try {
-      payload = await response.json();
-    } catch (error) {
-      payload = null;
-    }
-
-    if (!response.ok) {
-      const message = payload?.error || 'Failed to start OneDrive full resync.';
-      throw new Error(message);
-    }
-
-    if (payload?.oneDrive !== undefined) {
-      updateLocalCompanyOneDrive(selectedRealmId, payload.oneDrive);
-    } else {
-      await refreshQuickBooksCompanies(selectedRealmId);
-    }
-
-    showStatus(globalStatus, 'OneDrive full resync queued. This may take a few minutes to capture every file.', 'success');
-    scheduleOneDriveStatusRefresh();
-  } catch (error) {
-    console.error(error);
-    showStatus(globalStatus, error.message || 'Failed to start OneDrive full resync.', 'error');
-  } finally {
-    if (oneDriveResyncButton) {
-      oneDriveResyncButton.textContent = originalLabel || 'Full resync';
-      oneDriveResyncButton.disabled = false;
-    }
-    renderOneDriveSettings();
-  }
-}
-
-function scheduleOneDriveStatusRefresh() {
-  if (!selectedRealmId) {
-    return;
-  }
-
-  const delays = [2000, 5000, 10000];
-  delays.forEach((delay) => {
-    window.setTimeout(() => {
-      if (selectedRealmId) {
-        refreshQuickBooksCompanies(selectedRealmId);
-      }
-    }, delay);
-  });
-}
-
-async function handleOneDriveDisconnect() {
-  if (!selectedRealmId) {
-    showStatus(globalStatus, 'Select a company before disconnecting OneDrive.', 'error');
-    return;
-  }
-
-  if (!oneDriveClearButton || oneDriveClearButton.disabled) {
-    return;
-  }
-
-  const confirmed = window.confirm('Disconnect the configured OneDrive folder from this company?');
-  if (!confirmed) {
-    return;
-  }
-
-  const originalLabel = oneDriveClearButton.textContent;
-  oneDriveClearButton.disabled = true;
-  oneDriveClearButton.textContent = 'Disconnecting…';
-
-  try {
-    const response = await fetch(`/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/onedrive`, {
-      method: 'DELETE',
-    });
-
-    let payload = null;
-    try {
-      payload = await response.json();
-    } catch (error) {
-      payload = null;
-    }
-
-    if (!response.ok) {
-      const message = payload?.error || 'Failed to disconnect OneDrive.';
-      throw new Error(message);
-    }
-
-    updateLocalCompanyOneDrive(selectedRealmId, null);
-    showStatus(globalStatus, 'Disconnected the OneDrive folder for this company.', 'success');
-  } catch (error) {
-    console.error(error);
-    showStatus(globalStatus, error.message || 'Failed to disconnect OneDrive.', 'error');
-  } finally {
-    if (oneDriveClearButton) {
-      oneDriveClearButton.textContent = originalLabel || 'Disconnect';
-      oneDriveClearButton.disabled = !selectedRealmId;
-    }
-    renderOneDriveSettings();
-  }
-}
-
-async function handleGmailSettingsSave(event) {
-  event.preventDefault();
-
-  if (!selectedRealmId) {
-    showStatus(globalStatus, 'Select a company before updating Gmail settings.', 'error');
-    return;
-  }
-
-  const email = normaliseTextInput(gmailEmailInput?.value);
-  const searchQuery = normaliseTextInput(gmailSearchInput?.value);
-  const labelIds = parseCommaSeparatedList(gmailLabelIdsInput?.value);
-  const allowedMimeTypes = parseCommaSeparatedList(gmailMimeTypesInput?.value);
-  const pollIntervalSeconds = gmailPollIntervalInput?.value
-    ? Number.parseInt(gmailPollIntervalInput.value, 10)
-    : NaN;
-  const enabled = gmailEnabledInput ? gmailEnabledInput.checked : false;
-
-  const payload = { enabled };
-
-  payload.email = email || null;
-  payload.searchQuery = searchQuery || null;
-  payload.labelIds = labelIds;
-  payload.allowedMimeTypes = allowedMimeTypes;
 
   if (Number.isFinite(pollIntervalSeconds) && pollIntervalSeconds > 0) {
-    payload.pollIntervalMs = pollIntervalSeconds * 1000;
+    payload.pollIntervalMs = Math.max(pollIntervalSeconds * 1000, 15000);
   }
 
-  const endpoint = `/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/gmail`;
-  const originalLabel = gmailSaveButton ? gmailSaveButton.textContent : '';
+  if (Number.isFinite(maxAttachmentMb) && maxAttachmentMb > 0) {
+    payload.maxAttachmentBytes = Math.max(maxAttachmentMb * 1024 * 1024, 1024);
+  }
 
-  if (gmailSaveButton) {
-    gmailSaveButton.disabled = true;
-    gmailSaveButton.textContent = 'Saving…';
+  const folderSelection = getOutlookFolderSelectionFromInputs();
+  payload.monitoredFolder = folderSelection;
+
+  const originalLabel = outlookSaveButton ? outlookSaveButton.textContent : '';
+  if (outlookSaveButton) {
+    outlookSaveButton.disabled = true;
+    outlookSaveButton.textContent = 'Saving…';
   }
 
   try {
-    const response = await fetch(endpoint, {
+    const response = await fetch(`/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/outlook`, {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(payload),
     });
-
-    let body = null;
-    try {
-      body = await response.json();
-    } catch (error) {
-      body = null;
-    }
-
-    if (!response.ok) {
-      const message = body?.error || 'Failed to update Gmail settings.';
-      throw new Error(message);
-    }
-
-    if (body?.gmail !== undefined) {
-      updateLocalCompanyGmail(selectedRealmId, body.gmail);
-    } else {
-      await refreshQuickBooksCompanies(selectedRealmId);
-    }
-
-    showStatus(
-      globalStatus,
-      enabled ? 'Gmail settings saved. Sync will run shortly.' : 'Gmail monitoring disabled.',
-      'success'
-    );
-  } catch (error) {
-    console.error(error);
-    showStatus(globalStatus, error.message || 'Failed to update Gmail settings.', 'error');
-  } finally {
-    if (gmailSaveButton) {
-      gmailSaveButton.disabled = !selectedRealmId;
-      gmailSaveButton.textContent = originalLabel || 'Save Gmail settings';
-    }
-    renderGmailSettings();
-  }
-}
-
-async function handleGmailConnectClick() {
-  if (!selectedRealmId) {
-    showStatus(globalStatus, 'Select a company before connecting Gmail.', 'error');
-    return;
-  }
-
-  if (!gmailConnectButton || gmailConnectButton.disabled) {
-    return;
-  }
-
-  const email = normaliseTextInput(gmailEmailInput?.value);
-  const originalLabel = gmailConnectButton.textContent;
-  gmailConnectButton.disabled = true;
-  gmailConnectButton.textContent = 'Preparing…';
-
-  try {
-    const response = await fetch(
-      `/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/gmail/auth-url`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ email: email || null }),
-      }
-    );
-
-    const payload = await response.json().catch(() => null);
-    if (!response.ok) {
-      const message = payload?.error || 'Failed to start Gmail authorization.';
-      throw new Error(message);
-    }
-
-    if (!payload?.url) {
-      throw new Error('Server did not return a Gmail authorization URL.');
-    }
-
-    window.location.href = payload.url;
-  } catch (error) {
-    console.error(error);
-    showStatus(globalStatus, error.message || 'Failed to start Gmail authorization.', 'error');
-  } finally {
-    if (gmailConnectButton) {
-      gmailConnectButton.disabled = !selectedRealmId;
-      gmailConnectButton.textContent = originalLabel || 'Connect Gmail inbox';
-    }
-  }
-}
-
-async function handleGmailSyncClick() {
-  if (!selectedRealmId) {
-    showStatus(globalStatus, 'Select a company before triggering a Gmail sync.', 'error');
-    return;
-  }
-
-  if (!gmailSyncButton || gmailSyncButton.disabled) {
-    return;
-  }
-
-  const originalLabel = gmailSyncButton.textContent;
-  gmailSyncButton.disabled = true;
-  gmailSyncButton.textContent = 'Syncing…';
-
-  try {
-    const response = await fetch(`/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/gmail/sync`, {
-      method: 'POST',
-    });
-
-    const payload = await response.json().catch(() => null);
-    if (!response.ok) {
-      const message = payload?.error || 'Failed to start Gmail sync.';
-      throw new Error(message);
-    }
-
-    if (payload?.gmail !== undefined) {
-      updateLocalCompanyGmail(selectedRealmId, payload.gmail);
-    }
-
-    showStatus(globalStatus, 'Gmail sync queued. Check the status card for updates.', 'success');
-  } catch (error) {
-    console.error(error);
-    showStatus(globalStatus, error.message || 'Failed to start Gmail sync.', 'error');
-  } finally {
-    if (gmailSyncButton) {
-      gmailSyncButton.textContent = originalLabel || 'Sync now';
-      gmailSyncButton.disabled = false;
-    }
-    renderGmailSettings();
-  }
-}
-
-async function handleGmailDisconnect() {
-  if (!selectedRealmId) {
-    showStatus(globalStatus, 'Select a company before disconnecting Gmail.', 'error');
-    return;
-  }
-
-  if (!gmailDisconnectButton || gmailDisconnectButton.disabled) {
-    return;
-  }
-
-  const confirmed = window.confirm('Disconnect the Gmail mailbox from this company?');
-  if (!confirmed) {
-    return;
-  }
-
-  const originalLabel = gmailDisconnectButton.textContent;
-  gmailDisconnectButton.disabled = true;
-  gmailDisconnectButton.textContent = 'Disconnecting…';
-
-  try {
-    const response = await fetch(`/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/gmail`, {
-      method: 'DELETE',
-    });
-
-    const payload = await response.json().catch(() => null);
-    if (!response.ok) {
-      const message = payload?.error || 'Failed to disconnect Gmail.';
-      throw new Error(message);
-    }
-
-    updateLocalCompanyGmail(selectedRealmId, null);
-    showStatus(globalStatus, 'Disconnected the Gmail inbox for this company.', 'success');
-  } catch (error) {
-    console.error(error);
-    showStatus(globalStatus, error.message || 'Failed to disconnect Gmail.', 'error');
-  } finally {
-    if (gmailDisconnectButton) {
-      gmailDisconnectButton.textContent = originalLabel || 'Disconnect';
-      gmailDisconnectButton.disabled = !selectedRealmId;
-    }
-    renderGmailSettings();
-  }
-}
-
-async function loadCompanyMetadata(realmId) {
-  if (!realmId) {
-    return;
-  }
-
-  renderVendorList(null, 'Loading QuickBooks vendors…');
-  renderAccountList(null, 'Loading QuickBooks accounts…');
-
-  try {
-    const metadata = await ensureCompanyMetadata(realmId);
-    renderVendorList(metadata, 'No vendors available for this company.');
-    renderAccountList(metadata, 'No accounts available for this company.');
-    renderReviewTable();
-  } catch (error) {
-    console.error(error);
-    renderVendorList(null, 'Unable to load vendor list.');
-    renderAccountList(null, 'Unable to load account list.');
-    showStatus(globalStatus, error.message || 'Failed to load QuickBooks metadata.', 'error');
-    renderReviewTable();
-  }
-}
-
-async function ensureCompanyMetadata(realmId, { force = false } = {}) {
-  if (!realmId) {
-    return null;
-  }
-
-  if (!force && companyMetadataCache.has(realmId)) {
-    return companyMetadataCache.get(realmId);
-  }
-
-  let pending = metadataRequests.get(realmId);
-  if (!pending || force) {
-    pending = fetchCompanyMetadata(realmId);
-    metadataRequests.set(realmId, pending);
-  }
-
-  try {
-    const metadata = await pending;
-    return storeCompanyMetadata(realmId, metadata);
-  } finally {
-    metadataRequests.delete(realmId);
-  }
-}
-
-async function fetchCompanyMetadata(realmId) {
-  const response = await fetch(`/api/quickbooks/companies/${encodeURIComponent(realmId)}/metadata`);
-  let payload = null;
-  try {
-    payload = await response.json();
-  } catch (error) {
-    payload = null;
-  }
-
-  if (!response.ok) {
-    const message = payload?.error || 'Failed to load QuickBooks metadata.';
-    throw new Error(message);
-  }
-
-  return payload?.metadata || {};
-}
-
-function storeCompanyMetadata(realmId, metadata) {
-  const prepared = prepareMetadata(metadata);
-  companyMetadataCache.set(realmId, prepared);
-  return prepared;
-}
-
-function prepareMetadata(metadata) {
-  const vendors = prepareMetadataSection(metadata?.vendors);
-  const accounts = prepareMetadataSection(metadata?.accounts);
-  const taxCodes = prepareMetadataSection(metadata?.taxCodes);
-
-  return {
-    vendors,
-    accounts,
-    taxCodes,
-    vendorSettings: prepareVendorSettings(metadata?.vendorSettings, { vendors, accounts, taxCodes }),
-  };
-}
-
-function prepareMetadataSection(section) {
-  const rawItems = Array.isArray(section?.items) ? section.items : [];
-  const items = rawItems
-    .map((item) => {
-      if (!item || typeof item !== 'object') {
-        return null;
-      }
-
-      const sanitisedId = sanitizeReviewSelectionId(item.id ?? item.Id ?? null);
-      if (!sanitisedId) {
-        return null;
-      }
-
-      if (item.id === sanitisedId) {
-        return item;
-      }
-
-      return { ...item, id: sanitisedId };
-    })
-    .filter(Boolean);
-
-  const lookup = new Map(items.map((item) => [item.id, item]));
-  return {
-    updatedAt: section?.updatedAt || null,
-    items,
-    lookup,
-  };
-}
-
-function prepareVendorSettings(settings, sections = {}) {
-  const entries = {};
-  const vendorLookup = sections?.vendors?.lookup;
-  const accountLookup = sections?.accounts?.lookup;
-  const taxCodeLookup = sections?.taxCodes?.lookup;
-
-  if (settings && typeof settings === 'object' && !Array.isArray(settings)) {
-    Object.entries(settings).forEach(([vendorId, entry]) => {
-      if (!vendorLookup?.has(vendorId)) {
-        return;
-      }
-
-      const accountId =
-        typeof entry?.accountId === 'string' && accountLookup?.has(entry.accountId)
-          ? entry.accountId
-          : null;
-      const taxCodeId =
-        typeof entry?.taxCodeId === 'string' && taxCodeLookup?.has(entry.taxCodeId)
-          ? entry.taxCodeId
-          : null;
-      const vatTreatment = VENDOR_VAT_TREATMENT_VALUES.has(entry?.vatTreatment)
-        ? entry.vatTreatment
-        : null;
-
-      if (accountId || taxCodeId || vatTreatment) {
-        entries[vendorId] = { accountId, taxCodeId, vatTreatment };
-      }
-    });
-  }
-
-  return {
-    entries,
-    lookup: new Map(Object.entries(entries)),
-  };
-}
-
-function renderVendorList(metadata, emptyMessage) {
-  if (!vendorList) {
-    return;
-  }
-
-  vendorList.innerHTML = '';
-
-  const items = metadata?.vendors?.items || [];
-  if (!items.length) {
-    vendorList.appendChild(createEmptyListItem(emptyMessage));
-    return;
-  }
-
-  const vendorSettings = metadata?.vendorSettings?.entries || {};
-  const accountOptions = buildAccountOptions(metadata?.accounts?.items || []);
-  const taxCodeOptions = buildTaxCodeOptions(metadata?.taxCodes?.items || []);
-
-  const sorted = [...items].sort((a, b) => {
-    const nameA = (a.displayName || a.name || '').toLowerCase();
-    const nameB = (b.displayName || b.name || '').toLowerCase();
-    return nameA.localeCompare(nameB);
-  });
-
-  sorted.forEach((item) => {
-    const element = document.createElement('li');
-    element.className = 'entity-item';
-
-    const title = document.createElement('span');
-    title.className = 'entity-name';
-    const vendorName = item.displayName || item.name || `Vendor ${item.id}`;
-    title.textContent = vendorName;
-    element.appendChild(title);
-
-    const metaParts = [];
-    if (item.email) {
-      metaParts.push(item.email);
-    }
-    if (item.phone) {
-      metaParts.push(item.phone);
-    }
-
-    if (metaParts.length) {
-      const meta = document.createElement('span');
-      meta.className = 'entity-meta';
-      meta.textContent = metaParts.join(' • ');
-      element.appendChild(meta);
-    }
-
-    const defaults = vendorSettings[item.id] || {};
-    const controls = createVendorSettingsControls({
-      vendorId: item.id,
-      vendorName,
-      defaults,
-      accountOptions,
-      taxCodeOptions,
-    });
-    element.appendChild(controls);
-
-    vendorList.appendChild(element);
-  });
-}
-
-function buildAccountOptions(accounts) {
-  const options = [{ value: '', label: 'No default' }];
-  const sorted = [...accounts].sort((a, b) => {
-    const labelA = (a.name || a.fullyQualifiedName || '').toLowerCase();
-    const labelB = (b.name || b.fullyQualifiedName || '').toLowerCase();
-    return labelA.localeCompare(labelB);
-  });
-
-  sorted.forEach((account) => {
-    const baseLabel = account.name || account.fullyQualifiedName || `Account ${account.id}`;
-    const labelParts = [baseLabel];
-    if (account.accountType) {
-      labelParts.push(account.accountType);
-    }
-    options.push({ value: account.id, label: labelParts.join(' • ') });
-  });
-
-  return options;
-}
-
-function buildReviewVendorOptions(vendors) {
-  const options = [{ value: '', label: 'No vendor selected' }];
-  const sorted = [...vendors].sort((a, b) => {
-    const nameA = (a.displayName || a.name || '').toLowerCase();
-    const nameB = (b.displayName || b.name || '').toLowerCase();
-    return nameA.localeCompare(nameB);
-  });
-
-  sorted.forEach((vendor) => {
-    if (!vendor?.id) {
-      return;
-    }
-    const label = vendor.displayName || vendor.name || `Vendor ${vendor.id}`;
-    options.push({ value: vendor.id, label });
-  });
-
-  return options;
-}
-
-function buildReviewAccountOptions(accounts) {
-  const options = [{ value: '', label: 'No account selected' }];
-  const sorted = [...accounts].sort((a, b) => {
-    const valueA = (a.name || a.fullyQualifiedName || '').toLowerCase();
-    const valueB = (b.name || b.fullyQualifiedName || '').toLowerCase();
-    return valueA.localeCompare(valueB);
-  });
-
-  sorted.forEach((account) => {
-    if (!account?.id) {
-      return;
-    }
-    const baseLabel = account.name || account.fullyQualifiedName || `Account ${account.id}`;
-    const parts = [baseLabel];
-    if (account.accountType) {
-      parts.push(account.accountType);
-    }
-    if (account.accountSubType && account.accountSubType !== account.accountType) {
-      parts.push(account.accountSubType);
-    }
-    options.push({ value: account.id, label: parts.join(' • ') });
-  });
-
-  return options;
-}
-
-function buildTaxCodeOptions(taxCodes) {
-  const options = [{ value: '', label: 'No default' }];
-  const sorted = [...taxCodes].sort((a, b) => {
-    const labelA = (a.name || '').toLowerCase();
-    const labelB = (b.name || '').toLowerCase();
-    return labelA.localeCompare(labelB);
-  });
-
-  sorted.forEach((code) => {
-    const baseLabel = code.name || `Tax Code ${code.id}`;
-    const numericRate = typeof code.rate === 'number' ? code.rate : null;
-    const hasEmbeddedRate =
-      numericRate !== null && ratesApproximatelyEqual(numericRate, parsePercentageFromLabel(baseLabel));
-    const suffix = numericRate !== null && !hasEmbeddedRate ? `${formatRateValue(numericRate)}%` : null;
-    const label = suffix ? `${baseLabel} • ${suffix}` : baseLabel;
-    options.push({ value: code.id, label });
-  });
-
-  return options;
-}
-
-function buildReviewTaxCodeOptions(taxCodes) {
-  const base = buildTaxCodeOptions(taxCodes);
-  if (!base.length) {
-    return [{ value: '', label: 'No tax code selected' }];
-  }
-
-  const [, ...rest] = base;
-  return [{ value: '', label: 'No tax code selected' }, ...rest];
-}
-
-function normaliseMoneyValue(value) {
-  if (value === null || value === undefined || value === '') {
-    return null;
-  }
-
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) {
-    return null;
-  }
-
-  const rounded = Math.round(numeric * 100) / 100;
-  if (!Number.isFinite(rounded)) {
-    return null;
-  }
-
-  return Number(rounded.toFixed(2));
-}
-
-function extractRateFromTaxMetadata(entry) {
-  if (!entry || typeof entry !== 'object') {
-    return null;
-  }
-
-  const candidates = [
-    entry.rate,
-    entry.RateValue,
-    entry.rateValue,
-    entry.taxRate,
-    entry.TaxRate,
-    entry?.SalesTaxRateList?.TaxRateDetail?.[0]?.RateValue,
-    entry?.PurchaseTaxRateList?.TaxRateDetail?.[0]?.RateValue,
-  ];
-
-  for (const candidate of candidates) {
-    if (candidate === null || candidate === undefined) {
-      continue;
-    }
-    const numeric = Number(candidate);
-    if (Number.isFinite(numeric)) {
-      return Number(Math.round(numeric * 1000) / 1000);
-    }
-  }
-
-  return null;
-}
-
-function matchesZeroRateLabel(text) {
-  if (!text) {
-    return false;
-  }
-  return (
-    text.includes('zero') ||
-    text.includes('no tax') ||
-    text.includes('tax free') ||
-    text.includes('out of scope') ||
-    text.includes('non tax') ||
-    text.includes('nontax') ||
-    text.includes('exempt') ||
-    text.includes('0%') ||
-    text.includes('0 %') ||
-    text.split(' ').includes('0')
-  );
-}
-
-function matchesStandardRateLabel(text) {
-  if (!text) {
-    return false;
-  }
-  return text.includes('standard') || text.includes('vat') || text.includes('taxable') || text.includes('20');
-}
-
-function isZeroRateTaxCodeEntry(entry) {
-  const rate = extractRateFromTaxMetadata(entry);
-  if (rate !== null) {
-    return Math.abs(rate) < 0.5;
-  }
-
-  const name = normaliseComparableText(entry?.name);
-  const description = normaliseComparableText(entry?.description);
-  return matchesZeroRateLabel(name) || matchesZeroRateLabel(description);
-}
-
-function classifyTaxCodeEntryForVat(entry) {
-  return isZeroRateTaxCodeEntry(entry) ? 'zero' : 'standard';
-}
-
-function computeProductAmount(product) {
-  if (!product || typeof product !== 'object') {
-    return null;
-  }
-
-  const direct = normaliseMoneyValue(product.lineTotal);
-  if (direct !== null) {
-    return direct;
-  }
-
-  const unitPrice = normaliseMoneyValue(product.unitPrice);
-  let quantity = null;
-  const quantityRaw = product.quantity;
-  if (typeof quantityRaw === 'number' && Number.isFinite(quantityRaw)) {
-    quantity = quantityRaw;
-  } else if (quantityRaw !== null && quantityRaw !== undefined) {
-    const parsed = Number(quantityRaw);
-    if (Number.isFinite(parsed)) {
-      quantity = parsed;
-    }
-  }
-
-  if (unitPrice !== null && quantity !== null) {
-    return normaliseMoneyValue(unitPrice * quantity);
-  }
-
-  return null;
-}
-
-function extractVatRateFromProductHint(product) {
-  const rawRate = product?.taxRate;
-  if (typeof rawRate === 'number' && Number.isFinite(rawRate)) {
-    return Number(Math.round(rawRate * 1000) / 1000);
-  }
-  if (typeof rawRate === 'string' && rawRate.trim()) {
-    const parsed = Number.parseFloat(rawRate);
-    if (Number.isFinite(parsed)) {
-      return Number(Math.round(parsed * 1000) / 1000);
-    }
-  }
-
-  if (typeof product?.taxCode === 'string' && product.taxCode.trim()) {
-    const match = product.taxCode.match(/(\d+(?:\.\d+)?)\s*%/);
-    if (match) {
-      const parsed = Number.parseFloat(match[1]);
-      if (Number.isFinite(parsed)) {
-        return Number(Math.round(parsed * 1000) / 1000);
-      }
-    }
-  }
-
-  return null;
-}
-
-function findTaxCodeIdByLabel(label, metadata) {
-  const taxLookup = metadata?.taxCodes?.lookup;
-  const taxItems = metadata?.taxCodes?.items || [];
-  if (!label || !taxLookup?.size || !taxItems.length) {
-    return null;
-  }
-
-  const directId = sanitizeReviewSelectionId(label);
-  if (directId && taxLookup.has(directId)) {
-    return directId;
-  }
-
-  const normalized = normaliseComparableText(label);
-  if (!normalized) {
-    return null;
-  }
-
-  const matched = taxItems.find((item) => {
-    const name = normaliseComparableText(item.name);
-    const description = normaliseComparableText(item.description);
-    return name === normalized || description === normalized;
-  });
-
-  return matched ? sanitizeReviewSelectionId(matched.id) : null;
-}
-
-function classifyProductVatBucket(product, metadata) {
-  const taxLookup = metadata?.taxCodes?.lookup;
-
-  const directTaxCodeId =
-    sanitizeReviewSelectionId(product?.quickBooksTaxCodeId) ||
-    sanitizeReviewSelectionId(product?.taxCode);
-  if (directTaxCodeId && taxLookup?.has(directTaxCodeId)) {
-    const entry = taxLookup.get(directTaxCodeId);
-    const rate = extractRateFromTaxMetadata(entry);
-    return {
-      bucket: classifyTaxCodeEntryForVat(entry),
-      rate,
-      taxCodeId: directTaxCodeId,
-    };
-  }
-
-  if (typeof product?.taxCode === 'string' && product.taxCode.trim()) {
-    const matchedId = findTaxCodeIdByLabel(product.taxCode, metadata);
-    if (matchedId && taxLookup?.has(matchedId)) {
-      const entry = taxLookup.get(matchedId);
-      const rate = extractRateFromTaxMetadata(entry);
-      return {
-        bucket: classifyTaxCodeEntryForVat(entry),
-        rate,
-        taxCodeId: matchedId,
-      };
-    }
-  }
-
-  const inferredRate = extractVatRateFromProductHint(product);
-  if (inferredRate !== null) {
-    return {
-      bucket: Math.abs(inferredRate) < 0.5 ? 'zero' : 'standard',
-      rate: inferredRate,
-      taxCodeId: null,
-    };
-  }
-
-  if (typeof product?.taxCode === 'string' && product.taxCode.trim()) {
-    const normalized = normaliseComparableText(product.taxCode);
-    if (matchesZeroRateLabel(normalized)) {
-      return { bucket: 'zero', rate: 0, taxCodeId: null };
-    }
-    if (matchesStandardRateLabel(normalized)) {
-      return { bucket: 'standard', rate: null, taxCodeId: null };
-    }
-  }
-
-  return { bucket: 'standard', rate: null, taxCodeId: null };
-}
-
-function analyzeInvoiceVatBuckets(invoice, metadata) {
-  const products = Array.isArray(invoice?.data?.products) ? invoice.data.products : [];
-  if (!products.length) {
-    return {
-      hasSplit: false,
-      requiresSecondary: false,
-      bucketTotals: { standard: 0, zero: 0 },
-      rates: [],
-      summaryLabel: '',
-      suggestedSecondaryTaxCodeId: null,
-    };
-  }
-
-  const bucketTotals = { standard: 0, zero: 0 };
-  const rateSet = new Set();
-  let suggestedSecondaryTaxCodeId = null;
-
-  products.forEach((product) => {
-    const amount = computeProductAmount(product);
-    if (amount === null) {
-      return;
-    }
-
-    const classification = classifyProductVatBucket(product, metadata);
-    const bucketKey = classification.bucket === 'zero' ? 'zero' : 'standard';
-    bucketTotals[bucketKey] += Math.round(amount * 100);
-
-    if (classification.rate !== null && Number.isFinite(classification.rate)) {
-      rateSet.add(Number(Math.round(classification.rate * 1000) / 1000));
-    }
-
-    if (bucketKey === 'zero' && classification.taxCodeId) {
-      suggestedSecondaryTaxCodeId = classification.taxCodeId;
-    }
-  });
-
-  const hasStandard = bucketTotals.standard !== 0;
-  const hasZero = bucketTotals.zero !== 0;
-  const hasSplit = hasStandard && hasZero;
-  const requiresSecondary = hasSplit && bucketTotals.zero !== 0;
-
-  const rates = Array.from(rateSet).sort((a, b) => b - a);
-  const positiveRate = rates.find((rate) => rate >= 0.5) ?? null;
-  const zeroRate = rates.find((rate) => Math.abs(rate) < 0.5) ?? (hasZero ? 0 : null);
-  const displayRates = [];
-  if (positiveRate !== null) {
-    displayRates.push(positiveRate);
-  }
-  if (zeroRate !== null) {
-    displayRates.push(0);
-  }
-  const summaryLabel =
-    displayRates.length >= 2
-      ? `${formatRateValue(displayRates[0])}% / ${formatRateValue(displayRates[1])}% VAT`
-      : displayRates.length === 1
-      ? `${formatRateValue(displayRates[0])}% VAT`
-      : '';
-
-  return {
-    hasSplit,
-    requiresSecondary,
-    bucketTotals,
-    rates,
-    summaryLabel,
-    suggestedSecondaryTaxCodeId,
-  };
-}
-
-function parsePercentageFromLabel(label) {
-  if (typeof label !== 'string') {
-    return null;
-  }
-
-  const match = label.match(/(-?\d+(?:\.\d+)?)\s*%/);
-  if (!match) {
-    return null;
-  }
-
-  const numeric = Number(match[1]);
-  return Number.isFinite(numeric) ? numeric : null;
-}
-
-function formatRateValue(rate) {
-  if (!Number.isFinite(rate)) {
-    return String(rate);
-  }
-
-  return rate % 1 === 0 ? rate.toString() : rate.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
-}
-
-function ratesApproximatelyEqual(a, b) {
-  if (!Number.isFinite(a) || !Number.isFinite(b)) {
-    return false;
-  }
-
-  return Math.abs(a - b) < 0.0001;
-}
-
-function createVendorSettingsControls({ vendorId, vendorName, defaults, accountOptions, taxCodeOptions }) {
-  const container = document.createElement('div');
-  container.className = 'vendor-settings-grid';
-
-  const categorySelect = createVendorSettingSelect({
-    options: accountOptions,
-    value: defaults.accountId || '',
-    vendorId,
-    vendorName,
-    field: 'accountId',
-    disabled: accountOptions.length <= 1,
-    disabledHint: 'No QuickBooks accounts available. Refresh metadata to sync accounts.',
-  });
-
-  const vatBasisSelect = createVendorSettingSelect({
-    options: VAT_TREATMENT_OPTIONS,
-    value: defaults.vatTreatment || '',
-    vendorId,
-    vendorName,
-    field: 'vatTreatment',
-  });
-
-  const taxCodeSelect = createVendorSettingSelect({
-    options: taxCodeOptions,
-    value: defaults.taxCodeId || '',
-    vendorId,
-    vendorName,
-    field: 'taxCodeId',
-    disabled: taxCodeOptions.length <= 1,
-    disabledHint: 'No QuickBooks tax codes available. Refresh metadata to sync tax codes.',
-  });
-
-  container.appendChild(createVendorSettingGroup('CATEGORY', categorySelect));
-  container.appendChild(createVendorSettingGroup('AMOUNTS ARE', vatBasisSelect));
-  container.appendChild(createVendorSettingGroup('VAT', taxCodeSelect));
-
-  return container;
-}
-
-function createVendorSettingGroup(labelText, control) {
-  const wrapper = document.createElement('label');
-  wrapper.className = 'vendor-setting-group';
-
-  const heading = document.createElement('span');
-  heading.className = 'vendor-setting-heading';
-  heading.textContent = labelText;
-
-  wrapper.appendChild(heading);
-  wrapper.appendChild(control);
-
-  return wrapper;
-}
-
-function createVendorSettingSelect({
-  options,
-  value,
-  vendorId,
-  vendorName,
-  field,
-  disabled = false,
-  disabledHint = '',
-}) {
-  const select = document.createElement('select');
-  select.className = 'vendor-setting-select';
-  select.dataset.vendorId = vendorId;
-  select.dataset.settingField = field;
-  select.dataset.vendorName = vendorName;
-
-  options.forEach((option) => {
-    const optionElement = document.createElement('option');
-    optionElement.value = option.value;
-    optionElement.textContent = option.label;
-    if (option.disabled) {
-      optionElement.disabled = true;
-    }
-    select.appendChild(optionElement);
-  });
-
-  const availableValues = options.map((option) => option.value);
-  const initialValue = availableValues.includes(value) ? value : '';
-  select.value = initialValue;
-  select.dataset.previousValue = initialValue;
-
-  if (disabled) {
-    select.disabled = true;
-    if (disabledHint) {
-      select.title = disabledHint;
-    }
-  }
-
-  return select;
-}
-
-async function handleVendorSettingChange(event) {
-  const target = event.target;
-  if (!(target instanceof HTMLSelectElement)) {
-    return;
-  }
-
-  if (!target.classList.contains('vendor-setting-select')) {
-    return;
-  }
-
-  const vendorId = target.dataset.vendorId;
-  const field = target.dataset.settingField;
-  if (!vendorId || !field) {
-    return;
-  }
-
-  const previousValue = target.dataset.previousValue ?? '';
-  const nextValue = target.value;
-
-  if (nextValue === previousValue) {
-    return;
-  }
-
-  if (!selectedRealmId) {
-    target.value = previousValue;
-    return;
-  }
-
-  if (target.disabled) {
-    return;
-  }
-
-  const payload = {};
-  if (field === 'accountId' || field === 'taxCodeId') {
-    payload[field] = nextValue || null;
-  } else if (field === 'vatTreatment') {
-    payload.vatTreatment = nextValue || null;
-  } else {
-    return;
-  }
-
-  const vendorName = target.dataset.vendorName || 'Vendor';
-
-  target.disabled = true;
-  target.classList.add('is-pending');
-  target.setAttribute('aria-busy', 'true');
-
-  try {
-    const response = await fetch(
-      `/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/vendors/${encodeURIComponent(vendorId)}/settings`,
-      {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      }
-    );
 
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const message = body?.error || 'Failed to update vendor defaults.';
+      const message = body?.error || 'Failed to update Outlook settings.';
       throw new Error(message);
     }
 
-    const settings = body?.settings || {};
-    const resolvedValue = resolveVendorSettingFieldValue(field, settings);
-    target.value = resolvedValue;
-    target.dataset.previousValue = resolvedValue;
-
-    applyVendorSettingUpdate(selectedRealmId, vendorId, settings);
-    showStatus(globalStatus, `Saved defaults for ${vendorName}.`, 'success');
-  } catch (error) {
-    showStatus(globalStatus, error.message || 'Failed to update vendor defaults.', 'error');
-    target.value = previousValue;
-  } finally {
-    target.classList.remove('is-pending');
-    target.removeAttribute('aria-busy');
-    target.disabled = false;
-  }
-}
-
-function resolveVendorSettingFieldValue(field, settings) {
-  if (field === 'accountId') {
-    return typeof settings?.accountId === 'string' && settings.accountId ? settings.accountId : '';
-  }
-  if (field === 'taxCodeId') {
-    return typeof settings?.taxCodeId === 'string' && settings.taxCodeId ? settings.taxCodeId : '';
-  }
-  if (field === 'vatTreatment') {
-    return VENDOR_VAT_TREATMENT_VALUES.has(settings?.vatTreatment) ? settings.vatTreatment : '';
-  }
-  return '';
-}
-
-function applyVendorSettingUpdate(realmId, vendorId, settings) {
-  const metadata = companyMetadataCache.get(realmId);
-  if (!metadata) {
-    return;
-  }
-
-  const currentEntries = metadata.vendorSettings?.entries || {};
-  const nextEntries = { ...currentEntries };
-  const accountId =
-    typeof settings?.accountId === 'string' && metadata.accounts?.lookup?.has(settings.accountId)
-      ? settings.accountId
-      : null;
-  const taxCodeId =
-    typeof settings?.taxCodeId === 'string' && metadata.taxCodes?.lookup?.has(settings.taxCodeId)
-      ? settings.taxCodeId
-      : null;
-  const vatTreatment = VENDOR_VAT_TREATMENT_VALUES.has(settings?.vatTreatment)
-    ? settings.vatTreatment
-    : null;
-
-  if (accountId || taxCodeId || vatTreatment) {
-    nextEntries[vendorId] = { accountId, taxCodeId, vatTreatment };
-  } else {
-    delete nextEntries[vendorId];
-  }
-
-  metadata.vendorSettings = prepareVendorSettings(nextEntries, {
-    vendors: metadata.vendors,
-    accounts: metadata.accounts,
-    taxCodes: metadata.taxCodes,
-  });
-}
-
-async function handleImportVendorDefaults() {
-  if (!selectedRealmId) {
-    showStatus(globalStatus, 'Select a company before importing defaults.', 'error');
-    return;
-  }
-
-  if (!importVendorDefaultsButton) {
-    return;
-  }
-
-  const button = importVendorDefaultsButton;
-  const originalLabel = button.textContent;
-  button.disabled = true;
-  button.textContent = 'Importing…';
-
-  try {
-    let metadata = companyMetadataCache.get(selectedRealmId);
-    if (!metadata) {
-      metadata = await ensureCompanyMetadata(selectedRealmId);
-    }
-
-    const response = await fetch(
-      `/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/vendors/import-defaults`,
-      {
-        method: 'POST',
-      }
-    );
-
-    let payload = null;
-    try {
-      payload = await response.json();
-    } catch (error) {
-      payload = null;
-    }
-
-    if (!response.ok) {
-      const message = payload?.error || 'Failed to import vendor defaults.';
-      throw new Error(message);
-    }
-
-    const vendorSettingsMap = payload?.vendorSettings || {};
-    if (metadata) {
-      metadata.vendorSettings = prepareVendorSettings(vendorSettingsMap, {
-        vendors: metadata.vendors,
-        accounts: metadata.accounts,
-        taxCodes: metadata.taxCodes,
-      });
-      companyMetadataCache.set(selectedRealmId, metadata);
-      renderVendorList(metadata, 'No vendors available for this company.');
-    }
-
-    const appliedCount = Array.isArray(payload?.applied) ? payload.applied.length : 0;
-    if (appliedCount > 0) {
-      showStatus(globalStatus, `Imported defaults for ${appliedCount} vendor${appliedCount === 1 ? '' : 's'}.`, 'success');
+    if (body?.outlook !== undefined) {
+      updateLocalCompanyOutlook(selectedRealmId, body.outlook);
     } else {
-      showStatus(globalStatus, 'No new defaults found for vendors.', 'info');
+      await refreshQuickBooksCompanies(selectedRealmId);
     }
+
+    showStatus(
+      globalStatus,
+      enabled ? 'Outlook settings saved. Sync will run shortly.' : 'Outlook monitoring disabled.',
+      'success'
+    );
   } catch (error) {
     console.error(error);
-    showStatus(globalStatus, error.message || 'Failed to import vendor defaults.', 'error');
+    showStatus(globalStatus, error.message || 'Failed to update Outlook settings.', 'error');
   } finally {
-    button.textContent = originalLabel;
-    button.disabled = false;
+    if (outlookSaveButton) {
+      outlookSaveButton.disabled = false;
+      outlookSaveButton.textContent = originalLabel || 'Save Outlook settings';
+    }
+    renderOutlookSettings();
   }
 }
 
-function renderAccountList(metadata, emptyMessage) {
-  if (!accountList) {
+async function handleOutlookSyncClick() {
+  if (!selectedRealmId) {
+    showStatus(globalStatus, 'Select a company before triggering an Outlook sync.', 'error');
     return;
   }
 
-  accountList.innerHTML = '';
-
-  const items = metadata?.accounts?.items || [];
-  if (!items.length) {
-    accountList.appendChild(createEmptyListItem(emptyMessage));
+  if (!outlookSyncButton || outlookSyncButton.disabled) {
     return;
   }
 
-  const sorted = [...items].sort((a, b) => {
-    const nameA = (a.name || a.fullyQualifiedName || '').toLowerCase();
-    const nameB = (b.name || b.fullyQualifiedName || '').toLowerCase();
-    return nameA.localeCompare(nameB);
-  });
-
-  sorted.forEach((item) => {
-    const element = document.createElement('li');
-    element.className = 'entity-item';
-
-    const title = document.createElement('span');
-    title.className = 'entity-name';
-    title.textContent = item.name || item.fullyQualifiedName || `Account ${item.id}`;
-    element.appendChild(title);
-
-    const metaParts = [];
-    if (item.accountType) {
-      metaParts.push(item.accountType);
-    }
-    if (item.accountSubType) {
-      metaParts.push(item.accountSubType);
-    }
-
-    if (metaParts.length) {
-      const meta = document.createElement('span');
-      meta.className = 'entity-meta';
-      meta.textContent = metaParts.join(' • ');
-      element.appendChild(meta);
-    }
-
-    accountList.appendChild(element);
-  });
-}
-
-function createEmptyListItem(message) {
-  const element = document.createElement('li');
-  element.className = 'empty';
-  element.textContent = message;
-  return element;
-}
-
-async function refreshCompanyMetadata(realmId) {
-  if (!realmId) {
-    return;
-  }
-
-  refreshMetadataButton.disabled = true;
-  const originalLabel = refreshMetadataButton.textContent;
-  refreshMetadataButton.textContent = 'Refreshing…';
+  const originalLabel = outlookSyncButton.textContent;
+  outlookSyncButton.disabled = true;
+  outlookSyncButton.textContent = 'Syncing…';
 
   try {
-    const response = await fetch(`/api/quickbooks/companies/${encodeURIComponent(realmId)}/metadata/refresh`, {
+    const response = await fetch(`/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/outlook/sync`, {
       method: 'POST',
     });
 
-    let payload = null;
-    try {
-      payload = await response.json();
-    } catch (error) {
-      payload = null;
-    }
-
+    const body = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const message = payload?.error || 'Failed to refresh QuickBooks metadata.';
+      const message = body?.error || 'Failed to start Outlook sync.';
       throw new Error(message);
     }
 
-    showStatus(globalStatus, 'QuickBooks metadata refreshed.', 'success');
-    await ensureCompanyMetadata(realmId, { force: true });
-    renderVendorList(companyMetadataCache.get(realmId), 'No vendors available for this company.');
-    renderAccountList(companyMetadataCache.get(realmId), 'No accounts available for this company.');
-    renderReviewTable();
-    await refreshQuickBooksCompanies(realmId);
+    if (body?.outlook !== undefined) {
+      updateLocalCompanyOutlook(selectedRealmId, body.outlook);
+    }
+
+    showStatus(globalStatus, 'Outlook sync queued. Check the status card for updates.', 'success');
   } catch (error) {
     console.error(error);
-    showStatus(globalStatus, error.message || 'Failed to refresh QuickBooks metadata.', 'error');
-    renderReviewTable();
+    showStatus(globalStatus, error.message || 'Failed to start Outlook sync.', 'error');
   } finally {
-    refreshMetadataButton.textContent = originalLabel;
-    refreshMetadataButton.disabled = !selectedRealmId;
+    if (outlookSyncButton) {
+      outlookSyncButton.disabled = false;
+      outlookSyncButton.textContent = originalLabel || 'Sync now';
+    }
+    renderOutlookSettings();
   }
 }
 
-async function loadStoredInvoices() {
-  try {
-    const response = await fetch('/api/invoices');
-    if (!response.ok) {
-      throw new Error('Failed to load stored invoices.');
-    }
-
-    const payload = await response.json();
-    storedInvoices = Array.isArray(payload?.invoices) ? payload.invoices : [];
-    renderArchiveTable();
-    renderReviewTable();
-  } catch (error) {
-    console.error(error);
-    storedInvoices = [];
-    renderArchiveTable();
-    renderReviewTable();
-    showStatus(globalStatus, error.message || 'Failed to load archived invoices.', 'error');
-  }
-}
-
-function renderArchiveTable() {
-  if (!archiveTableBody) {
-    return;
-  }
-
-  archiveTableBody.innerHTML = '';
-
-  const archiveItems = storedInvoices.filter((invoice) => invoice?.status === 'archive');
-  if (!archiveItems.length) {
-    const row = document.createElement('tr');
-    row.className = 'empty-row';
-    const cell = document.createElement('td');
-    cell.colSpan = 5;
-    cell.textContent = 'No archived invoices yet.';
-    row.appendChild(cell);
-    archiveTableBody.appendChild(row);
-    return;
-  }
-
-  const sorted = [...archiveItems].sort((a, b) => {
-    const aTime = new Date(a.parsedAt || 0).getTime();
-    const bTime = new Date(b.parsedAt || 0).getTime();
-    return bTime - aTime;
-  });
-
-  sorted.forEach((invoice) => {
-    const row = document.createElement('tr');
-
-    const invoiceCell = document.createElement('td');
-    invoiceCell.appendChild(createCellTitle(invoice.data?.invoiceNumber || '—'));
-    const subtitleParts = [];
-    if (invoice.metadata?.originalName) {
-      subtitleParts.push(invoice.metadata.originalName);
-    }
-    if (invoice.parsedAt) {
-      subtitleParts.push(`Parsed ${formatTimestamp(invoice.parsedAt)}`);
-    }
-    if (subtitleParts.length) {
-      invoiceCell.appendChild(createCellSubtitle(subtitleParts.join(' • ')));
-    }
-    row.appendChild(invoiceCell);
-
-    const vendorCell = document.createElement('td');
-    vendorCell.appendChild(createCellTitle(invoice.data?.vendor || '—'));
-    row.appendChild(vendorCell);
-
-    const invoiceDateCell = document.createElement('td');
-    invoiceDateCell.appendChild(createCellTitle(formatDate(invoice.data?.invoiceDate)));
-    row.appendChild(invoiceDateCell);
-
-    const totalCell = document.createElement('td');
-    totalCell.appendChild(createCellTitle(formatAmount(invoice.data?.totalAmount)));
-    row.appendChild(totalCell);
-
-    const actionsCell = document.createElement('td');
-    actionsCell.className = 'table-actions';
-
-    const moveButton = document.createElement('button');
-    moveButton.type = 'button';
-    moveButton.className = 'table-action';
-    moveButton.dataset.action = 'move';
-    moveButton.dataset.checksum = invoice.metadata?.checksum || '';
-    moveButton.textContent = 'Move to review';
-    actionsCell.appendChild(moveButton);
-
-    const deleteButton = document.createElement('button');
-    deleteButton.type = 'button';
-    deleteButton.className = 'table-action destructive';
-    deleteButton.dataset.action = 'delete';
-    deleteButton.dataset.checksum = invoice.metadata?.checksum || '';
-    deleteButton.textContent = 'Delete';
-    actionsCell.appendChild(deleteButton);
-
-    row.appendChild(actionsCell);
-    archiveTableBody.appendChild(row);
-  });
-}
-
-function renderReviewTable() {
-  if (!reviewTableBody) {
-    return;
-  }
-
-  reviewTableBody.innerHTML = '';
-
-  const reviewItems = storedInvoices.filter((invoice) => invoice?.status === 'review');
-  if (!reviewItems.length) {
-    reviewSelectedChecksums.clear();
-    updateReviewSelectionUi({ totalItems: 0 });
-    const row = document.createElement('tr');
-    row.className = 'empty-row';
-    const cell = document.createElement('td');
-    cell.colSpan = 10;
-    cell.textContent = 'No invoices pending review.';
-    row.appendChild(cell);
-    reviewTableBody.appendChild(row);
-    return;
-  }
-
-  const sorted = [...reviewItems].sort((a, b) => {
-    const aTime = new Date(a.parsedAt || 0).getTime();
-    const bTime = new Date(b.parsedAt || 0).getTime();
-    return bTime - aTime;
-  });
-
-  const metadata = selectedRealmId ? companyMetadataCache.get(selectedRealmId) : null;
-  const historical = buildReviewMatchHistory(storedInvoices, metadata);
-  const checksums = sorted
-    .map((invoice) => (typeof invoice?.metadata?.checksum === 'string' ? invoice.metadata.checksum : null))
-    .filter(Boolean);
-  const availableChecksumSet = new Set(checksums);
-
-  pruneReviewSelection(availableChecksumSet);
-
-  sorted.forEach((invoice) => {
-    const row = createReviewTableRow(invoice, metadata, historical);
-    reviewTableBody.appendChild(row);
-  });
-
-  updateReviewSelectionUi({ totalItems: availableChecksumSet.size });
-}
-
-function createReviewTableRow(invoice, metadata, historical) {
-  try {
-    return createEnhancedReviewRow(invoice, metadata, historical);
-  } catch (error) {
-    console.error('Failed to render enhanced review row', error, invoice);
-    return createFallbackReviewRow(invoice, metadata);
-  }
-}
-
-function createEnhancedReviewRow(invoice, metadata, historical) {
-  const insights = buildInvoiceReviewInsights(invoice, metadata, historical);
-  const row = document.createElement('tr');
-  row.dataset.matchConfidence = insights.overallConfidence;
-  row.classList.add(`match-${insights.overallConfidence}`);
-
-  const checksum = typeof invoice?.metadata?.checksum === 'string' ? invoice.metadata.checksum : '';
-  if (checksum) {
-    row.dataset.checksum = checksum;
-  }
-
-  row.appendChild(createReviewSelectionCell(checksum));
-
-  const invoiceCell = document.createElement('td');
-  invoiceCell.className = 'cell-invoice';
-  invoiceCell.appendChild(createCellTitle(invoice.data?.invoiceNumber || '—'));
-  const invoiceSubtitleParts = [];
-  if (invoice.metadata?.originalName) {
-    invoiceSubtitleParts.push(invoice.metadata.originalName);
-  }
-  if (invoice.parsedAt) {
-    invoiceSubtitleParts.push(`Parsed ${formatTimestamp(invoice.parsedAt)}`);
-  }
-  if (invoiceSubtitleParts.length) {
-    invoiceCell.appendChild(createCellSubtitle(invoiceSubtitleParts.join(' • ')));
-  }
-  row.appendChild(invoiceCell);
-
-  const dateCell = document.createElement('td');
-  dateCell.appendChild(createCellTitle(formatDate(invoice.data?.invoiceDate)));
-  row.appendChild(dateCell);
-
-  const vendorLookup = metadata?.vendors?.lookup || null;
-  const accountLookup = metadata?.accounts?.lookup || null;
-  const taxLookup = metadata?.taxCodes?.lookup || null;
-  const vatAnalysis = analyzeInvoiceVatBuckets(invoice, metadata);
-
-  ensureInvoiceReviewSelectionDefaults(invoice, metadata, insights, vatAnalysis);
-
-  const reviewSelection = getInvoiceReviewSelection(invoice);
-  const vendorSelectionId = reviewSelection?.vendorId || insights.vendor.quickBooksVendor?.id || '';
-  const accountSelectionId = reviewSelection?.accountId || insights.account.id || '';
-  const taxSelectionId = reviewSelection?.taxCodeId || '';
-  const secondaryTaxSelectionId = reviewSelection?.secondaryTaxCodeId || '';
-  const selectedVendor = vendorSelectionId && vendorLookup?.has(vendorSelectionId)
-    ? vendorLookup.get(vendorSelectionId)
-    : null;
-  const selectedAccount = accountSelectionId && accountLookup?.has(accountSelectionId)
-    ? accountLookup.get(accountSelectionId)
-    : null;
-  const resolvedVendorId = selectedVendor?.id || insights.vendor.quickBooksVendor?.id || '';
-  const vendorDefaults = resolvedVendorId
-    ? metadata?.vendorSettings?.entries?.[resolvedVendorId] || {}
-    : {};
-
-  const vendorCell = document.createElement('td');
-  vendorCell.className = 'cell-vendor';
-  const vendorDisplayName = selectedVendor?.displayName || selectedVendor?.name || insights.vendor.displayName || '—';
-  vendorCell.appendChild(createCellTitle(vendorDisplayName || '—'));
-  if (insights.vendor.original && insights.vendor.displayName && insights.vendor.displayName !== insights.vendor.original) {
-    vendorCell.appendChild(createCellSubtitle(`Extracted as ${insights.vendor.original}`));
-  }
-  if (reviewSelection?.vendorId && !selectedVendor) {
-    vendorCell.appendChild(createCellSubtitle('Selected vendor is no longer available in QuickBooks metadata.'));
-  }
-  vendorCell.appendChild(createMatchBadge(insights.vendor.confidence));
-
-  if (
-    insights.vendor.confidence === 'unknown' &&
-    selectedRealmId &&
-    typeof invoice?.data?.vendor === 'string' &&
-    invoice.data.vendor.trim()
-  ) {
-    const addVendorButton = document.createElement('button');
-    addVendorButton.type = 'button';
-    addVendorButton.className = 'inline-action';
-    addVendorButton.dataset.action = 'create-vendor';
-    addVendorButton.dataset.vendorName = invoice.data.vendor.trim();
-    addVendorButton.textContent = 'Add vendor to QuickBooks';
-    vendorCell.appendChild(addVendorButton);
-  }
-
-  const vendorSelect = createReviewVendorSelect({
-    metadata,
-    checksum,
-    selectedVendorId: vendorLookup?.has(vendorSelectionId) ? vendorSelectionId : '',
-  });
-  if (vendorSelect) {
-    vendorCell.appendChild(vendorSelect);
-  } else if (selectedRealmId && (!metadata || !metadata?.vendors?.items?.length)) {
-    vendorCell.appendChild(createCellSubtitle('Connect QuickBooks to manage vendors.'));
-  }
-
-  row.appendChild(vendorCell);
-
-  const accountCell = document.createElement('td');
-  accountCell.className = 'cell-account';
-  const accountDisplayName = selectedAccount?.name || selectedAccount?.fullyQualifiedName || insights.account.name || '—';
-  accountCell.appendChild(createCellTitle(accountDisplayName || '—'));
-  const accountMetaParts = [];
-
-  if (selectedAccount) {
-    if (selectedAccount.accountType) {
-      accountMetaParts.push(selectedAccount.accountType);
-    }
-    if (selectedAccount.accountSubType && selectedAccount.accountSubType !== selectedAccount.accountType) {
-      accountMetaParts.push(selectedAccount.accountSubType);
-    }
-  } else {
-    if (insights.account.accountType) {
-      accountMetaParts.push(insights.account.accountType);
-    }
-    if (
-      insights.account.accountSubType &&
-      insights.account.accountSubType !== insights.account.accountType
-    ) {
-      accountMetaParts.push(insights.account.accountSubType);
-    }
-  }
-
-  if (accountMetaParts.length) {
-    accountCell.appendChild(createCellSubtitle(accountMetaParts.join(' • ')));
-  }
-  if (reviewSelection?.accountId && !selectedAccount) {
-    accountCell.appendChild(createCellSubtitle('Selected account is no longer available in QuickBooks metadata.'));
-  }
-  if (insights.account.reason) {
-    accountCell.appendChild(createCellSubtitle(insights.account.reason));
-  }
-  accountCell.appendChild(createMatchBadge(insights.account.confidence));
-
-  if (insights.aiAccountSuggestion?.name) {
-    const suggestionInfo = insights.aiAccountSuggestion;
-    const parts = [];
-    if (suggestionInfo.quickBooksMatch?.account) {
-      const matchedAccount = suggestionInfo.quickBooksMatch.account;
-      const similarity = suggestionInfo.quickBooksMatch.similarity
-        ? ` (${Math.round(suggestionInfo.quickBooksMatch.similarity * 100)}% match)`
-        : '';
-      parts.push(`AI recommends ${matchedAccount.name || matchedAccount.fullyQualifiedName || suggestionInfo.name}${similarity}.`);
-    } else {
-      parts.push(`AI recommends new account "${suggestionInfo.name}".`);
-    }
-
-    if (suggestionInfo.reason) {
-      parts.push(suggestionInfo.reason);
-    }
-
-    accountCell.appendChild(createCellSubtitle(parts.join(' ')));
-
-    if (!suggestionInfo.quickBooksMatch?.account && selectedRealmId) {
-      const addAccountButton = document.createElement('button');
-      addAccountButton.type = 'button';
-      addAccountButton.className = 'inline-action';
-      addAccountButton.dataset.action = 'create-account';
-      addAccountButton.dataset.accountName = suggestionInfo.name;
-      if (suggestionInfo.accountType) {
-        addAccountButton.dataset.accountType = suggestionInfo.accountType;
-      }
-      if (suggestionInfo.accountSubType) {
-        addAccountButton.dataset.accountSubType = suggestionInfo.accountSubType;
-      }
-      addAccountButton.textContent = 'Add account to QuickBooks';
-      accountCell.appendChild(addAccountButton);
-    }
-  }
-
-  const accountSelect = createReviewAccountSelect({
-    metadata,
-    checksum,
-    selectedAccountId: accountLookup?.has(accountSelectionId) ? accountSelectionId : '',
-  });
-  if (accountSelect) {
-    accountCell.appendChild(accountSelect);
-  } else if (selectedRealmId && (!metadata || !metadata?.accounts?.items?.length)) {
-    accountCell.appendChild(createCellSubtitle('Connect QuickBooks to manage accounts.'));
-  }
-
-  row.appendChild(accountCell);
-
-  const taxCell = document.createElement('td');
-  taxCell.className = 'cell-tax';
-  const vendorDefaultTaxCodeId = sanitizeReviewSelectionId(vendorDefaults?.taxCodeId);
-  const derivedTaxCodeId = findInvoiceTaxCodeId(invoice, metadata) || null;
-  const effectiveTaxCodeId = taxSelectionId || vendorDefaultTaxCodeId || derivedTaxCodeId || '';
-  const effectiveTaxCode = effectiveTaxCodeId && taxLookup?.has(effectiveTaxCodeId)
-    ? taxLookup.get(effectiveTaxCodeId)
-    : null;
-  const taxDisplayName = effectiveTaxCode?.name || (effectiveTaxCodeId ? `Tax Code ${effectiveTaxCodeId}` : '—');
-  taxCell.appendChild(createCellTitle(taxDisplayName || '—'));
-
-  const effectiveRate = typeof effectiveTaxCode?.rate === 'number' ? effectiveTaxCode.rate : null;
-  if (effectiveRate !== null) {
-    taxCell.appendChild(createCellSubtitle(`${formatRateValue(effectiveRate)}% rate`));
-  }
-
-  if (taxSelectionId) {
-    if (taxLookup?.has(taxSelectionId)) {
-      taxCell.appendChild(createCellSubtitle('Per-invoice selection.'));
-    } else {
-      taxCell.appendChild(
-        createCellSubtitle('Selected tax code is no longer available in QuickBooks metadata.')
-      );
-    }
-  } else if (vendorDefaultTaxCodeId && effectiveTaxCode && vendorDefaultTaxCodeId === effectiveTaxCodeId) {
-    taxCell.appendChild(createCellSubtitle('Vendor default tax code.'));
-  } else if (derivedTaxCodeId && effectiveTaxCode && derivedTaxCodeId === effectiveTaxCodeId) {
-    taxCell.appendChild(createCellSubtitle('Suggested from invoice data.'));
-  } else if (effectiveTaxCodeId && !effectiveTaxCode) {
-    taxCell.appendChild(createCellSubtitle('QuickBooks tax code is no longer available. Refresh metadata.'));
-  }
-
-  const taxSelect = createReviewTaxSelect({
-    metadata,
-    checksum,
-    selectedTaxCodeId: taxLookup?.has(taxSelectionId) ? taxSelectionId : '',
-  });
-  if (taxSelect) {
-    taxCell.appendChild(taxSelect);
-  } else if (selectedRealmId && (!metadata || !metadata?.taxCodes?.items?.length)) {
-    taxCell.appendChild(createCellSubtitle('Connect QuickBooks to manage tax codes.'));
-  }
-
-  if (vatAnalysis.hasSplit) {
-    const badgeLabel = vatAnalysis.summaryLabel
-      ? `VAT split: ${vatAnalysis.summaryLabel}`
-      : 'VAT split detected';
-    taxCell.appendChild(createVatSplitBadge(badgeLabel));
-
-    const hasSecondarySelection =
-      secondaryTaxSelectionId && taxLookup?.has(secondaryTaxSelectionId);
-
-    const secondarySelect = createReviewSecondaryTaxSelect({
-      metadata,
-      checksum,
-      selectedSecondaryTaxCodeId: hasSecondarySelection ? secondaryTaxSelectionId : '',
-    });
-
-    if (secondarySelect) {
-      if (vatAnalysis.requiresSecondary && !hasSecondarySelection) {
-        secondarySelect.classList.add('is-required');
-        secondarySelect.title = 'Assign the zero-rated QuickBooks tax code for split VAT invoices.';
-      }
-      taxCell.appendChild(secondarySelect);
-    } else if (vatAnalysis.requiresSecondary) {
-      taxCell.appendChild(
-        createCellSubtitle('Add a zero-rated QuickBooks tax code for split VAT invoices.')
-      );
-    }
-
-    if (vatAnalysis.requiresSecondary && !hasSecondarySelection) {
-      taxCell.appendChild(createCellSubtitle('Assign zero-rated VAT code to enable QuickBooks preview.'));
-    }
-  }
-
-  row.appendChild(taxCell);
-
-  const subtotalCell = document.createElement('td');
-  subtotalCell.className = 'cell-amount';
-  subtotalCell.appendChild(createCellTitle(formatAmount(insights.totals.net)));
-  row.appendChild(subtotalCell);
-
-  const vatCell = document.createElement('td');
-  vatCell.className = 'cell-amount';
-  vatCell.appendChild(createCellTitle(formatAmount(insights.totals.vat)));
-  row.appendChild(vatCell);
-
-  const totalCell = document.createElement('td');
-  totalCell.className = 'cell-amount';
-  totalCell.appendChild(createCellTitle(formatAmount(insights.totals.gross)));
-  row.appendChild(totalCell);
-
-  row.appendChild(createReviewActionsCell(invoice, metadata));
-  return row;
-}
-
-function createFallbackReviewRow(invoice, metadata) {
-  const row = document.createElement('tr');
-  row.dataset.matchConfidence = 'unknown';
-  row.classList.add('match-unknown');
-
-  const checksum = typeof invoice?.metadata?.checksum === 'string' ? invoice.metadata.checksum : '';
-  if (checksum) {
-    row.dataset.checksum = checksum;
-  }
-
-  row.appendChild(createReviewSelectionCell(checksum));
-
-  const invoiceCell = document.createElement('td');
-  invoiceCell.className = 'cell-invoice';
-  invoiceCell.appendChild(createCellTitle(invoice?.data?.invoiceNumber || '—'));
-  row.appendChild(invoiceCell);
-
-  const dateCell = document.createElement('td');
-  dateCell.appendChild(createCellTitle(formatDate(invoice?.data?.invoiceDate)));
-  row.appendChild(dateCell);
-
-  const vendorCell = document.createElement('td');
-  vendorCell.className = 'cell-vendor';
-  vendorCell.appendChild(createCellTitle(invoice?.data?.vendor || '—'));
-  row.appendChild(vendorCell);
-
-  const accountCell = document.createElement('td');
-  accountCell.className = 'cell-account';
-  accountCell.appendChild(createCellTitle('—'));
-  row.appendChild(accountCell);
-
-  const taxCell = document.createElement('td');
-  taxCell.className = 'cell-tax';
-  taxCell.appendChild(createCellTitle('—'));
-  row.appendChild(taxCell);
-
-  const subtotalCell = document.createElement('td');
-  subtotalCell.className = 'cell-amount';
-  subtotalCell.appendChild(createCellTitle(formatAmount(invoice?.data?.subtotal ?? null)));
-  row.appendChild(subtotalCell);
-
-  const vatCell = document.createElement('td');
-  vatCell.className = 'cell-amount';
-  vatCell.appendChild(createCellTitle(formatAmount(invoice?.data?.vatAmount ?? null)));
-  row.appendChild(vatCell);
-
-  const totalCell = document.createElement('td');
-  totalCell.className = 'cell-amount';
-  totalCell.appendChild(createCellTitle(formatAmount(invoice?.data?.totalAmount ?? null)));
-  row.appendChild(totalCell);
-
-  row.appendChild(createReviewActionsCell(invoice, metadata));
-  return row;
-}
-
-function createReviewActionsCell(invoice, metadata) {
-  const actionsCell = document.createElement('td');
-  actionsCell.className = 'table-actions';
-
-  const checksum = invoice?.metadata?.checksum || '';
-
-  const qbPreviewButton = document.createElement('button');
-  qbPreviewButton.type = 'button';
-  qbPreviewButton.className = 'table-action';
-  qbPreviewButton.dataset.action = 'preview-qb';
-  qbPreviewButton.dataset.checksum = checksum;
-  qbPreviewButton.textContent = 'Preview QB';
-
-  const previewState = evaluateQuickBooksPreviewState(invoice, metadata);
-  if (!previewState.canPreview) {
-    qbPreviewButton.disabled = true;
-    qbPreviewButton.title = buildQuickBooksPreviewBlockerMessage(previewState.missing);
-  } else {
-    qbPreviewButton.title = 'Preview QuickBooks payload';
-  }
-
-  actionsCell.appendChild(qbPreviewButton);
-
-  const previewButton = document.createElement('button');
-  previewButton.type = 'button';
-  previewButton.className = 'table-action';
-  previewButton.dataset.action = 'preview-file';
-  previewButton.dataset.checksum = checksum;
-  if (invoice?.metadata?.originalName) {
-    previewButton.dataset.filename = invoice.metadata.originalName;
-  }
-  previewButton.textContent = 'Preview file';
-  actionsCell.appendChild(previewButton);
-
-  const moveButton = document.createElement('button');
-  moveButton.type = 'button';
-  moveButton.className = 'table-action';
-  moveButton.dataset.action = 'archive';
-  moveButton.dataset.checksum = invoice?.metadata?.checksum || '';
-  moveButton.textContent = 'Move to archive';
-  actionsCell.appendChild(moveButton);
-
-  const deleteButton = document.createElement('button');
-  deleteButton.type = 'button';
-  deleteButton.className = 'table-action destructive';
-  deleteButton.dataset.action = 'delete';
-  deleteButton.dataset.checksum = invoice?.metadata?.checksum || '';
-  deleteButton.textContent = 'Delete';
-  actionsCell.appendChild(deleteButton);
-
-  return actionsCell;
-}
-
-function evaluateQuickBooksPreviewState(invoice, metadata) {
-  const state = {
-    canPreview: false,
-    missing: [],
-  };
-
-  if (!invoice || typeof invoice !== 'object') {
-    state.missing.push('invoice');
-    return state;
-  }
-
+async function handleOutlookResync() {
   if (!selectedRealmId) {
-    state.missing.push('company');
-    return state;
+    showStatus(globalStatus, 'Select a company before requesting a full Outlook resync.', 'error');
+    return;
   }
 
-  if (!metadata) {
-    state.missing.push('metadata');
-    return state;
+  if (!outlookResyncButton || outlookResyncButton.disabled) {
+    return;
   }
 
-  const vendorId = sanitizeReviewSelectionId(invoice?.reviewSelection?.vendorId);
-  if (!vendorId) {
-    state.missing.push('vendor');
-    return state;
-  }
+  const originalLabel = outlookResyncButton.textContent;
+  outlookResyncButton.disabled = true;
+  outlookResyncButton.textContent = 'Queuing…';
 
-  const vendorLookup = metadata?.vendors?.lookup;
-  if (!vendorLookup?.has(vendorId)) {
-    state.missing.push('vendor');
-    return state;
-  }
-
-  const vendorDefaults = metadata?.vendorSettings?.entries?.[vendorId] || {};
-  let accountId = sanitizeReviewSelectionId(invoice?.reviewSelection?.accountId);
-  if (!accountId) {
-    accountId = sanitizeReviewSelectionId(vendorDefaults.accountId);
-  }
-
-  const accountLookup = metadata?.accounts?.lookup;
-  if (!accountId) {
-    state.missing.push('account');
-  } else if (!accountLookup?.has(accountId)) {
-    state.missing.push('account');
-  }
-
-  let taxCodeId = sanitizeReviewSelectionId(invoice?.reviewSelection?.taxCodeId);
-  if (!taxCodeId) {
-    taxCodeId = sanitizeReviewSelectionId(vendorDefaults.taxCodeId);
-  }
-  if (!taxCodeId) {
-    taxCodeId = findInvoiceTaxCodeId(invoice, metadata) || null;
-  }
-
-  const taxLookup = metadata?.taxCodes?.lookup;
-  if (!taxCodeId) {
-    state.missing.push('tax');
-  } else if (!taxLookup?.has(taxCodeId)) {
-    state.missing.push('tax');
-  }
-
-  const vatAnalysis = analyzeInvoiceVatBuckets(invoice, metadata);
-  const secondaryTaxCodeId = sanitizeReviewSelectionId(invoice?.reviewSelection?.secondaryTaxCodeId);
-  const suggestedSecondaryId = sanitizeReviewSelectionId(vatAnalysis?.suggestedSecondaryTaxCodeId);
-  const hasSecondarySelection = secondaryTaxCodeId && taxLookup?.has(secondaryTaxCodeId);
-  const hasSuggestedSecondary = suggestedSecondaryId && taxLookup?.has(suggestedSecondaryId);
-
-  if (vatAnalysis.requiresSecondary && !hasSecondarySelection && !hasSuggestedSecondary) {
-    state.missing.push('tax-secondary');
-  }
-
-  state.canPreview = state.missing.length === 0;
-  return state;
-}
-
-function findInvoiceTaxCodeId(invoice, metadata) {
-  const taxLookup = metadata?.taxCodes?.lookup;
-  const taxItems = metadata?.taxCodes?.items || [];
-  if (!taxLookup || !taxLookup.size || !taxItems.length) {
-    return null;
-  }
-
-  const candidates = collectInvoiceTaxCodeLabels(invoice);
-  if (!candidates.length) {
-    return null;
-  }
-
-  const entries = taxItems.map((entry) => ({
-    id: entry.id,
-    name: normaliseComparableText(entry.name),
-    description: normaliseComparableText(entry.description),
-  }));
-
-  for (const label of candidates) {
-    const directId = sanitizeReviewSelectionId(label);
-    if (directId && taxLookup.has(directId)) {
-      return directId;
-    }
-
-    const normalized = normaliseComparableText(label);
-    if (!normalized) {
-      continue;
-    }
-
-    const match = entries.find((entry) => entry.name === normalized || entry.description === normalized);
-    if (match) {
-      return match.id;
-    }
-  }
-
-  return null;
-}
-
-function collectInvoiceTaxCodeLabels(invoice) {
-  const labels = [];
-  const invoiceLevelCodeRaw = invoice?.data?.taxCode;
-  const invoiceLevelCode = sanitizeReviewSelectionId(invoiceLevelCodeRaw) || normaliseTextInput(invoiceLevelCodeRaw || '');
-  if (invoiceLevelCode) {
-    labels.push(invoiceLevelCode);
-  }
-
-  if (Array.isArray(invoice?.data?.products)) {
-    invoice.data.products.forEach((product) => {
-      const codeRaw = product?.taxCode;
-      const code = sanitizeReviewSelectionId(codeRaw) || normaliseTextInput(codeRaw || '');
-      if (code) {
-        labels.push(code);
-      }
+  try {
+    const response = await fetch(`/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/outlook/resync`, {
+      method: 'POST',
     });
-  }
 
-  return labels;
-}
-
-function buildQuickBooksPreviewBlockerMessage(missing) {
-  if (!Array.isArray(missing) || !missing.length) {
-    return 'QuickBooks preview unavailable.';
-  }
-
-  const labels = missing.map((item) => {
-    switch (item) {
-      case 'company':
-        return 'Select a QuickBooks company';
-      case 'metadata':
-        return 'Load QuickBooks metadata';
-      case 'vendor':
-      return 'Choose a QuickBooks vendor';
-    case 'account':
-      return 'Assign a QuickBooks account';
-    case 'tax':
-      return 'Assign a QuickBooks tax code';
-    case 'tax-secondary':
-      return 'Assign zero-rated VAT code for split invoice';
-    default:
-      return 'Complete QuickBooks mappings';
-    }
-  });
-
-  return labels.join(' • ');
-}
-
-function createReviewSelectionCell(checksum) {
-  const cell = document.createElement('td');
-  cell.className = 'cell-select';
-
-  const checkbox = document.createElement('input');
-  checkbox.type = 'checkbox';
-  checkbox.className = 'review-select-checkbox';
-  checkbox.dataset.checksum = checksum || '';
-  checkbox.checked = checksum ? reviewSelectedChecksums.has(checksum) : false;
-  checkbox.disabled = !checksum;
-  checkbox.setAttribute('aria-label', 'Select invoice for bulk actions');
-
-  cell.appendChild(checkbox);
-  return cell;
-}
-
-function createReviewVendorSelect({ metadata, checksum, selectedVendorId }) {
-  const vendors = metadata?.vendors?.items;
-  if (!Array.isArray(vendors) || !vendors.length) {
-    return null;
-  }
-
-  const select = document.createElement('select');
-  select.className = 'review-field review-vendor-select';
-  select.dataset.checksum = checksum || '';
-  select.dataset.field = 'vendorId';
-  select.setAttribute('aria-label', 'Select QuickBooks vendor');
-
-  buildReviewVendorOptions(vendors).forEach((option) => {
-    const element = document.createElement('option');
-    element.value = option.value;
-    element.textContent = option.label;
-    select.appendChild(element);
-  });
-
-  const value = typeof selectedVendorId === 'string' ? selectedVendorId : '';
-  select.value = value;
-  select.dataset.currentValue = value;
-
-  if (!checksum) {
-    select.disabled = true;
-  }
-
-  return select;
-}
-
-function createReviewAccountSelect({ metadata, checksum, selectedAccountId }) {
-  const accounts = metadata?.accounts?.items;
-  if (!Array.isArray(accounts) || !accounts.length) {
-    return null;
-  }
-
-  const select = document.createElement('select');
-  select.className = 'review-field review-account-select';
-  select.dataset.checksum = checksum || '';
-  select.dataset.field = 'accountId';
-  select.setAttribute('aria-label', 'Select QuickBooks account');
-
-  buildReviewAccountOptions(accounts).forEach((option) => {
-    const element = document.createElement('option');
-    element.value = option.value;
-    element.textContent = option.label;
-    select.appendChild(element);
-  });
-
-  const value = typeof selectedAccountId === 'string' ? selectedAccountId : '';
-  select.value = value;
-  select.dataset.currentValue = value;
-
-  if (!checksum) {
-    select.disabled = true;
-  }
-
-  return select;
-}
-
-function createReviewTaxSelect({ metadata, checksum, selectedTaxCodeId }) {
-  const taxCodes = metadata?.taxCodes?.items;
-  if (!Array.isArray(taxCodes) || !taxCodes.length) {
-    return null;
-  }
-
-  const select = document.createElement('select');
-  select.className = 'review-field review-tax-select';
-  select.dataset.checksum = checksum || '';
-  select.dataset.field = 'taxCodeId';
-  select.setAttribute('aria-label', 'Select QuickBooks tax code');
-
-  buildReviewTaxCodeOptions(taxCodes).forEach((option) => {
-    const element = document.createElement('option');
-    element.value = option.value;
-    element.textContent = option.label;
-    select.appendChild(element);
-  });
-
-  const value = typeof selectedTaxCodeId === 'string' ? selectedTaxCodeId : '';
-  select.value = value;
-  select.dataset.currentValue = value;
-
-  if (!checksum) {
-    select.disabled = true;
-  }
-
-  return select;
-}
-
-function createReviewSecondaryTaxSelect({ metadata, checksum, selectedSecondaryTaxCodeId }) {
-  const taxCodes = metadata?.taxCodes?.items;
-  if (!Array.isArray(taxCodes) || !taxCodes.length) {
-    return null;
-  }
-
-  const taxLookup = metadata?.taxCodes?.lookup;
-  const zeroRated = taxCodes.filter((code) => isZeroRateTaxCodeEntry(code));
-
-  const selectedEntry = selectedSecondaryTaxCodeId && taxLookup?.has(selectedSecondaryTaxCodeId)
-    ? taxLookup.get(selectedSecondaryTaxCodeId)
-    : null;
-
-  const optionPool = zeroRated.slice();
-  if (selectedEntry && !optionPool.some((code) => code.id === selectedEntry.id)) {
-    optionPool.push(selectedEntry);
-  }
-
-  if (!optionPool.length) {
-    return null;
-  }
-
-  const select = document.createElement('select');
-  select.className = 'review-field review-secondary-tax-select';
-  select.dataset.checksum = checksum || '';
-  select.dataset.field = 'secondaryTaxCodeId';
-  select.setAttribute('aria-label', 'Select zero-rated QuickBooks tax code');
-
-  const options = buildTaxCodeOptions(optionPool);
-  if (options.length) {
-    options[0] = { value: '', label: 'No secondary tax code' };
-  }
-
-  options.forEach((option) => {
-    const element = document.createElement('option');
-    element.value = option.value;
-    element.textContent = option.label;
-    select.appendChild(element);
-  });
-
-  const value = typeof selectedSecondaryTaxCodeId === 'string' ? selectedSecondaryTaxCodeId : '';
-  select.value = value;
-  select.dataset.currentValue = value;
-
-  if (!checksum) {
-    select.disabled = true;
-  }
-
-  return select;
-}
-
-function getInvoiceReviewSelection(invoice) {
-  if (!invoice || typeof invoice !== 'object') {
-    return null;
-  }
-
-  const selection = invoice.reviewSelection;
-  if (!selection || typeof selection !== 'object') {
-    return null;
-  }
-
-  const vendorId = sanitizeReviewSelectionId(selection.vendorId);
-  const accountId = sanitizeReviewSelectionId(selection.accountId);
-  const taxCodeId = sanitizeReviewSelectionId(selection.taxCodeId);
-  const secondaryTaxCodeId = sanitizeReviewSelectionId(selection.secondaryTaxCodeId);
-
-  if (!vendorId && !accountId && !taxCodeId && !secondaryTaxCodeId) {
-    return null;
-  }
-
-  const result = {};
-  if (vendorId) {
-    result.vendorId = vendorId;
-  }
-  if (accountId) {
-    result.accountId = accountId;
-  }
-  if (taxCodeId) {
-    result.taxCodeId = taxCodeId;
-  }
-  if (secondaryTaxCodeId) {
-    result.secondaryTaxCodeId = secondaryTaxCodeId;
-  }
-
-  return result;
-}
-
-function buildInvoiceReviewInsights(invoice, metadata, historical) {
-  const normalizedVendor = normaliseComparableText(invoice?.data?.vendor);
-  const vendorHistoryCount = normalizedVendor ? historical.vendorCounts.get(normalizedVendor) || 0 : 0;
-
-  const vendor = suggestVendorForInvoice(invoice, metadata, vendorHistoryCount);
-  const aiAccountSuggestion = deriveAiAccountSuggestion(invoice, metadata);
-  const account = suggestAccountForInvoice(invoice, metadata, {
-    vendorKey: normalizedVendor,
-    matchedVendor: vendor,
-    historicalVendorAccounts: historical.vendorAccountCounts,
-    aiAccountSuggestion,
-  });
-
-  const overallConfidence = deriveOverallConfidence(vendor.confidence, account.confidence);
-
-  return {
-    vendor,
-    account,
-    aiAccountSuggestion,
-    overallConfidence,
-    totals: {
-      net: invoice?.data?.subtotal ?? null,
-      vat: invoice?.data?.vatAmount ?? null,
-      gross: invoice?.data?.totalAmount ?? null,
-    },
-  };
-}
-
-function buildReviewMatchHistory(invoices, metadata) {
-  const vendorCounts = new Map();
-  const vendorAccountCounts = new Map();
-
-  if (!Array.isArray(invoices)) {
-    return { vendorCounts, vendorAccountCounts };
-  }
-
-  invoices.forEach((invoice) => {
-    if (!invoice || invoice.status !== 'archive') {
-      return;
-    }
-
-    const vendorKey = normaliseComparableText(invoice?.data?.vendor);
-    if (!vendorKey) {
-      return;
-    }
-
-    vendorCounts.set(vendorKey, (vendorCounts.get(vendorKey) || 0) + 1);
-
-    if (!metadata?.accounts?.items?.length) {
-      return;
-    }
-
-    const keywords = extractInvoiceKeywords(invoice);
-    if (!keywords.length) {
-      return;
-    }
-
-    const candidate = scoreAccountCandidates(metadata.accounts.items, keywords);
-    const accountId = candidate?.account?.id;
-    if (!accountId) {
-      return;
-    }
-
-    const accountMap = vendorAccountCounts.get(vendorKey) || new Map();
-    accountMap.set(accountId, (accountMap.get(accountId) || 0) + 1);
-    vendorAccountCounts.set(vendorKey, accountMap);
-  });
-
-  return { vendorCounts, vendorAccountCounts };
-}
-
-function suggestVendorForInvoice(invoice, metadata, historyCount = 0) {
-  const originalVendor = invoice?.data?.vendor || '';
-  const normalizedVendor = normaliseComparableText(originalVendor);
-  const quickBooksVendors = metadata?.vendors?.items || [];
-
-  let bestMatch = null;
-
-  if (normalizedVendor && quickBooksVendors.length) {
-    quickBooksVendors.forEach((vendor) => {
-      const candidateNames = [vendor.displayName, vendor.name].filter(Boolean);
-      candidateNames.forEach((name) => {
-        const normalizedCandidate = normaliseComparableText(name);
-        if (!normalizedCandidate) {
-          return;
-        }
-
-        const similarity = computeNormalisedSimilarity(normalizedVendor, normalizedCandidate);
-        if (!bestMatch || similarity > bestMatch.similarity) {
-          bestMatch = {
-            vendor,
-            similarity,
-            normalizedName: normalizedCandidate,
-          };
-        }
-      });
-    });
-  }
-
-  let confidence = 'unknown';
-  let displayName = originalVendor || null;
-  let quickBooksVendor = null;
-
-  if (bestMatch) {
-    quickBooksVendor = bestMatch.vendor;
-    displayName = quickBooksVendor.displayName || quickBooksVendor.name || displayName;
-
-    const normalizedCandidate = bestMatch.normalizedName || '';
-    const sharedLength = Math.min(normalizedVendor.length, normalizedCandidate.length);
-    const hasMeaningfulOverlap =
-      sharedLength >= 4 &&
-      (normalizedVendor.includes(normalizedCandidate) || normalizedCandidate.includes(normalizedVendor));
-
-    if (hasMeaningfulOverlap) {
-      confidence = 'exact';
-    } else if (normalizedCandidate === normalizedVendor || bestMatch.similarity >= 0.92) {
-      confidence = 'exact';
-    } else if (bestMatch.similarity >= 0.68) {
-      confidence = 'uncertain';
-    }
-  }
-
-  if (historyCount >= 2) {
-    confidence = 'exact';
-  } else if (historyCount === 1 && confidence === 'unknown') {
-    confidence = 'uncertain';
-  }
-
-  return {
-    original: originalVendor || null,
-    displayName,
-    confidence,
-    quickBooksVendor,
-    historyCount,
-    normalized: normalizedVendor,
-  };
-}
-
-function suggestAccountForInvoice(invoice, metadata, { vendorKey, matchedVendor, historicalVendorAccounts, aiAccountSuggestion } = {}) {
-  const empty = {
-    id: null,
-    name: null,
-    accountType: null,
-    accountSubType: null,
-    confidence: 'unknown',
-    reason: null,
-  };
-
-  if (!metadata?.accounts?.items?.length) {
-    return empty;
-  }
-
-  const lookup = metadata.accounts.lookup || new Map();
-  const vendorSettingsLookup = metadata?.vendorSettings?.lookup;
-  const matchedVendorId = matchedVendor?.quickBooksVendor?.id || matchedVendor?.id || null;
-  const matchedVendorConfidence = matchedVendor?.confidence || 'unknown';
-
-  if (matchedVendorId && matchedVendorConfidence !== 'unknown') {
-    const defaults = vendorSettingsLookup?.get(matchedVendorId);
-    if (defaults?.accountId) {
-      const defaultAccount = lookup.get(defaults.accountId);
-      return {
-        id: defaultAccount?.id || defaults.accountId,
-        name: defaultAccount?.name || defaultAccount?.fullyQualifiedName || null,
-        accountType: defaultAccount?.accountType || null,
-        accountSubType: defaultAccount?.accountSubType || null,
-        confidence: matchedVendorConfidence === 'exact' ? 'exact' : 'uncertain',
-        reason: 'Vendor default account.',
-      };
-    }
-  }
-
-  const keywords = extractInvoiceKeywords(invoice);
-  let chosenAccount = null;
-  let chosenScore = 0;
-  let confidence = 'unknown';
-  let reason = null;
-
-  if (aiAccountSuggestion?.quickBooksMatch?.account) {
-    chosenAccount = aiAccountSuggestion.quickBooksMatch.account;
-    chosenScore = (aiAccountSuggestion.quickBooksMatch.similarity || 0) * 100;
-    confidence = aiAccountSuggestion.finalConfidence || 'uncertain';
-    reason = aiAccountSuggestion.message || `AI recommended ${chosenAccount.name || chosenAccount.fullyQualifiedName || 'an account'}.`;
-  } else if (aiAccountSuggestion?.name && aiAccountSuggestion.message) {
-    reason = aiAccountSuggestion.message;
-  }
-
-  if (vendorKey && historicalVendorAccounts?.has(vendorKey)) {
-    const historyEntries = [...historicalVendorAccounts.get(vendorKey).entries()].sort((a, b) => b[1] - a[1]);
-    if (historyEntries.length) {
-      const [historyAccountId, occurrences] = historyEntries[0];
-      const historyAccount = lookup.get(historyAccountId);
-      if (historyAccount) {
-        chosenAccount = historyAccount;
-        chosenScore = occurrences;
-        confidence = occurrences >= 2 ? 'exact' : 'uncertain';
-        reason = `Matched historical account (${occurrences} occurrence${occurrences === 1 ? '' : 's'}).`;
-      }
-    }
-  }
-
-  const candidate = scoreAccountCandidates(metadata.accounts.items, keywords);
-  if (candidate && (!chosenAccount || candidate.score > chosenScore)) {
-    chosenAccount = candidate.account;
-    chosenScore = candidate.score;
-    reason = candidate.score >= 3 ? 'Strong keyword overlap with account name.' : 'Keyword overlap with account name.';
-  }
-
-  if (chosenAccount && confidence === 'unknown') {
-    if (chosenScore >= 4) {
-      confidence = 'exact';
-    } else if (chosenScore >= 2) {
-      confidence = 'uncertain';
-    }
-  }
-
-  if (!chosenAccount && aiAccountSuggestion?.quickBooksMatch?.account) {
-    chosenAccount = aiAccountSuggestion.quickBooksMatch.account;
-    confidence = aiAccountSuggestion.finalConfidence || 'uncertain';
-    reason = aiAccountSuggestion.message || `AI recommended ${aiAccountSuggestion.name}.`;
-  }
-
-  return {
-    id: chosenAccount?.id || null,
-    name: chosenAccount?.name || chosenAccount?.fullyQualifiedName || null,
-    accountType: chosenAccount?.accountType || null,
-    accountSubType: chosenAccount?.accountSubType || null,
-    confidence,
-    reason,
-  };
-}
-
-function deriveAiAccountSuggestion(invoice, metadata) {
-  const suggestion = invoice?.data?.suggestedAccount;
-  if (!suggestion || !suggestion.name) {
-    return null;
-  }
-
-  const accounts = metadata?.accounts?.items || [];
-  const suggestionName = suggestion.name;
-  const normalizedSuggestion = normaliseComparableText(suggestionName);
-  let bestMatch = null;
-
-  if (normalizedSuggestion && accounts.length) {
-    accounts.forEach((account) => {
-      const candidateNames = [account.name, account.fullyQualifiedName].filter(Boolean);
-      candidateNames.forEach((candidateName) => {
-        const normalizedCandidate = normaliseComparableText(candidateName);
-        if (!normalizedCandidate) {
-          return;
-        }
-
-        const similarity = computeNormalisedSimilarity(normalizedSuggestion, normalizedCandidate);
-        if (!bestMatch || similarity > bestMatch.similarity) {
-          bestMatch = {
-            account,
-            similarity,
-            matchedName: candidateName,
-          };
-        }
-      });
-    });
-  }
-
-  const aiConfidenceRaw = typeof suggestion.confidence === 'string' ? suggestion.confidence.toLowerCase() : 'unknown';
-  const aiConfidence = AI_ACCOUNT_CONFIDENCE_VALUES.has(aiConfidenceRaw) ? aiConfidenceRaw : 'unknown';
-
-  let finalConfidence = 'unknown';
-  let quickBooksMatch = null;
-  if (bestMatch && bestMatch.similarity >= 0.68) {
-    quickBooksMatch = {
-      account: bestMatch.account,
-      similarity: bestMatch.similarity,
-      matchedName: bestMatch.matchedName,
-    };
-
-    if (bestMatch.similarity >= 0.92) {
-      finalConfidence = 'exact';
-    } else if (bestMatch.similarity >= 0.75) {
-      finalConfidence = 'uncertain';
-    } else {
-      finalConfidence = 'unknown';
-    }
-  }
-
-  if (finalConfidence === 'unknown') {
-    if (aiConfidence === 'high' || aiConfidence === 'medium') {
-      finalConfidence = 'uncertain';
-    }
-  }
-
-  const similarityText = quickBooksMatch
-    ? ` Closest QuickBooks match: ${quickBooksMatch.account.name || quickBooksMatch.account.fullyQualifiedName} (${Math.round(quickBooksMatch.similarity * 100)}% similarity).`
-    : '';
-
-  const reasonParts = [];
-  if (suggestion.reason) {
-    reasonParts.push(suggestion.reason);
-  }
-  reasonParts.push(`AI recommended account "${suggestionName}".`);
-  const message = `${reasonParts.join(' ')}${similarityText}`.trim();
-
-  return {
-    name: suggestionName,
-    accountType: suggestion.accountType || null,
-    accountSubType: suggestion.accountSubType || null,
-    aiConfidence,
-    reason: suggestion.reason || null,
-    message,
-    quickBooksMatch,
-    finalConfidence,
-    needsCreation: !quickBooksMatch,
-  };
-}
-
-function deriveOverallConfidence(vendorConfidence, accountConfidence) {
-  const levels = [vendorConfidence, accountConfidence];
-  if (levels.includes('unknown')) {
-    return 'unknown';
-  }
-  if (levels.includes('uncertain')) {
-    return 'uncertain';
-  }
-  return 'exact';
-}
-
-function createMatchBadge(confidence) {
-  const level = MATCH_BADGE_LABELS[confidence] ? confidence : 'unknown';
-  const badge = document.createElement('span');
-  badge.className = `match-badge match-${level}`;
-  badge.textContent = MATCH_BADGE_LABELS[level];
-  return badge;
-}
-
-function createVatSplitBadge(text) {
-  const badge = document.createElement('span');
-  badge.className = 'vat-split-badge';
-  badge.textContent = text || 'VAT split detected';
-  return badge;
-}
-
-function extractInvoiceKeywords(invoice) {
-  const keywords = new Set();
-  const pushTokens = (text) => {
-    if (!text) {
-      return;
-    }
-    text
-      .toString()
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .forEach((token) => {
-        if (isMeaningfulKeyword(token)) {
-          keywords.add(token);
-        }
-      });
-  };
-
-  pushTokens(invoice?.data?.vendor);
-  pushTokens(invoice?.data?.invoiceNumber);
-  pushTokens(invoice?.data?.taxCode);
-
-  if (Array.isArray(invoice?.data?.products)) {
-    invoice.data.products.forEach((product) => {
-      pushTokens(product?.description);
-    });
-  }
-
-  pushTokens(invoice?.metadata?.originalName);
-
-  return [...keywords];
-}
-
-function isMeaningfulKeyword(token) {
-  return token && token.length >= 3 && !KEYWORD_STOPWORDS.has(token);
-}
-
-function scoreAccountCandidates(accounts, keywords) {
-  if (!Array.isArray(accounts) || !accounts.length || !keywords.length) {
-    return null;
-  }
-
-  let best = null;
-
-  accounts.forEach((account) => {
-    const haystack = normaliseComparableText([
-      account.name,
-      account.fullyQualifiedName,
-      account.accountType,
-      account.accountSubType,
-    ].filter(Boolean).join(' '));
-
-    if (!haystack) {
-      return;
-    }
-
-    const score = computeKeywordScore(keywords, haystack);
-    if (!score) {
-      return;
-    }
-
-    if (!best || score > best.score) {
-      best = { account, score };
-    }
-  });
-
-  return best;
-}
-
-function computeKeywordScore(keywords, haystack) {
-  return keywords.reduce((score, keyword) => {
-    if (haystack.includes(keyword)) {
-      return score + (keyword.length >= 6 ? 2 : 1);
-    }
-    return score;
-  }, 0);
-}
-
-function normaliseComparableText(value) {
-  if (value === null || value === undefined) {
-    return '';
-  }
-
-  const text = value.toString().toLowerCase();
-  const normalized = typeof text.normalize === 'function' ? text.normalize('NFD') : text;
-
-  return normalized
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim()
-    .replace(/\s+/g, ' ');
-}
-
-function computeNormalisedSimilarity(a, b) {
-  if (!a || !b) {
-    return 0;
-  }
-  if (a === b) {
-    return 1;
-  }
-  const distance = levenshteinDistance(a, b);
-  const longest = Math.max(a.length, b.length) || 1;
-  return (longest - distance) / longest;
-}
-
-function levenshteinDistance(a, b) {
-  if (a === b) {
-    return 0;
-  }
-
-  const aLength = a.length;
-  const bLength = b.length;
-
-  if (!aLength) {
-    return bLength;
-  }
-
-  if (!bLength) {
-    return aLength;
-  }
-
-  const matrix = Array.from({ length: aLength + 1 }, () => new Array(bLength + 1).fill(0));
-
-  for (let i = 0; i <= aLength; i += 1) {
-    matrix[i][0] = i;
-  }
-  for (let j = 0; j <= bLength; j += 1) {
-    matrix[0][j] = j;
-  }
-
-  for (let i = 1; i <= aLength; i += 1) {
-    for (let j = 1; j <= bLength; j += 1) {
-      if (a[i - 1] === b[j - 1]) {
-        matrix[i][j] = matrix[i - 1][j - 1];
-      } else {
-        matrix[i][j] = Math.min(
-          matrix[i - 1][j] + 1,
-          matrix[i][j - 1] + 1,
-          matrix[i - 1][j - 1] + 1,
-        );
-      }
-    }
-  }
-
-  return matrix[aLength][bLength];
-}
-
-function createCellTitle(text) {
-  const element = document.createElement('div');
-  element.className = 'cell-primary';
-  element.textContent = text || '—';
-  return element;
-}
-
-function createCellSubtitle(text) {
-  const element = document.createElement('div');
-  element.className = 'cell-secondary';
-  element.textContent = text;
-  return element;
-}
-
-async function handleReviewAction(event) {
-  const button = event.target.closest('button[data-action]');
-  if (!button) {
-    return;
-  }
-
-  const action = button.dataset.action;
-  if (action === 'create-vendor') {
-    await handleCreateVendor(button);
-    return;
-  }
-
-  if (action === 'create-account') {
-    await handleCreateAccount(button);
-    return;
-  }
-
-  const checksum = button.dataset.checksum;
-  if (!checksum) {
-    return;
-  }
-
-  if (action === 'archive') {
-    await moveInvoiceToArchive(checksum, button);
-  } else if (action === 'delete') {
-    await deleteInvoice(checksum, button);
-  } else if (action === 'preview-file') {
-    openInvoiceFilePreview(checksum, button);
-  } else if (action === 'preview-qb') {
-    await openQuickBooksPreview(checksum, button);
-  }
-}
-
-function handleReviewChange(event) {
-  const target = event.target;
-  if (!target) {
-    return;
-  }
-
-  if (target.classList.contains('review-select-checkbox')) {
-    handleReviewSelectionToggle(target);
-    return;
-  }
-
-  if (target.classList.contains('review-vendor-select')) {
-    void handleInvoiceReviewFieldChange(target, 'vendorId');
-    return;
-  }
-
-  if (target.classList.contains('review-account-select')) {
-    void handleInvoiceReviewFieldChange(target, 'accountId');
-    return;
-  }
-
-  if (target.classList.contains('review-tax-select')) {
-    void handleInvoiceReviewFieldChange(target, 'taxCodeId');
-    return;
-  }
-
-  if (target.classList.contains('review-secondary-tax-select')) {
-    void handleInvoiceReviewFieldChange(target, 'secondaryTaxCodeId');
-  }
-}
-
-function handleReviewSelectionToggle(checkbox) {
-  const checksum = typeof checkbox.dataset.checksum === 'string' ? checkbox.dataset.checksum : '';
-  if (!checksum) {
-    checkbox.checked = false;
-    return;
-  }
-
-  if (checkbox.checked) {
-    reviewSelectedChecksums.add(checksum);
-  } else {
-    reviewSelectedChecksums.delete(checksum);
-  }
-
-  updateReviewSelectionUi({ totalItems: getReviewRowCount() });
-}
-
-function handleReviewSelectAllChange(event) {
-  if (!reviewTableBody) {
-    return;
-  }
-
-  const checkbox = event.target;
-  const shouldSelectAll = checkbox.checked;
-  checkbox.indeterminate = false;
-
-  const rowCheckboxes = reviewTableBody.querySelectorAll('input.review-select-checkbox');
-  rowCheckboxes.forEach((rowCheckbox) => {
-    if (rowCheckbox.disabled) {
-      return;
-    }
-    rowCheckbox.checked = shouldSelectAll;
-    const checksum = rowCheckbox.dataset.checksum;
-    if (!checksum) {
-      return;
-    }
-    if (shouldSelectAll) {
-      reviewSelectedChecksums.add(checksum);
-    } else {
-      reviewSelectedChecksums.delete(checksum);
-    }
-  });
-
-  updateReviewSelectionUi({ totalItems: getReviewRowCount() });
-}
-
-function getReviewRowCount() {
-  if (!reviewTableBody) {
-    return 0;
-  }
-  return reviewTableBody.querySelectorAll('tr[data-checksum]').length;
-}
-
-function pruneReviewSelection(availableChecksums) {
-  if (!(availableChecksums instanceof Set)) {
-    return;
-  }
-
-  reviewSelectedChecksums.forEach((checksum) => {
-    if (!availableChecksums.has(checksum)) {
-      reviewSelectedChecksums.delete(checksum);
-    }
-  });
-}
-
-function updateReviewSelectionUi({ totalItems = getReviewRowCount() } = {}) {
-  const selectedCount = reviewSelectedChecksums.size;
-
-  if (reviewSelectionCount) {
-    reviewSelectionCount.textContent = selectedCount
-      ? `${selectedCount} invoice${selectedCount === 1 ? '' : 's'} selected`
-      : 'No invoices selected.';
-  }
-
-  if (reviewBulkActions) {
-    reviewBulkActions.hidden = selectedCount === 0;
-  }
-
-  if (reviewBulkArchiveButton) {
-    reviewBulkArchiveButton.disabled = selectedCount === 0;
-  }
-
-  if (reviewBulkDeleteButton) {
-    reviewBulkDeleteButton.disabled = selectedCount === 0;
-  }
-
-  if (reviewSelectAllCheckbox) {
-    reviewSelectAllCheckbox.disabled = totalItems === 0;
-    reviewSelectAllCheckbox.checked = totalItems > 0 && selectedCount === totalItems;
-    reviewSelectAllCheckbox.indeterminate = selectedCount > 0 && selectedCount < totalItems;
-  }
-}
-
-async function handleInvoiceReviewFieldChange(select, field) {
-  if (!select || select.disabled) {
-    return;
-  }
-
-  if (!['vendorId', 'accountId', 'taxCodeId', 'secondaryTaxCodeId'].includes(field)) {
-    return;
-  }
-
-  const checksum = typeof select.dataset.checksum === 'string' ? select.dataset.checksum : '';
-  if (!checksum) {
-    select.value = '';
-    return;
-  }
-
-  const previousValue = typeof select.dataset.currentValue === 'string' ? select.dataset.currentValue : '';
-  const nextValue = typeof select.value === 'string' ? select.value : '';
-
-  if (nextValue === previousValue) {
-    return;
-  }
-
-  const payload = { [field]: nextValue || null };
-
-  const originalDisabled = select.disabled;
-  select.disabled = true;
-  select.classList.add('is-pending');
-
-  try {
-    await updateInvoiceReviewSelectionRequest(checksum, payload);
-    applyInvoiceReviewSelection(checksum, payload);
-    select.dataset.currentValue = nextValue;
-    renderReviewTable();
-    const fieldLabelMap = {
-      vendorId: 'Vendor',
-      accountId: 'Account',
-      taxCodeId: 'Tax code',
-      secondaryTaxCodeId: 'Secondary tax code',
-    };
-    const fieldLabel = fieldLabelMap[field] || 'Field';
-    showStatus(globalStatus, `${fieldLabel} updated for invoice.`, 'success');
-  } catch (error) {
-    console.error('Failed to update invoice review selection', error);
-    select.value = previousValue;
-    showStatus(globalStatus, error.message || 'Failed to update invoice.', 'error');
-  } finally {
-    select.disabled = originalDisabled;
-    select.classList.remove('is-pending');
-  }
-}
-
-async function handleBulkArchiveSelected() {
-  if (!reviewSelectedChecksums.size) {
-    return;
-  }
-
-  const checksums = Array.from(reviewSelectedChecksums);
-  const originalArchiveLabel = reviewBulkArchiveButton ? reviewBulkArchiveButton.textContent : '';
-
-  if (reviewBulkArchiveButton) {
-    reviewBulkArchiveButton.disabled = true;
-    reviewBulkArchiveButton.classList.add('is-pending');
-    reviewBulkArchiveButton.textContent = 'Archiving…';
-  }
-
-  if (reviewBulkDeleteButton) {
-    reviewBulkDeleteButton.disabled = true;
-  }
-
-  const errors = [];
-  let successCount = 0;
-
-  try {
-    for (const checksum of checksums) {
-      try {
-        await updateInvoiceStatusRequest(checksum, 'archive', {
-          errorMessage: 'Failed to move invoice to archive.',
-        });
-        successCount += 1;
-      } catch (error) {
-        errors.push(error);
-        console.error('Failed to archive invoice', checksum, error);
-      }
-    }
-
-    if (successCount) {
-      showStatus(globalStatus, `Moved ${successCount} invoice${successCount === 1 ? '' : 's'} to archive.`, 'success');
-    }
-
-    if (errors.length) {
-      const message = errors.length === 1
-        ? errors[0].message || 'Failed to move invoice to archive.'
-        : `Failed to move ${errors.length} invoices to archive.`;
-      showStatus(globalStatus, message, 'error');
-    }
-
-    reviewSelectedChecksums.clear();
-    await loadStoredInvoices();
-  } catch (error) {
-    console.error('Bulk archive operation failed', error);
-    showStatus(globalStatus, error.message || 'Failed to archive selected invoices.', 'error');
-  } finally {
-    if (reviewBulkArchiveButton) {
-      reviewBulkArchiveButton.textContent = originalArchiveLabel;
-      reviewBulkArchiveButton.disabled = false;
-      reviewBulkArchiveButton.classList.remove('is-pending');
-    }
-
-    if (reviewBulkDeleteButton) {
-      reviewBulkDeleteButton.disabled = false;
-    }
-
-    updateReviewSelectionUi({ totalItems: getReviewRowCount() });
-  }
-}
-
-async function handleBulkDeleteSelected() {
-  if (!reviewSelectedChecksums.size) {
-    return;
-  }
-
-  const checksums = Array.from(reviewSelectedChecksums);
-  const originalDeleteLabel = reviewBulkDeleteButton ? reviewBulkDeleteButton.textContent : '';
-
-  if (reviewBulkDeleteButton) {
-    reviewBulkDeleteButton.disabled = true;
-    reviewBulkDeleteButton.classList.add('is-pending');
-    reviewBulkDeleteButton.textContent = 'Deleting…';
-  }
-
-  if (reviewBulkArchiveButton) {
-    reviewBulkArchiveButton.disabled = true;
-  }
-
-  const errors = [];
-  let successCount = 0;
-
-  try {
-    for (const checksum of checksums) {
-      try {
-        await deleteInvoiceRequest(checksum, {
-          errorMessage: 'Failed to delete invoice.',
-        });
-        successCount += 1;
-      } catch (error) {
-        errors.push(error);
-        console.error('Failed to delete invoice', checksum, error);
-      }
-    }
-
-    if (successCount) {
-      showStatus(globalStatus, `Deleted ${successCount} invoice${successCount === 1 ? '' : 's'}.`, 'success');
-    }
-
-    if (errors.length) {
-      const message = errors.length === 1
-        ? errors[0].message || 'Failed to delete invoice.'
-        : `Failed to delete ${errors.length} invoices.`;
-      showStatus(globalStatus, message, 'error');
-    }
-
-    reviewSelectedChecksums.clear();
-    await loadStoredInvoices();
-  } catch (error) {
-    console.error('Bulk delete operation failed', error);
-    showStatus(globalStatus, error.message || 'Failed to delete selected invoices.', 'error');
-  } finally {
-    if (reviewBulkDeleteButton) {
-      reviewBulkDeleteButton.textContent = originalDeleteLabel;
-      reviewBulkDeleteButton.disabled = false;
-      reviewBulkDeleteButton.classList.remove('is-pending');
-    }
-
-    if (reviewBulkArchiveButton) {
-      reviewBulkArchiveButton.disabled = false;
-    }
-
-    updateReviewSelectionUi({ totalItems: getReviewRowCount() });
-  }
-}
-
-function ensureInvoiceReviewSelectionDefaults(invoice, metadata, insights, vatAnalysis) {
-  if (!invoice || typeof invoice !== 'object') {
-    return;
-  }
-
-  const checksum = typeof invoice?.metadata?.checksum === 'string' ? invoice.metadata.checksum : '';
-  if (!checksum) {
-    return;
-  }
-
-  const vendorLookup = metadata?.vendors?.lookup || null;
-  const accountLookup = metadata?.accounts?.lookup || null;
-  const taxLookup = metadata?.taxCodes?.lookup || null;
-
-  const currentSelection = getInvoiceReviewSelection(invoice);
-  const updates = {};
-
-  const existingVendorId = currentSelection?.vendorId || null;
-  const hasValidVendor = existingVendorId && vendorLookup?.has(existingVendorId);
-  const suggestedVendorId = sanitizeReviewSelectionId(insights?.vendor?.quickBooksVendor?.id);
-  if (!hasValidVendor && suggestedVendorId && vendorLookup?.has(suggestedVendorId)) {
-    updates.vendorId = suggestedVendorId;
-  }
-
-  const resolvedVendorId = updates.vendorId || (hasValidVendor ? existingVendorId : null);
-  const vendorDefaults = resolvedVendorId
-    ? metadata?.vendorSettings?.entries?.[resolvedVendorId] || {}
-    : {};
-
-  const existingAccountId = currentSelection?.accountId || null;
-  const hasValidAccount = existingAccountId && accountLookup?.has(existingAccountId);
-  if (!hasValidAccount) {
-    const accountCandidates = [
-      sanitizeReviewSelectionId(insights?.account?.id),
-      sanitizeReviewSelectionId(vendorDefaults.accountId),
-    ];
-    const matchedAccountId = accountCandidates.find((candidate) => candidate && accountLookup?.has(candidate));
-    if (matchedAccountId) {
-      updates.accountId = matchedAccountId;
-    }
-  }
-
-  const existingTaxCodeId = currentSelection?.taxCodeId || null;
-  const hasValidTax = existingTaxCodeId && taxLookup?.has(existingTaxCodeId);
-  if (!hasValidTax) {
-    const taxCandidates = [
-      sanitizeReviewSelectionId(vendorDefaults.taxCodeId),
-      sanitizeReviewSelectionId(findInvoiceTaxCodeId(invoice, metadata)),
-    ];
-    const matchedTaxCodeId = taxCandidates.find((candidate) => candidate && taxLookup?.has(candidate));
-    if (matchedTaxCodeId) {
-      updates.taxCodeId = matchedTaxCodeId;
-    }
-  }
-
-  const secondaryAnalysis = vatAnalysis || analyzeInvoiceVatBuckets(invoice, metadata);
-  const existingSecondaryId = currentSelection?.secondaryTaxCodeId || null;
-  const hasValidSecondary = existingSecondaryId && taxLookup?.has(existingSecondaryId);
-  if (secondaryAnalysis?.requiresSecondary && !hasValidSecondary) {
-    const secondaryCandidates = [
-      sanitizeReviewSelectionId(secondaryAnalysis.suggestedSecondaryTaxCodeId),
-    ];
-    const matchedSecondaryId = secondaryCandidates.find(
-      (candidate) => candidate && taxLookup?.has(candidate)
-    );
-    if (matchedSecondaryId) {
-      updates.secondaryTaxCodeId = matchedSecondaryId;
-    }
-  }
-
-  if (!Object.keys(updates).length) {
-    return;
-  }
-
-  applyInvoiceReviewSelection(checksum, updates);
-
-  const mergedSelection = normalizeClientReviewSelection({
-    ...(currentSelection || {}),
-    ...updates,
-  });
-
-  invoice.reviewSelection = mergedSelection;
-}
-
-function applyInvoiceReviewSelection(checksum, updates = {}) {
-  if (!checksum || !Array.isArray(storedInvoices)) {
-    return;
-  }
-
-  const index = storedInvoices.findIndex((entry) => entry?.metadata?.checksum === checksum);
-  if (index === -1) {
-    return;
-  }
-
-  const current = storedInvoices[index];
-  const existingSelection = current.reviewSelection && typeof current.reviewSelection === 'object'
-    ? { ...current.reviewSelection }
-    : {};
-
-  if (Object.prototype.hasOwnProperty.call(updates, 'vendorId')) {
-    existingSelection.vendorId = sanitizeReviewSelectionId(updates.vendorId);
-  }
-
-  if (Object.prototype.hasOwnProperty.call(updates, 'accountId')) {
-    existingSelection.accountId = sanitizeReviewSelectionId(updates.accountId);
-  }
-
-  if (Object.prototype.hasOwnProperty.call(updates, 'taxCodeId')) {
-    existingSelection.taxCodeId = sanitizeReviewSelectionId(updates.taxCodeId);
-  }
-
-  if (Object.prototype.hasOwnProperty.call(updates, 'secondaryTaxCodeId')) {
-    existingSelection.secondaryTaxCodeId = sanitizeReviewSelectionId(updates.secondaryTaxCodeId);
-  }
-
-  const nextSelection = normalizeClientReviewSelection(existingSelection);
-
-  storedInvoices[index] = {
-    ...current,
-    reviewSelection: nextSelection,
-  };
-}
-
-function sanitizeReviewSelectionId(value) {
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    return trimmed || null;
-  }
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return String(value);
-  }
-  if (typeof value === 'bigint') {
-    return value.toString();
-  }
-  return null;
-}
-
-function normalizeClientReviewSelection(selection) {
-  if (!selection || typeof selection !== 'object') {
-    return null;
-  }
-
-  const vendorId = sanitizeReviewSelectionId(selection.vendorId);
-  const accountId = sanitizeReviewSelectionId(selection.accountId);
-  const taxCodeId = sanitizeReviewSelectionId(selection.taxCodeId);
-  const secondaryTaxCodeId = sanitizeReviewSelectionId(selection.secondaryTaxCodeId);
-
-  const result = {};
-  if (vendorId) {
-    result.vendorId = vendorId;
-  }
-  if (accountId) {
-    result.accountId = accountId;
-  }
-  if (taxCodeId) {
-    result.taxCodeId = taxCodeId;
-  }
-  if (secondaryTaxCodeId) {
-    result.secondaryTaxCodeId = secondaryTaxCodeId;
-  }
-
-  return Object.keys(result).length ? result : null;
-}
-
-async function updateInvoiceReviewSelectionRequest(checksum, updates = {}, { errorMessage } = {}) {
-  if (!checksum) {
-    throw new Error(errorMessage || 'Invoice checksum is required.');
-  }
-
-  const response = await fetch(`/api/invoices/${encodeURIComponent(checksum)}/review`, {
-    method: 'PATCH',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(updates),
-  });
-
-  let payload = null;
-  try {
-    payload = await response.json();
-  } catch (error) {
-    payload = null;
-  }
-
-  if (!response.ok) {
-    const message = payload?.error || errorMessage || 'Failed to update invoice review selection.';
-    throw new Error(message);
-  }
-
-  return payload?.invoice || null;
-}
-
-async function updateInvoiceStatusRequest(checksum, status, { errorMessage } = {}) {
-  if (!checksum) {
-    throw new Error(errorMessage || 'Invoice checksum is required.');
-  }
-
-  const response = await fetch(`/api/invoices/${encodeURIComponent(checksum)}/status`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ status }),
-  });
-
-  let payload = null;
-  try {
-    payload = await response.json();
-  } catch (error) {
-    payload = null;
-  }
-
-  if (!response.ok) {
-    const message = payload?.error || errorMessage || 'Failed to update invoice status.';
-    throw new Error(message);
-  }
-
-  return payload?.invoice || null;
-}
-
-async function deleteInvoiceRequest(checksum, { errorMessage } = {}) {
-  if (!checksum) {
-    throw new Error(errorMessage || 'Invoice checksum is required.');
-  }
-
-  const response = await fetch(`/api/invoices/${encodeURIComponent(checksum)}`, {
-    method: 'DELETE',
-  });
-
-  let payload = null;
-  try {
-    payload = await response.json();
-  } catch (error) {
-    payload = null;
-  }
-
-  if (!response.ok) {
-    const message = payload?.error || errorMessage || 'Failed to delete invoice.';
-    throw new Error(message);
-  }
-
-  return payload || {};
-}
-
-async function handleCreateVendor(button) {
-  if (button.disabled) {
-    return;
-  }
-
-  if (!selectedRealmId) {
-    showStatus(globalStatus, 'Select a QuickBooks company before adding vendors.', 'error');
-    return;
-  }
-
-  const vendorName = typeof button.dataset.vendorName === 'string' ? button.dataset.vendorName.trim() : '';
-  if (!vendorName) {
-    showStatus(globalStatus, 'Invoice is missing a vendor name to add.', 'error');
-    return;
-  }
-
-  const originalLabel = button.textContent;
-  button.disabled = true;
-  button.classList.add('is-pending');
-  button.textContent = 'Adding…';
-
-  try {
-    const response = await fetch(
-      `/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/vendors`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ displayName: vendorName }),
-      }
-    );
-
-    let payload = null;
-    try {
-      payload = await response.json();
-    } catch (error) {
-      payload = null;
-    }
-
+    const body = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const message = payload?.error || 'Failed to create vendor in QuickBooks.';
+      const message = body?.error || 'Failed to start Outlook resync.';
       throw new Error(message);
     }
 
-    await ensureCompanyMetadata(selectedRealmId, { force: true });
-    const metadata = companyMetadataCache.get(selectedRealmId) || null;
-    if (metadata) {
-      renderVendorList(metadata, 'No vendors available for this company.');
-      renderAccountList(metadata, 'No accounts available for this company.');
-    }
-    renderReviewTable();
-
-    const createdName = payload?.vendor?.displayName || vendorName;
-    showStatus(globalStatus, `Added ${createdName} to QuickBooks.`, 'success');
+    showStatus(globalStatus, 'Outlook resync queued. This may take a few minutes.', 'success');
   } catch (error) {
     console.error(error);
-    showStatus(globalStatus, error.message || 'Failed to create vendor in QuickBooks.', 'error');
+    showStatus(globalStatus, error.message || 'Failed to start Outlook resync.', 'error');
   } finally {
-    button.textContent = originalLabel;
-    button.disabled = false;
-    button.classList.remove('is-pending');
+    if (outlookResyncButton) {
+      outlookResyncButton.disabled = false;
+      outlookResyncButton.textContent = originalLabel || 'Request full resync';
+    }
+    renderOutlookSettings();
   }
 }
 
-async function handleCreateAccount(button) {
-  if (button.disabled) {
-    return;
-  }
-
+async function handleOutlookDisconnect() {
   if (!selectedRealmId) {
-    showStatus(globalStatus, 'Select a QuickBooks company before adding accounts.', 'error');
+    showStatus(globalStatus, 'Select a company before disconnecting Outlook.', 'error');
     return;
   }
 
-  const accountName = typeof button.dataset.accountName === 'string' ? button.dataset.accountName.trim() : '';
-  if (!accountName) {
-    showStatus(globalStatus, 'Invoice is missing an account name to add.', 'error');
+  if (!outlookDisconnectButton || outlookDisconnectButton.disabled) {
     return;
   }
 
-  const accountType = typeof button.dataset.accountType === 'string' ? button.dataset.accountType.trim() : '';
-  const accountSubType = typeof button.dataset.accountSubType === 'string' ? button.dataset.accountSubType.trim() : '';
+  const confirmed = window.confirm('Disconnect the Outlook folder for this company?');
+  if (!confirmed) {
+    return;
+  }
 
-  const originalLabel = button.textContent;
-  button.disabled = true;
-  button.classList.add('is-pending');
-  button.textContent = 'Adding…';
+  const originalLabel = outlookDisconnectButton.textContent;
+  outlookDisconnectButton.disabled = true;
+  outlookDisconnectButton.textContent = 'Disconnecting…';
 
   try {
-    const response = await fetch(
-      `/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/accounts`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          name: accountName,
-          accountType: accountType || null,
-          accountSubType: accountSubType || null,
-        }),
-      }
-    );
+    const response = await fetch(`/api/quickbooks/companies/${encodeURIComponent(selectedRealmId)}/outlook`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ enabled: false, monitoredFolder: null }),
+    });
 
-    let payload = null;
-    try {
-      payload = await response.json();
-    } catch (error) {
-      payload = null;
-    }
-
+    const body = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const message = payload?.error || 'Failed to create account in QuickBooks.';
+      const message = body?.error || 'Failed to disconnect Outlook.';
       throw new Error(message);
     }
 
-    await ensureCompanyMetadata(selectedRealmId, { force: true });
-    const metadata = companyMetadataCache.get(selectedRealmId) || null;
-    if (metadata) {
-      renderAccountList(metadata, 'No accounts available for this company.');
-      renderVendorList(metadata, 'No vendors available for this company.');
-    }
-    renderReviewTable();
-
-    const createdName = payload?.account?.name || accountName;
-    showStatus(globalStatus, `Added ${createdName} to QuickBooks.`, 'success');
+    updateLocalCompanyOutlook(selectedRealmId, body?.outlook || null);
+    outlookFolderIdInput.value = '';
+    outlookFolderPathInput.value = '';
+    outlookFolderNameInput.value = '';
+    outlookFolderWebUrlInput.value = '';
+    outlookFolderParentIdInput.value = '';
+    updateOutlookFolderSummaryFromInputs();
+    showStatus(globalStatus, 'Outlook monitoring disabled for this company.', 'success');
   } catch (error) {
     console.error(error);
-    showStatus(globalStatus, error.message || 'Failed to create account in QuickBooks.', 'error');
+    showStatus(globalStatus, error.message || 'Failed to disconnect Outlook.', 'error');
   } finally {
-    button.textContent = originalLabel;
-    button.disabled = false;
-    button.classList.remove('is-pending');
+    if (outlookDisconnectButton) {
+      outlookDisconnectButton.disabled = false;
+      outlookDisconnectButton.textContent = originalLabel || 'Disconnect';
+    }
+    renderOutlookSettings();
   }
 }
 
-function openInvoiceFilePreview(checksum, button) {
-  if (!checksum) {
+function openOutlookBrowser(mode) {
+  if (!outlookBrowseModal) {
     return;
   }
 
-  const previewUrl = buildInvoicePreviewUrl(checksum);
-  const previewWindow = window.open(
-    previewUrl,
-    'invoicePreview',
-    'popup,width=900,height=700,left=200,top=120,noopener,noreferrer'
-  );
-
-  if (!previewWindow) {
-    const fileName = button?.dataset?.filename || 'invoice';
-    showStatus(globalStatus, `Allow pop-ups to preview ${fileName}.`, 'error');
+  if (!sharedOutlookSettings?.mailboxUserId) {
+    showStatus(globalStatus, 'Configure the shared Outlook mailbox before browsing folders.', 'error');
     return;
   }
 
-  previewWindow.opener = null;
-  invoicePreviewWindow = previewWindow;
+  outlookBrowseState = {
+    mode,
+    stack: [],
+    selectedItem: null,
+    requestToken: 0,
+  };
 
-  try {
-    previewWindow.focus();
-  } catch (error) {
-    // Ignore focus errors; the window is already open.
-  }
-}
-
-async function openQuickBooksPreview(checksum, button) {
-  if (!checksum) {
-    return;
-  }
-
-  if (!selectedRealmId) {
-    showStatus(globalStatus, 'Select a QuickBooks company before previewing.', 'error');
-    return;
-  }
-
-  const targetButton = button || null;
-  const originalLabel = targetButton?.textContent;
-
-  if (targetButton) {
-    targetButton.disabled = true;
-    targetButton.classList.add('is-pending');
-    targetButton.textContent = 'Loading…';
-  }
-
-  try {
-    const params = new URLSearchParams({
-      invoiceId: checksum,
-      realmId: selectedRealmId,
+  const baseFolder = sharedOutlookSettings?.baseFolder || null;
+  if (mode === 'company' && baseFolder?.id) {
+    outlookBrowseState.stack.push({
+      id: baseFolder.id,
+      displayName: baseFolder.displayName || baseFolder.path || 'Base folder',
+      path: baseFolder.path || '',
+      webUrl: baseFolder.webUrl || null,
     });
-    const response = await fetch(`/api/preview-quickbooks?${params.toString()}`);
-    let payload = null;
-    try {
-      payload = await response.json();
-    } catch (error) {
-      payload = null;
-    }
-
-    if (!response.ok) {
-      const message = payload?.error || 'Failed to build QuickBooks preview.';
-      const details = Array.isArray(payload?.missing) ? buildQuickBooksPreviewBlockerMessage(payload.missing) : '';
-      const composed = details ? `${message} (${details})` : message;
-      showStatus(globalStatus, composed, 'error');
-      return;
-    }
-
-    showQuickBooksPreviewModal(payload);
-  } catch (error) {
-    console.error(error);
-    showStatus(globalStatus, error.message || 'Failed to build QuickBooks preview.', 'error');
-  } finally {
-    if (targetButton) {
-      targetButton.textContent = originalLabel || 'Preview QB';
-      targetButton.disabled = false;
-      targetButton.classList.remove('is-pending');
-    }
-  }
-}
-
-function showQuickBooksPreviewModal(preview) {
-  if (!qbPreviewModal || !preview) {
-    return;
   }
 
-  const method = preview.method || 'POST';
-  const url = preview.url || '';
-  const payload = preview.payload ?? {};
-  let structuredPayload = payload;
-  if (typeof payload === 'string') {
-    try {
-      structuredPayload = JSON.parse(payload);
-    } catch (error) {
-      structuredPayload = null;
-    }
+  if (mode === 'shared-base' && baseFolder?.id) {
+    outlookSharedBaseIdInput.value = baseFolder.id;
+    outlookSharedBasePathInput.value = baseFolder.path || '';
+    outlookSharedBaseNameInput.value = baseFolder.displayName || '';
+    outlookSharedBaseWebUrlInput.value = baseFolder.webUrl || '';
   }
 
-  renderQuickBooksPreviewSummary(structuredPayload && typeof structuredPayload === 'object' ? structuredPayload : null);
+  lastOutlookBrowseTrigger =
+    mode === 'shared-base'
+      ? outlookSharedBrowseBaseButton
+      : outlookBrowseButton;
 
-  const formatted = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
-
-  if (qbPreviewMethod) {
-    qbPreviewMethod.textContent = `${method} ${url}`.trim();
+  if (outlookBrowseConfirmButton) {
+    outlookBrowseConfirmButton.disabled = true;
+    outlookBrowseConfirmButton.textContent = mode === 'shared-base' ? 'Set base folder' : 'Select folder';
   }
-  if (qbPreviewJson) {
-    qbPreviewJson.textContent = formatted;
+
+  if (outlookBrowseTitle) {
+    outlookBrowseTitle.textContent = mode === 'shared-base' ? 'Choose Outlook base folder' : 'Choose Outlook folder';
   }
 
-  lastQuickBooksPreviewPayload = formatted;
-
-  qbPreviewModal.hidden = false;
-  qbPreviewModal.setAttribute('aria-hidden', 'false');
+  outlookBrowseModal.hidden = false;
+  outlookBrowseModal.setAttribute('aria-hidden', 'false');
   document.body.classList.add('modal-open');
-  setQuickBooksPreviewEscapeHandler(true);
+  setOutlookBrowseEscapeHandler(true);
 
-  if (qbPreviewCloseButton) {
-    qbPreviewCloseButton.focus();
-  }
+  renderOutlookBrowseBreadcrumb();
+  renderOutlookBrowseList([]);
+
+  const initialFolder = outlookBrowseState.stack.length
+    ? outlookBrowseState.stack[outlookBrowseState.stack.length - 1]
+    : null;
+  loadOutlookFolderChildren(initialFolder?.id || null, { path: initialFolder?.path || null });
 }
 
-function renderQuickBooksPreviewSummary(payload) {
-  if (!qbPreviewSummary) {
+function closeOutlookBrowser() {
+  if (!outlookBrowseModal) {
     return;
   }
 
-  qbPreviewSummary.innerHTML = '';
-  qbPreviewSummary.hidden = true;
-
-  if (!payload || typeof payload !== 'object') {
-    return;
-  }
-
-  const lines = Array.isArray(payload.Line) ? payload.Line : [];
-  if (!lines.length) {
-    return;
-  }
-
-  const metadata = selectedRealmId ? companyMetadataCache.get(selectedRealmId) : null;
-  const taxLookup = metadata?.taxCodes?.lookup;
-
-  const table = document.createElement('table');
-  table.className = 'preview-summary-table';
-
-  const thead = document.createElement('thead');
-  const headerRow = document.createElement('tr');
-  ['Line description', 'Amount', 'Tax code'].forEach((label) => {
-    const th = document.createElement('th');
-    th.scope = 'col';
-    th.textContent = label;
-    headerRow.appendChild(th);
-  });
-  thead.appendChild(headerRow);
-  table.appendChild(thead);
-
-  const tbody = document.createElement('tbody');
-
-  lines.forEach((line, index) => {
-    if (!line || typeof line !== 'object') {
-      return;
-    }
-
-    const detail = line.AccountBasedExpenseLineDetail || line.Detail || {};
-    const taxCodeRef = detail.TaxCodeRef || line.TaxCodeRef || {};
-    const taxCodeId = sanitizeReviewSelectionId(taxCodeRef.value || taxCodeRef.Value);
-    const amount = formatAmount(line.Amount);
-    const description =
-      typeof line.Description === 'string' && line.Description.trim()
-        ? line.Description.trim()
-        : `Line ${index + 1}`;
-
-    let taxLabel = '—';
-    if (taxCodeId) {
-      if (taxLookup?.has(taxCodeId)) {
-        const entry = taxLookup.get(taxCodeId);
-        const rate = extractRateFromTaxMetadata(entry);
-        const rateText = typeof rate === 'number' ? `${formatRateValue(rate)}%` : null;
-        const baseName = entry?.name || `Tax Code ${taxCodeId}`;
-        taxLabel = rateText ? `${baseName} (${rateText})` : baseName;
-      } else {
-        taxLabel = `Tax Code ${taxCodeId}`;
-      }
-    }
-
-    const row = document.createElement('tr');
-
-    const descriptionCell = document.createElement('td');
-    descriptionCell.textContent = description;
-    row.appendChild(descriptionCell);
-
-    const amountCell = document.createElement('td');
-    amountCell.textContent = amount;
-    amountCell.className = 'numeric';
-    row.appendChild(amountCell);
-
-    const taxCell = document.createElement('td');
-    taxCell.textContent = taxLabel;
-    row.appendChild(taxCell);
-
-    tbody.appendChild(row);
-  });
-
-  if (!tbody.children.length) {
-    return;
-  }
-
-  table.appendChild(tbody);
-  qbPreviewSummary.appendChild(table);
-  qbPreviewSummary.hidden = false;
-}
-
-function hideQuickBooksPreviewModal() {
-  if (!qbPreviewModal || qbPreviewModal.hidden) {
-    return;
-  }
-
-  qbPreviewModal.hidden = true;
-  qbPreviewModal.setAttribute('aria-hidden', 'true');
+  outlookBrowseModal.hidden = true;
+  outlookBrowseModal.setAttribute('aria-hidden', 'true');
   document.body.classList.remove('modal-open');
-  setQuickBooksPreviewEscapeHandler(false);
-  if (qbPreviewSummary) {
-    qbPreviewSummary.innerHTML = '';
-    qbPreviewSummary.hidden = true;
+  setOutlookBrowseEscapeHandler(false);
+  outlookBrowseState = null;
+
+  if (lastOutlookBrowseTrigger) {
+    lastOutlookBrowseTrigger.focus();
   }
+  lastOutlookBrowseTrigger = null;
 }
 
-async function copyQuickBooksPreviewPayload() {
-  if (!lastQuickBooksPreviewPayload) {
-    return;
-  }
-
-  try {
-    if (navigator?.clipboard?.writeText) {
-      await navigator.clipboard.writeText(lastQuickBooksPreviewPayload);
-    } else {
-      const textarea = document.createElement('textarea');
-      textarea.value = lastQuickBooksPreviewPayload;
-      textarea.setAttribute('readonly', '');
-      textarea.style.position = 'absolute';
-      textarea.style.left = '-9999px';
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand('copy');
-      document.body.removeChild(textarea);
-    }
-    showStatus(globalStatus, 'Copied preview JSON to clipboard.', 'success');
-  } catch (error) {
-    console.error(error);
-    showStatus(globalStatus, 'Unable to copy preview JSON.', 'error');
-  }
-}
-
-function setQuickBooksPreviewEscapeHandler(active) {
-  if (active) {
-    if (quickBooksPreviewEscapeHandler) {
-      return;
-    }
-    quickBooksPreviewEscapeHandler = (event) => {
+function setOutlookBrowseEscapeHandler(enable) {
+  if (enable && !outlookBrowseEscapeHandler) {
+    outlookBrowseEscapeHandler = (event) => {
       if (event.key === 'Escape') {
-        hideQuickBooksPreviewModal();
+        closeOutlookBrowser();
       }
     };
-    window.addEventListener('keydown', quickBooksPreviewEscapeHandler);
-  } else if (quickBooksPreviewEscapeHandler) {
-    window.removeEventListener('keydown', quickBooksPreviewEscapeHandler);
-    quickBooksPreviewEscapeHandler = null;
+    window.addEventListener('keydown', outlookBrowseEscapeHandler);
+  } else if (!enable && outlookBrowseEscapeHandler) {
+    window.removeEventListener('keydown', outlookBrowseEscapeHandler);
+    outlookBrowseEscapeHandler = null;
   }
 }
 
-function buildInvoicePreviewUrl(checksum) {
-  const encoded = encodeURIComponent(checksum);
-  return `/api/invoices/${encoded}/file`;
-}
-
-async function handleArchiveAction(event) {
-  const button = event.target.closest('button[data-action]');
-  if (!button) {
+function renderOutlookBrowseBreadcrumb() {
+  if (!outlookBrowsePath) {
     return;
   }
 
-  const action = button.dataset.action;
-  const checksum = button.dataset.checksum;
-  if (!checksum) {
+  if (!outlookBrowseState || !outlookBrowseState.stack.length) {
+    outlookBrowsePath.textContent = 'Mailbox root';
     return;
   }
 
-  if (action === 'move') {
-    await moveInvoiceToReview(checksum, button);
-  } else if (action === 'delete') {
-    await deleteInvoice(checksum, button);
+  const segments = outlookBrowseState.stack.map((entry) => entry.displayName || formatOutlookFolderBreadcrumb(entry.path || ''));
+  outlookBrowsePath.textContent = `Mailbox root / ${segments.join(' / ')}`;
+}
+
+function renderOutlookBrowseList(folders) {
+  if (!outlookBrowseList) {
+    return;
+  }
+
+  outlookBrowseList.innerHTML = '';
+  outlookBrowseState.selectedItem = null;
+
+  const fragment = document.createDocumentFragment();
+  folders.forEach((folder, index) => {
+    const item = document.createElement('li');
+    item.className = 'outlook-browser-item';
+    item.setAttribute('role', 'option');
+    item.setAttribute('tabindex', '0');
+    item.dataset.id = folder.id || '';
+    item.dataset.path = folder.path || '';
+    item.dataset.name = folder.displayName || '';
+    item.dataset.parentId = folder.parentId || '';
+    item.dataset.weburl = folder.webUrl || '';
+    item.dataset.childCount = Number.isFinite(folder.childFolderCount) ? String(folder.childFolderCount) : '0';
+
+    const entry = document.createElement('div');
+    entry.className = 'outlook-browser-entry';
+
+    const name = document.createElement('strong');
+    name.className = 'outlook-entry-name';
+    name.textContent = folder.displayName || (folder.path ? formatOutlookFolderBreadcrumb(folder.path) : '(Unnamed folder)');
+
+    const meta = document.createElement('span');
+    meta.className = 'outlook-entry-meta';
+    if (folder.path) {
+      meta.textContent = formatOutlookFolderBreadcrumb(folder.path);
+    } else if (Number.isFinite(folder.childFolderCount)) {
+      meta.textContent = `${folder.childFolderCount} subfolder${folder.childFolderCount === 1 ? '' : 's'}`;
+    } else {
+      meta.textContent = 'Folder';
+    }
+
+    entry.appendChild(name);
+    entry.appendChild(meta);
+    item.appendChild(entry);
+    fragment.appendChild(item);
+
+    if (index === 0 && outlookBrowseConfirmButton) {
+      // focus the first item for keyboard navigation
+      requestAnimationFrame(() => item.focus());
+    }
+  });
+
+  if (!folders.length) {
+    const empty = document.createElement('li');
+    empty.className = 'outlook-browser-empty';
+    empty.textContent = 'No subfolders in this location.';
+    fragment.appendChild(empty);
+  }
+
+  outlookBrowseList.appendChild(fragment);
+  if (outlookBrowseConfirmButton) {
+    outlookBrowseConfirmButton.disabled = true;
   }
 }
 
-async function moveInvoiceToReview(checksum, button) {
-  const originalLabel = button.textContent;
-  button.disabled = true;
-  button.textContent = 'Moving…';
+function handleOutlookBrowseListClick(event) {
+  const item = event.target.closest('.outlook-browser-item');
+  if (!item || !outlookBrowseList || !outlookBrowseList.contains(item)) {
+    return;
+  }
+  selectOutlookBrowseItem(item);
+}
+
+function handleOutlookBrowseListDoubleClick(event) {
+  const item = event.target.closest('.outlook-browser-item');
+  if (!item || !outlookBrowseList || !outlookBrowseList.contains(item)) {
+    return;
+  }
+  enterOutlookFolder(item.dataset);
+}
+
+function handleOutlookBrowseListKeydown(event) {
+  if (!outlookBrowseState || !outlookBrowseList) {
+    return;
+  }
+
+  const { key } = event;
+  const items = Array.from(outlookBrowseList.querySelectorAll('.outlook-browser-item'));
+  if (!items.length) {
+    return;
+  }
+
+  const currentIndex = items.findIndex((item) => item.getAttribute('aria-selected') === 'true');
+  let nextIndex = currentIndex;
+
+  if (key === 'ArrowDown') {
+    nextIndex = Math.min(items.length - 1, currentIndex + 1);
+    event.preventDefault();
+  } else if (key === 'ArrowUp') {
+    nextIndex = Math.max(0, currentIndex - 1);
+    event.preventDefault();
+  } else if (key === 'Enter') {
+    if (currentIndex >= 0) {
+      const item = items[currentIndex];
+      enterOutlookFolder(item.dataset);
+    }
+  } else if (key === 'Backspace') {
+    handleOutlookBrowseBack();
+  }
+
+  if (nextIndex !== currentIndex && nextIndex >= 0) {
+    const item = items[nextIndex];
+    selectOutlookBrowseItem(item, { scrollIntoView: true });
+  }
+}
+
+function selectOutlookBrowseItem(item, { scrollIntoView = false } = {}) {
+  if (!outlookBrowseList || !item.classList.contains('outlook-browser-item')) {
+    return;
+  }
+
+  const items = outlookBrowseList.querySelectorAll('.outlook-browser-item');
+  items.forEach((entry) => entry.setAttribute('aria-selected', 'false'));
+  item.setAttribute('aria-selected', 'true');
+  outlookBrowseState.selectedItem = {
+    id: item.dataset.id || null,
+    path: item.dataset.path || null,
+    displayName: item.dataset.name || null,
+    parentId: item.dataset.parentId || null,
+    webUrl: item.dataset.weburl || null,
+  };
+
+  if (outlookBrowseConfirmButton) {
+    outlookBrowseConfirmButton.disabled = !outlookBrowseState.selectedItem?.id;
+  }
+
+  if (scrollIntoView) {
+    item.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+function handleOutlookBrowseBack() {
+  if (!outlookBrowseState || !outlookBrowseState.stack.length) {
+    closeOutlookBrowser();
+    return;
+  }
+
+  outlookBrowseState.stack.pop();
+  const current = outlookBrowseState.stack.length
+    ? outlookBrowseState.stack[outlookBrowseState.stack.length - 1]
+    : null;
+  renderOutlookBrowseBreadcrumb();
+  loadOutlookFolderChildren(current?.id || null, { path: current?.path || null });
+}
+
+function enterOutlookFolder(dataset) {
+  if (!dataset) {
+    return;
+  }
+  const id = dataset.id || null;
+  const name = dataset.name || dataset.path || '(Unnamed folder)';
+  const path = dataset.path || '';
+
+  if (!id) {
+    return;
+  }
+
+  outlookBrowseState.stack.push({ id, displayName: name, path, webUrl: dataset.weburl || null });
+  renderOutlookBrowseBreadcrumb();
+  loadOutlookFolderChildren(id, { path });
+}
+
+async function loadOutlookFolderChildren(folderId, { path: parentPath = null } = {}) {
+  if (!outlookBrowseState) {
+    return;
+  }
+
+  const token = ++outlookBrowseState.requestToken;
+  const query = new URLSearchParams();
+  if (folderId) {
+    query.set('folderId', folderId);
+  } else if (parentPath) {
+    query.set('path', parentPath);
+  }
+
+  setOutlookBrowseStatus('Loading folders…');
 
   try {
-    await updateInvoiceStatusRequest(checksum, 'review', {
-      errorMessage: 'Failed to move invoice to review.',
-    });
-    showStatus(globalStatus, 'Invoice moved to review.', 'success');
-    await loadStoredInvoices();
+    const response = await fetch(`/api/outlook/folders?${query.toString()}`);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = payload?.error || payload?.message || 'Failed to load Outlook folders.';
+      throw new Error(message);
+    }
+    if (token !== outlookBrowseState.requestToken) {
+      return;
+    }
+    const folders = Array.isArray(payload?.folders) ? payload.folders : [];
+    renderOutlookBrowseList(folders);
+    setOutlookBrowseStatus(folders.length ? '' : 'No subfolders in this location.');
   } catch (error) {
+    if (token !== outlookBrowseState.requestToken) {
+      return;
+    }
     console.error(error);
-    showStatus(globalStatus, error.message || 'Failed to move invoice to review.', 'error');
-  } finally {
-    button.textContent = originalLabel;
-    button.disabled = false;
+    setOutlookBrowseStatus(error.message || 'Failed to load folders.', { tone: 'error' });
+    renderOutlookBrowseList([]);
   }
 }
 
-async function moveInvoiceToArchive(checksum, button) {
-  const originalLabel = button.textContent;
-  button.disabled = true;
-  button.textContent = 'Moving…';
-
-  try {
-    await updateInvoiceStatusRequest(checksum, 'archive', {
-      errorMessage: 'Failed to move invoice to archive.',
-    });
-    showStatus(globalStatus, 'Invoice moved to archive.', 'success');
-    await loadStoredInvoices();
-  } catch (error) {
-    console.error(error);
-    showStatus(globalStatus, error.message || 'Failed to move invoice to archive.', 'error');
-  } finally {
-    button.textContent = originalLabel;
-    button.disabled = false;
+function setOutlookBrowseStatus(message, { tone = 'info' } = {}) {
+  if (!outlookBrowseStatus) {
+    return;
   }
+  if (!message) {
+    outlookBrowseStatus.hidden = true;
+    outlookBrowseStatus.textContent = '';
+    return;
+  }
+  outlookBrowseStatus.hidden = false;
+  outlookBrowseStatus.textContent = message;
+  outlookBrowseStatus.classList.toggle('is-error', tone === 'error');
 }
 
-async function deleteInvoice(checksum, button) {
-  const originalLabel = button.textContent;
-  button.disabled = true;
-  button.textContent = 'Deleting…';
-
-  try {
-    await deleteInvoiceRequest(checksum, { errorMessage: 'Failed to delete invoice.' });
-    showStatus(globalStatus, 'Invoice removed from archive.', 'success');
-    await loadStoredInvoices();
-  } catch (error) {
-    console.error(error);
-    showStatus(globalStatus, error.message || 'Failed to delete invoice.', 'error');
-  } finally {
-    button.textContent = originalLabel;
-    button.disabled = false;
+function applyOutlookBrowserSelection() {
+  if (!outlookBrowseState || !outlookBrowseState.selectedItem) {
+    return;
   }
+
+  const folder = outlookBrowseState.selectedItem;
+  if (outlookBrowseState.mode === 'shared-base') {
+    applyOutlookSharedBaseSelection(folder);
+  } else {
+    outlookFolderIdInput.value = folder.id || '';
+    outlookFolderPathInput.value = folder.path || '';
+    outlookFolderNameInput.value = folder.displayName || '';
+    outlookFolderWebUrlInput.value = folder.webUrl || '';
+    updateOutlookFolderSummaryFromInputs();
+    if (outlookEnabledInput && outlookEnabledInput.checked) {
+      outlookSyncButton.disabled = false;
+      outlookResyncButton.disabled = false;
+    }
+  }
+
+  closeOutlookBrowser();
 }
 
-function normaliseTextInput(value) {
-  if (typeof value !== 'string') {
-    return '';
-  }
-  return value.trim();
-}
+function applyOutlookSharedBaseSelection(folder) {
+  const id = folder.id || '';
+  const path = folder.path || '';
+  const name = folder.displayName || '';
+  const webUrl = folder.webUrl || '';
 
-function parseCommaSeparatedList(value) {
-  if (Array.isArray(value)) {
-    return value.map((entry) => normaliseTextInput(entry)).filter(Boolean);
-  }
+  outlookSharedBaseIdInput.value = id;
+  outlookSharedBasePathInput.value = path;
+  outlookSharedBaseNameInput.value = name;
+  outlookSharedBaseWebUrlInput.value = webUrl;
 
-  if (typeof value !== 'string') {
-    return [];
-  }
+  const label = path ? formatOutlookFolderBreadcrumb(path) : name || 'Mailbox root';
+  outlookSharedBaseFolder.textContent = label;
+      outlookSharedSummaryText.textContent = sharedOutlookSettings?.mailboxUserId
+        ? `Monitoring mailbox ${sharedOutlookSettings.mailboxDisplayName || sharedOutlookSettings.mailboxUserId}.`
+        : outlookSharedSummaryText.textContent;
 
-  return value
-    .split(',')
-    .map((entry) => normaliseTextInput(entry))
-    .filter(Boolean);
+  outlookSharedForm.hidden = false;
+  outlookSharedForm.setAttribute('aria-hidden', 'false');
+  outlookSharedBrowseBaseButton?.focus();
 }
 
 function updateLocalCompanyOneDrive(realmId, state) {
@@ -6455,106 +4757,63 @@ function updateLocalCompanyOneDrive(realmId, state) {
   }
 
   const index = quickBooksCompanies.findIndex((entry) => entry.realmId === realmId);
-  if (index === -1) {
-    return;
+  if (index >= 0) {
+    quickBooksCompanies[index] = {
+      ...quickBooksCompanies[index],
+      oneDrive: state || null,
+    };
   }
-
-  quickBooksCompanies[index] = {
-    ...quickBooksCompanies[index],
-    oneDrive: state || null,
-  };
 
   if (selectedRealmId === realmId) {
     renderOneDriveSettings();
   }
 }
 
-function updateLocalCompanyGmail(realmId, state) {
+function getOutlookFolderSelectionFromInputs() {
+  const id = normaliseTextInput(outlookFolderIdInput?.value);
+  const path = normaliseTextInput(outlookFolderPathInput?.value);
+  const displayName = normaliseTextInput(outlookFolderNameInput?.value);
+  const webUrl = normaliseTextInput(outlookFolderWebUrlInput?.value);
+  const parentId = normaliseTextInput(outlookFolderParentIdInput?.value);
+
+  if (!id && !path) {
+    return null;
+  }
+  return {
+    id: id || null,
+    path: path || null,
+    displayName: displayName || null,
+    webUrl: webUrl || null,
+    parentId: parentId || null,
+  };
+}
+
+function formatOutlookFolderBreadcrumb(path) {
+  if (!path) {
+    return '';
+  }
+  return path.replace(/^\/+/, '').split('/').filter(Boolean).join(' / ');
+}
+
+function updateLocalCompanyOutlook(realmId, state) {
   if (!realmId) {
     return;
   }
 
   const index = quickBooksCompanies.findIndex((entry) => entry.realmId === realmId);
-  if (index === -1) {
-    return;
+  if (index >= 0) {
+    quickBooksCompanies[index] = {
+      ...quickBooksCompanies[index],
+      outlook: state || null,
+    };
   }
-
-  quickBooksCompanies[index] = {
-    ...quickBooksCompanies[index],
-    gmail: state || null,
-  };
 
   if (selectedRealmId === realmId) {
-    renderGmailSettings();
+    renderOutlookSettings();
   }
 }
 
-function formatStatusLabel(value, fallback = 'Unknown') {
-  const text = typeof value === 'string' ? value.trim() : '';
-  if (!text) {
-    return fallback;
-  }
-
-  return text
-    .split(/[_\s]+/)
-    .filter(Boolean)
-    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
-    .join(' ');
-}
-
-function buildOneDriveResultText(config, { enabled = true } = {}) {
-  if (!config) {
-    return enabled ? 'Not connected.' : 'Disabled.';
-  }
-
-  if (config.lastSyncError?.message) {
-    const label = config.lastSyncStatus ? formatStatusLabel(config.lastSyncStatus, 'Error') : 'Error';
-    return `${label} • ${config.lastSyncError.message}`;
-  }
-
-  if (!config.lastSyncStatus) {
-    return enabled ? 'No syncs yet.' : 'Disabled.';
-  }
-
-  const metrics = config.lastSyncMetrics || {};
-  const parts = [];
-
-  if (typeof metrics.createdCount === 'number' && metrics.createdCount > 0) {
-    parts.push(`${metrics.createdCount} new ${metrics.createdCount === 1 ? 'invoice' : 'invoices'}`);
-  }
-
-  if (typeof metrics.processedItems === 'number' && metrics.processedItems > 0) {
-    if (!parts.length || metrics.processedItems !== metrics.createdCount) {
-      parts.push(`${metrics.processedItems} file${metrics.processedItems === 1 ? '' : 's'} processed`);
-    }
-  }
-
-  if (typeof metrics.duplicateCount === 'number' && metrics.duplicateCount > 0) {
-    parts.push(`${metrics.duplicateCount} duplicate${metrics.duplicateCount === 1 ? '' : 's'} skipped`);
-  }
-
-  const processed = config.processedFolder || null;
-  const moveTarget = processed?.path || processed?.name;
-  if (moveTarget) {
-    let label = processed?.name || moveTarget;
-    if (processed?.path) {
-      const friendly = formatOneDriveBreadcrumb(
-        deriveOneDriveBreadcrumbFromPath(processed.path)
-      );
-      label = friendly || processed.path;
-    }
-    parts.push(`Moved to ${label}`);
-  }
-
-  if (!parts.length && config.lastSyncStatus === 'success') {
-    parts.push('Completed without errors');
-  }
-
-  const label = formatStatusLabel(config.lastSyncStatus, enabled ? 'Success' : 'Disabled');
-  return parts.length ? `${label} • ${parts.join(', ')}` : label;
-}
-
-function buildGmailResultText(config, { enabled = true } = {}) {
+function buildOutlookResultText(config, { enabled = true } = {}) {
   if (!config) {
     return enabled ? 'Not connected.' : 'Disabled.';
   }
@@ -6594,6 +4853,127 @@ function buildGmailResultText(config, { enabled = true } = {}) {
   const label = formatStatusLabel(config.lastSyncStatus, enabled ? 'Success' : 'Disabled');
   return parts.length ? `${label} • ${parts.join(', ')}` : label;
 }
+
+function sanitizeReviewSelectionId(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value);
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+
+  return null;
+}
+
+function prepareMetadataSection(section) {
+  const items = Array.isArray(section?.items) ? section.items : [];
+  const normalised = [];
+  const lookup = new Map();
+
+  for (const item of items) {
+    const id = sanitizeReviewSelectionId(item?.id);
+    if (!id) {
+      continue;
+    }
+    const entry = { ...item, id };
+    normalised.push(entry);
+    lookup.set(id, entry);
+  }
+
+  return {
+    items: normalised,
+    lookup,
+    updatedAt: section?.updatedAt || null,
+  };
+}
+
+function prepareVendorSettings(settings, sections = {}) {
+  const entries = {};
+  const vendorLookup = sections?.vendors?.lookup instanceof Map ? sections.vendors.lookup : null;
+  const accountLookup = sections?.accounts?.lookup instanceof Map ? sections.accounts.lookup : null;
+  const taxCodeLookup = sections?.taxCodes?.lookup instanceof Map ? sections.taxCodes.lookup : null;
+
+  if (settings && typeof settings === 'object' && !Array.isArray(settings)) {
+    for (const [rawVendorId, entry] of Object.entries(settings)) {
+      const vendorId = sanitizeReviewSelectionId(rawVendorId);
+      if (!vendorId || (vendorLookup && !vendorLookup.has(vendorId))) {
+        continue;
+      }
+
+      const accountId = sanitizeReviewSelectionId(entry?.accountId);
+      const validAccountId = accountId && accountLookup?.has(accountId) ? accountId : null;
+
+      const taxCodeId = sanitizeReviewSelectionId(entry?.taxCodeId);
+      const validTaxCodeId = taxCodeId && taxCodeLookup?.has(taxCodeId) ? taxCodeId : null;
+
+      const vatTreatment = VENDOR_VAT_TREATMENT_VALUES.has(entry?.vatTreatment)
+        ? entry.vatTreatment
+        : null;
+
+      if (validAccountId || validTaxCodeId || vatTreatment) {
+        entries[vendorId] = {
+          accountId: validAccountId,
+          taxCodeId: validTaxCodeId,
+          vatTreatment,
+        };
+      }
+    }
+  }
+
+  return {
+    entries,
+    lookup: new Map(Object.entries(entries)),
+  };
+}
+
+function applyVendorSettingsStructure(metadata, vendorSettingsMap) {
+  if (!metadata) {
+    return;
+  }
+
+  const sections = {
+    vendors: metadata.vendors,
+    accounts: metadata.accounts,
+    taxCodes: metadata.taxCodes,
+  };
+
+  metadata.vendorSettings = prepareVendorSettings(vendorSettingsMap, sections);
+}
+
+function evaluateQuickBooksPreviewState(invoice, metadata) {
+  const result = {
+    missing: [],
+    canPreview: true,
+  };
+
+  const selection = invoice?.reviewSelection || {};
+
+  const vendorId = sanitizeReviewSelectionId(selection.vendorId);
+  if (vendorId && metadata?.vendors?.lookup && !metadata.vendors.lookup.has(vendorId)) {
+    result.missing.push('vendor');
+  }
+
+  const accountId = sanitizeReviewSelectionId(selection.accountId);
+  if (accountId && metadata?.accounts?.lookup && !metadata.accounts.lookup.has(accountId)) {
+    result.missing.push('account');
+  }
+
+  const taxCodeId = sanitizeReviewSelectionId(selection.taxCodeId);
+  if (taxCodeId && metadata?.taxCodes?.lookup && !metadata.taxCodes.lookup.has(taxCodeId)) {
+    result.missing.push('taxCode');
+  }
+
+  result.canPreview = result.missing.length === 0;
+  return result;
+}
+
+
 
 function formatTimestamp(value) {
   if (!value) {

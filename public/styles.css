@@ -1,18 +1,36 @@
 :root {
   color-scheme: light dark;
   font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #0c111d;
-  color: #e8edf5;
+  --color-background: #0b1120;
+  --color-surface: #111a29;
+  --color-panel: #152036;
+  --color-panel-elevated: #1b2742;
+  --color-border-strong: rgba(88, 132, 255, 0.4);
+  --color-border-subtle: rgba(88, 132, 255, 0.22);
+  --color-border-focus: rgba(105, 160, 255, 0.65);
+  --color-text-primary: #f5f7ff;
+  --color-text-secondary: #d9dff6;
+  --color-text-muted: #c2cae4;
+  --color-text-faint: #aab6d2;
+  --color-pill-muted: rgba(88, 132, 255, 0.22);
+  --color-pill-active: linear-gradient(135deg, #6a84ff, #4ed0ff);
+  --color-success: #4cd964;
+  --color-warning: #ffcc00;
+  --color-danger: #ff6b6b;
+  --color-link: #a9c4ff;
+  background: var(--color-background);
+  color: var(--color-text-primary);
 }
 
 body {
   margin: 0;
   padding: 0;
-  background: radial-gradient(circle at top, rgba(22, 33, 62, 0.7), rgba(10, 15, 24, 0.95));
+  background: radial-gradient(circle at top, rgba(26, 40, 74, 0.65), rgba(8, 13, 24, 0.95));
   min-height: 100vh;
   display: flex;
   justify-content: center;
   align-items: flex-start;
+  color: inherit;
 }
 
 body.modal-open {
@@ -24,10 +42,11 @@ body.modal-open {
   margin: 3rem auto;
   padding: clamp(1.75rem, 2vw + 1.5rem, 3rem);
   border-radius: 24px;
-  background: rgba(12, 17, 29, 0.85);
+  background: var(--color-surface);
   box-shadow: 0 20px 45px rgba(8, 12, 20, 0.45);
   backdrop-filter: blur(18px);
-  border: 1px solid rgba(88, 132, 255, 0.2);
+  border: 1px solid var(--color-border-subtle);
+  color: var(--color-text-primary);
 }
 
 header h1 {
@@ -37,7 +56,7 @@ header h1 {
 
 header p {
   margin-top: 0.5rem;
-  color: rgba(232, 237, 245, 0.75);
+  color: var(--color-text-secondary);
 }
 
 .tabs {
@@ -45,13 +64,13 @@ header p {
   gap: 0.75rem;
   margin-top: 2.5rem;
   padding-bottom: 0.5rem;
-  border-bottom: 1px solid rgba(88, 132, 255, 0.2);
+  border-bottom: 1px solid var(--color-border-subtle);
 }
 
 .tab {
   padding: 0.75rem 1.25rem;
   border-radius: 999px;
-  background: rgba(88, 132, 255, 0.12);
+  background: var(--color-pill-muted);
   border: 1px solid transparent;
   color: inherit;
   font-weight: 600;
@@ -60,17 +79,17 @@ header p {
 }
 
 .tab:hover {
-  background: rgba(88, 132, 255, 0.2);
+  background: rgba(102, 140, 255, 0.28);
   transform: translateY(-1px);
 }
 
 .tab.active {
   background: linear-gradient(135deg, rgba(88, 116, 255, 0.38), rgba(78, 208, 255, 0.55));
-  border-color: rgba(88, 132, 255, 0.35);
+  border-color: var(--color-border-strong);
 }
 
 .tab:focus-visible {
-  outline: 2px solid rgba(78, 208, 255, 0.6);
+  outline: 2px solid var(--color-border-focus);
   outline-offset: 3px;
 }
 
@@ -91,8 +110,8 @@ header p {
   margin-top: 2rem;
   padding: 1.5rem;
   border-radius: 16px;
-  background: rgba(18, 27, 43, 0.9);
-  border: 1px solid rgba(88, 132, 255, 0.15);
+  background: var(--color-panel);
+  border: 1px solid var(--color-border-subtle);
 }
 
 .quickbooks-section,
@@ -100,8 +119,8 @@ header p {
 .matcher-section {
   padding: 1.5rem;
   border-radius: 16px;
-  background: rgba(18, 27, 43, 0.9);
-  border: 1px solid rgba(88, 132, 255, 0.15);
+  background: var(--color-panel);
+  border: 1px solid var(--color-border-subtle);
 }
 
 .quickbooks-actions {
@@ -147,8 +166,8 @@ header p {
   gap: 1rem;
   padding: 1.2rem 1.3rem;
   border-radius: 14px;
-  background: rgba(12, 19, 31, 0.95);
-  border: 1px solid rgba(88, 132, 255, 0.18);
+  background: var(--color-panel-elevated);
+  border: 1px solid var(--color-border-subtle);
 }
 
 .company-edit-title {
@@ -160,7 +179,7 @@ header p {
 .company-edit-meta {
   flex: 1 1 100%;
   margin-bottom: 0.5rem;
-  color: rgba(232, 237, 245, 0.6);
+  color: var(--color-text-faint);
   font-size: 0.85rem;
   white-space: pre-line;
 }
@@ -202,8 +221,8 @@ header p {
   gap: 0.75rem;
   padding: 1.1rem 1.3rem;
   border-radius: 14px;
-  background: rgba(12, 19, 31, 0.95);
-  border: 1px solid rgba(88, 132, 255, 0.18);
+  background: var(--color-panel-elevated);
+  border: 1px solid var(--color-border-subtle);
 }
 
 .company-list .company-name {
@@ -212,17 +231,17 @@ header p {
 }
 
 .company-list .company-meta {
-  color: rgba(232, 237, 245, 0.6);
+  color: var(--color-text-faint);
   font-size: 0.9rem;
 }
 
 .company-list .empty {
   padding: 1.1rem 1.3rem;
   border-radius: 14px;
-  background: rgba(12, 19, 31, 0.95);
-  border: 1px dashed rgba(88, 132, 255, 0.25);
+  background: var(--color-panel-elevated);
+  border: 1px dashed var(--color-border-subtle);
   text-align: center;
-  color: rgba(232, 237, 245, 0.55);
+  color: var(--color-text-faint);
 }
 
 #invoice-form {
@@ -281,9 +300,9 @@ input,
 select,
 textarea {
   font: inherit;
-  color: inherit;
-  background: rgba(8, 12, 20, 0.85);
-  border: 1px solid rgba(88, 132, 255, 0.25);
+  color: var(--color-text-primary);
+  background: var(--color-panel-elevated);
+  border: 1px solid var(--color-border-subtle);
   border-radius: 12px;
   padding: 0.75rem 1rem;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
@@ -293,13 +312,13 @@ input:focus,
 select:focus,
 textarea:focus {
   outline: none;
-  border-color: rgba(78, 208, 255, 0.6);
-  box-shadow: 0 0 0 3px rgba(78, 208, 255, 0.18);
+  border-color: var(--color-border-focus);
+  box-shadow: 0 0 0 3px rgba(102, 160, 255, 0.18);
 }
 
 .hint {
   margin-top: 1rem;
-  color: rgba(232, 237, 245, 0.6);
+  color: var(--color-text-faint);
   font-size: 0.9rem;
 }
 
@@ -309,8 +328,8 @@ textarea:focus {
   margin-top: 1.5rem;
   padding: 1.5rem;
   border-radius: 14px;
-  background: rgba(18, 27, 43, 0.85);
-  border: 1px solid rgba(88, 132, 255, 0.15);
+  background: var(--color-panel);
+  border: 1px solid var(--color-border-subtle);
 }
 
 .status[data-state="error"] {
@@ -320,7 +339,7 @@ textarea:focus {
 
 pre {
   overflow-x: auto;
-  background: rgba(8, 12, 20, 0.88);
+  background: var(--color-panel-elevated);
   border-radius: 12px;
   padding: 1.1rem;
   font-size: 0.9rem;
@@ -353,8 +372,8 @@ pre {
   margin-top: 2.5rem;
   padding: 1.5rem;
   border-radius: 16px;
-  background: rgba(18, 27, 43, 0.9);
-  border: 1px solid rgba(88, 132, 255, 0.15);
+  background: var(--color-panel);
+  border: 1px solid var(--color-border-subtle);
   display: flex;
   gap: 1.5rem;
   align-items: flex-end;
@@ -410,7 +429,7 @@ pre {
 .secondary-button {
   background: rgba(88, 132, 255, 0.18);
   color: #e8edf5;
-  border: 1px solid rgba(88, 132, 255, 0.35);
+  border: 1px solid var(--color-border-strong);
 }
 
 .secondary-button:hover {
@@ -438,8 +457,9 @@ pre {
 .panel-card {
   padding: 1.5rem;
   border-radius: 16px;
-  background: rgba(18, 27, 43, 0.9);
-  border: 1px solid rgba(88, 132, 255, 0.15);
+  background: var(--color-panel);
+  border: 1px solid var(--color-border-subtle);
+  color: var(--color-text-primary);
 }
 
 .panel-card h2 {
@@ -448,7 +468,7 @@ pre {
 }
 
 .panel-summary {
-  color: rgba(232, 237, 245, 0.7);
+  color: var(--color-text-secondary);
   white-space: pre-line;
   margin-bottom: 1.25rem;
 }
@@ -457,24 +477,24 @@ pre {
   position: relative;
   margin-top: 0.5rem;
   padding: 2.5rem 1.5rem;
-  border: 2px dashed rgba(88, 132, 255, 0.35);
+  border: 2px dashed var(--color-border-subtle);
   border-radius: 18px;
-  background: rgba(12, 19, 31, 0.75);
+  background: var(--color-panel-elevated);
   text-align: center;
-  color: rgba(232, 237, 245, 0.75);
+  color: var(--color-text-secondary);
   cursor: pointer;
   transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
 }
 
 .drop-zone:focus-visible {
-  outline: 2px solid rgba(78, 208, 255, 0.6);
+  outline: 2px solid var(--color-border-focus);
   outline-offset: 4px;
 }
 
 .drop-zone.dragover,
 .drop-zone:hover {
-  border-color: rgba(78, 208, 255, 0.8);
-  background: rgba(18, 27, 43, 0.95);
+  border-color: var(--color-border-focus);
+  background: var(--color-panel-elevated);
   transform: translateY(-1px);
 }
 
@@ -490,7 +510,7 @@ pre {
 
 .drop-zone-subtitle {
   margin: 0.5rem 0 0;
-  color: rgba(232, 237, 245, 0.6);
+  color: var(--color-text-muted);
 }
 
 .visually-hidden {
@@ -516,9 +536,9 @@ pre {
 .upload-status-list .empty {
   padding: 1rem 1.1rem;
   border-radius: 12px;
-  background: rgba(12, 19, 31, 0.6);
-  border: 1px dashed rgba(88, 132, 255, 0.25);
-  color: rgba(232, 237, 245, 0.6);
+  background: var(--color-panel);
+  border: 1px dashed var(--color-border-subtle);
+  color: var(--color-text-faint);
 }
 
 .upload-status-item {
@@ -528,8 +548,8 @@ pre {
   gap: 1rem;
   padding: 0.9rem 1.1rem;
   border-radius: 12px;
-  background: rgba(12, 19, 31, 0.9);
-  border: 1px solid rgba(88, 132, 255, 0.18);
+  background: var(--color-panel);
+  border: 1px solid var(--color-border-subtle);
   font-size: 0.95rem;
 }
 
@@ -539,7 +559,7 @@ pre {
 
 .upload-status-message {
   font-size: 0.85rem;
-  color: rgba(232, 237, 245, 0.6);
+  color: var(--color-text-faint);
 }
 
 .upload-status-item[data-state="success"] {
@@ -586,8 +606,8 @@ pre {
   gap: 0.35rem;
   padding: 1rem 1.1rem;
   border-radius: 12px;
-  background: rgba(12, 19, 31, 0.9);
-  border: 1px solid rgba(88, 132, 255, 0.12);
+  background: var(--color-panel);
+  border: 1px solid var(--color-pill-muted);
 }
 
 .vendor-settings-grid {
@@ -602,14 +622,14 @@ pre {
   flex-direction: column;
   gap: 0.35rem;
   font-size: 0.85rem;
-  color: rgba(232, 237, 245, 0.75);
+  color: var(--color-text-secondary);
 }
 
 .vendor-setting-heading {
   font-size: 0.7rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: rgba(232, 237, 245, 0.6);
+  color: var(--color-text-faint);
 }
 
 .vendor-setting-group select {
@@ -624,9 +644,9 @@ pre {
 .entity-list .empty {
   padding: 1rem 1.1rem;
   border-radius: 12px;
-  background: rgba(12, 19, 31, 0.6);
-  border: 1px dashed rgba(88, 132, 255, 0.25);
-  color: rgba(232, 237, 245, 0.6);
+  background: var(--color-panel);
+  border: 1px dashed var(--color-border-subtle);
+  color: var(--color-text-faint);
 }
 
 .entity-name {
@@ -635,7 +655,7 @@ pre {
 
 .entity-meta {
   font-size: 0.85rem;
-  color: rgba(232, 237, 245, 0.65);
+  color: var(--color-text-muted);
 }
 
 .table-wrapper {
@@ -647,8 +667,8 @@ pre {
   margin-top: 1rem;
   padding: 0.75rem 1rem;
   border-radius: 10px;
-  border: 1px solid rgba(88, 132, 255, 0.25);
-  background: rgba(12, 19, 31, 0.7);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-panel);
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -657,7 +677,7 @@ pre {
 
 .bulk-selection-count {
   font-weight: 600;
-  color: rgba(232, 237, 245, 0.85);
+  color: var(--color-text-secondary);
 }
 
 .review-bulk-buttons {
@@ -672,8 +692,8 @@ pre {
   justify-content: center;
   padding: 0.45rem 1rem;
   border-radius: 999px;
-  border: 1px solid rgba(88, 132, 255, 0.35);
-  background: rgba(12, 19, 31, 0.8);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-panel);
   color: #e8edf5;
   font-weight: 600;
   font-size: 0.85rem;
@@ -719,7 +739,7 @@ pre {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-size: 0.75rem;
-  color: rgba(232, 237, 245, 0.6);
+  color: var(--color-text-faint);
 }
 
 .archive-table th,
@@ -727,7 +747,7 @@ pre {
 .review-table th,
 .review-table td {
   padding: 0.9rem 1rem;
-  border-bottom: 1px solid rgba(88, 132, 255, 0.12);
+  border-bottom: 1px solid var(--color-border-subtle);
   text-align: left;
 }
 
@@ -834,14 +854,14 @@ pre {
   margin-top: 0.65rem;
   padding: 0.45rem 0.6rem;
   border-radius: 8px;
-  border: 1px solid rgba(88, 132, 255, 0.3);
-  background: rgba(12, 19, 31, 0.85);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-panel);
   color: #e8edf5;
   font-size: 0.85rem;
 }
 
 .review-field:focus {
-  outline: 2px solid rgba(88, 132, 255, 0.55);
+  outline: 2px solid var(--color-border-focus);
   outline-offset: 1px;
 }
 
@@ -871,8 +891,8 @@ pre {
   margin-top: 0.5rem;
   padding: 0.35rem 0.85rem;
   border-radius: 999px;
-  border: 1px solid rgba(88, 132, 255, 0.35);
-  background: rgba(12, 19, 31, 0.75);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-panel);
   color: #e8edf5;
   font-size: 0.75rem;
   font-weight: 600;
@@ -897,7 +917,7 @@ pre {
 
 .cell-secondary {
   font-size: 0.82rem;
-  color: rgba(232, 237, 245, 0.6);
+  color: var(--color-text-faint);
   margin-top: 0.2rem;
 }
 
@@ -910,8 +930,8 @@ pre {
 .table-action {
   padding: 0.55rem 1rem;
   border-radius: 10px;
-  border: 1px solid rgba(88, 132, 255, 0.3);
-  background: rgba(18, 27, 43, 0.8);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-panel);
   color: #e8edf5;
   font-weight: 600;
   cursor: pointer;
@@ -970,9 +990,9 @@ pre {
 
 .modal-window {
   position: relative;
-  background: rgba(12, 17, 29, 0.96);
+  background: var(--color-panel-elevated);
   border-radius: 16px;
-  border: 1px solid rgba(88, 132, 255, 0.35);
+  border: 1px solid var(--color-border-strong);
   box-shadow: 0 28px 60px rgba(9, 13, 22, 0.55);
   width: min(680px, 92vw);
   max-height: 90vh;
@@ -999,15 +1019,15 @@ pre {
   margin-bottom: 1rem;
   font-family: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   font-size: 0.9rem;
-  color: rgba(232, 237, 245, 0.8);
+  color: var(--color-text-secondary);
 }
 
 .preview-summary {
   margin-bottom: 1rem;
   padding: 0.85rem 1rem;
   border-radius: 12px;
-  border: 1px solid rgba(88, 132, 255, 0.2);
-  background: rgba(12, 20, 34, 0.85);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-panel);
 }
 
 .preview-summary[hidden] {
@@ -1023,14 +1043,14 @@ pre {
 .preview-summary-table th,
 .preview-summary-table td {
   padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid rgba(88, 132, 255, 0.15);
+  border-bottom: 1px solid var(--color-border-subtle);
 }
 
 .preview-summary-table th {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-size: 0.72rem;
-  color: rgba(232, 237, 245, 0.6);
+  color: var(--color-text-faint);
 }
 
 .preview-summary-table td.numeric {
@@ -1049,19 +1069,19 @@ pre {
   padding: 0.35rem 0.75rem;
   border-radius: 999px;
   background: rgba(88, 132, 255, 0.18);
-  border: 1px solid rgba(88, 132, 255, 0.35);
+  border: 1px solid var(--color-border-strong);
   color: #e8edf5;
   font-weight: 600;
 }
 
 .modal-footer {
-  border-top: 1px solid rgba(88, 132, 255, 0.1);
+  border-top: 1px solid var(--color-border-subtle);
 }
 
 .icon-button {
   border: none;
   background: transparent;
-  color: rgba(232, 237, 245, 0.8);
+  color: var(--color-text-secondary);
   font-size: 1.5rem;
   line-height: 1;
   cursor: pointer;
@@ -1076,8 +1096,8 @@ pre {
 .code-block {
   margin: 0;
   padding: 1.2rem;
-  background: rgba(18, 27, 43, 0.92);
-  border: 1px solid rgba(88, 132, 255, 0.2);
+  background: var(--color-panel-elevated);
+  border: 1px solid var(--color-border-subtle);
   border-radius: 12px;
   color: #d5e1ff;
   font-family: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
@@ -1095,7 +1115,7 @@ pre {
 
 .empty-row td {
   text-align: center;
-  color: rgba(232, 237, 245, 0.6);
+  color: var(--color-text-faint);
 }
 
 .matcher-form {
@@ -1106,10 +1126,10 @@ pre {
 }
 
 .matcher-fieldset {
-  border: 1px solid rgba(88, 132, 255, 0.2);
+  border: 1px solid var(--color-border-subtle);
   border-radius: 16px;
   padding: 1.25rem;
-  background: rgba(12, 19, 31, 0.9);
+  background: var(--color-panel);
   display: grid;
   gap: 1rem;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -1118,11 +1138,11 @@ pre {
 .matcher-fieldset legend {
   padding: 0 0.5rem;
   font-weight: 600;
-  color: rgba(232, 237, 245, 0.8);
+  color: var(--color-text-secondary);
 }
 
 .matcher-fieldset.readonly input[readonly] {
-  background: rgba(8, 12, 20, 0.65);
+  background: var(--color-panel);
   border-style: dashed;
 }
 
@@ -1134,7 +1154,7 @@ pre {
 
 .input-group span {
   font-size: 0.85rem;
-  color: rgba(232, 237, 245, 0.7);
+  color: var(--color-text-muted);
 }
 
 .input-row {
@@ -1152,14 +1172,38 @@ pre {
 
 .checkbox-group label {
   font-size: 0.95rem;
-  color: rgba(232, 237, 245, 0.8);
+  color: var(--color-text-secondary);
 }
 
 .onedrive-form,
-.gmail-form {
+.outlook-form {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+}
+
+.outlook-shared-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-top: 0.25rem;
+  padding: 1rem;
+  border-radius: 12px;
+  background: var(--color-panel);
+  border: 1px solid var(--color-border-subtle);
+}
+
+.outlook-shared-form-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.outlook-shared-form-actions {
+  display: flex;
+  gap: 0.75rem;
 }
 
 
@@ -1167,8 +1211,19 @@ pre {
   margin-bottom: 1.5rem;
   padding: 1.25rem;
   border-radius: 14px;
-  background: rgba(12, 19, 31, 0.75);
-  border: 1px solid rgba(88, 132, 255, 0.22);
+  background: var(--color-panel);
+  border: 1px solid var(--color-border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.outlook-shared-card {
+  margin-bottom: 1.5rem;
+  padding: 1.25rem;
+  border-radius: 14px;
+  background: var(--color-panel);
+  border: 1px solid var(--color-border-subtle);
   display: flex;
   flex-direction: column;
   gap: 1rem;
@@ -1182,7 +1237,21 @@ pre {
   flex-wrap: wrap;
 }
 
+.outlook-shared-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
 .onedrive-shared-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.outlook-shared-heading {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
@@ -1220,8 +1289,8 @@ pre {
 
 .status-pill--muted {
   background: rgba(88, 132, 255, 0.16);
-  border-color: rgba(88, 132, 255, 0.32);
-  color: rgba(232, 237, 245, 0.85);
+  border-color: var(--color-border-strong);
+  color: var(--color-text-secondary);
 }
 
 .onedrive-shared-actions {
@@ -1231,9 +1300,26 @@ pre {
   justify-content: flex-end;
 }
 
+.outlook-shared-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .onedrive-shared-summary {
   margin: 0;
-  color: rgba(232, 237, 245, 0.75);
+  color: var(--color-text-secondary);
+}
+
+.outlook-shared-summary {
+  margin: 0;
+  color: var(--color-text-secondary);
+}
+
+.outlook-shared-summary a {
+  color: #9eb9ff;
+  text-decoration: underline;
 }
 
 .onedrive-shared-summary a {
@@ -1242,6 +1328,13 @@ pre {
 }
 
 .onedrive-shared-meta {
+  margin: 0;
+  display: grid;
+  gap: 0.75rem 1.25rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.outlook-shared-meta {
   margin: 0;
   display: grid;
   gap: 0.75rem 1.25rem;
@@ -1259,12 +1352,25 @@ pre {
   font-size: 0.72rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: rgba(232, 237, 245, 0.55);
+  color: var(--color-text-faint);
 }
 
 .onedrive-shared-meta dd {
   margin: 0;
-  color: rgba(232, 237, 245, 0.85);
+  color: var(--color-text-secondary);
+}
+
+.outlook-shared-meta dt {
+  margin: 0;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+}
+
+.outlook-shared-meta dd {
+  margin: 0;
+  color: var(--color-text-secondary);
 }
 
 .onedrive-field-group {
@@ -1275,12 +1381,31 @@ pre {
   flex-wrap: wrap;
   padding: 1.1rem 1.25rem;
   border-radius: 12px;
-  background: rgba(12, 19, 31, 0.65);
-  border: 1px solid rgba(88, 132, 255, 0.18);
+  background: var(--color-panel);
+  border: 1px solid var(--color-border-subtle);
   margin-bottom: 1rem;
 }
 
+.outlook-field-group {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+  padding: 1.1rem 1.25rem;
+  border-radius: 12px;
+  background: var(--color-panel);
+  border: 1px solid var(--color-border-subtle);
+}
+
 .onedrive-summary {
+  flex: 1 1 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.outlook-summary {
   flex: 1 1 260px;
   display: flex;
   flex-direction: column;
@@ -1292,9 +1417,19 @@ pre {
   font-size: 1rem;
 }
 
+.outlook-summary h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
 .onedrive-summary-text {
   margin: 0;
-  color: rgba(232, 237, 245, 0.75);
+  color: var(--color-text-secondary);
+}
+
+.outlook-summary-text {
+  margin: 0;
+  color: var(--color-text-secondary);
 }
 
 .onedrive-selector-actions {
@@ -1304,10 +1439,17 @@ pre {
   flex-wrap: wrap;
 }
 
+.outlook-selector-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
 .ghost-button {
   border: none;
   background: transparent;
-  color: rgba(158, 185, 255, 0.85);
+  color: var(--color-link);
   font-size: 0.9rem;
   cursor: pointer;
   padding: 0.25rem 0.35rem;
@@ -1317,34 +1459,6 @@ pre {
 .ghost-button:hover,
 .ghost-button:focus-visible {
   color: #bcd4ff;
-}
-
-.onedrive-advanced {
-  margin-top: 1.25rem;
-  background: rgba(12, 17, 29, 0.45);
-  border: 1px solid rgba(88, 132, 255, 0.18);
-  border-radius: 12px;
-  padding: 0.75rem 1rem 1rem;
-}
-
-.onedrive-advanced > summary {
-  cursor: pointer;
-  font-weight: 600;
-  color: rgba(232, 237, 245, 0.85);
-}
-
-.onedrive-advanced-grid {
-  margin-top: 1rem;
-  display: grid;
-  gap: 1rem;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-}
-
-.advanced-divider {
-  grid-column: 1 / -1;
-  height: 1px;
-  background: rgba(88, 132, 255, 0.18);
-  margin: 0.5rem 0;
 }
 
 .onedrive-browser-window {
@@ -1361,7 +1475,7 @@ pre {
 
 .onedrive-browser-path {
   font-weight: 600;
-  color: rgba(232, 237, 245, 0.85);
+  color: var(--color-text-secondary);
 }
 
 .onedrive-browser-warning {
@@ -1378,7 +1492,7 @@ pre {
 
 .onedrive-browser-status {
   margin: 0;
-  color: rgba(232, 237, 245, 0.75);
+  color: var(--color-text-secondary);
 }
 
 .onedrive-browser-status.is-error {
@@ -1402,9 +1516,9 @@ pre {
 
 .onedrive-browser-entry {
   width: 100%;
-  border: 1px solid rgba(88, 132, 255, 0.2);
+  border: 1px solid var(--color-border-subtle);
   border-radius: 12px;
-  background: rgba(12, 19, 31, 0.86);
+  background: var(--color-panel-elevated);
   color: inherit;
   text-align: left;
   padding: 0.75rem 1rem;
@@ -1416,17 +1530,17 @@ pre {
 }
 
 .onedrive-browser-entry:hover {
-  background: rgba(18, 27, 43, 0.95);
-  border-color: rgba(88, 132, 255, 0.35);
+  background: var(--color-panel-elevated);
+  border-color: var(--color-border-strong);
 }
 
 .onedrive-browser-entry.is-selected {
-  border-color: rgba(88, 132, 255, 0.55);
-  background: rgba(20, 32, 52, 0.95);
+  border-color: var(--color-border-focus);
+  background: var(--color-panel-elevated);
 }
 
 .onedrive-browser-entry:focus-visible {
-  outline: 2px solid rgba(78, 208, 255, 0.6);
+  outline: 2px solid var(--color-border-focus);
   outline-offset: 2px;
 }
 
@@ -1436,15 +1550,105 @@ pre {
 
 .onedrive-entry-meta {
   font-size: 0.85rem;
-  color: rgba(232, 237, 245, 0.6);
+  color: var(--color-text-faint);
 }
 
 .onedrive-browser-empty {
   padding: 1rem 1.1rem;
   border-radius: 12px;
-  border: 1px dashed rgba(88, 132, 255, 0.25);
+  border: 1px dashed var(--color-border-subtle);
   text-align: center;
-  color: rgba(232, 237, 245, 0.65);
+  color: var(--color-text-muted);
+}
+
+.outlook-browser-window {
+  max-width: 560px;
+}
+
+.outlook-browser-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.outlook-browser-path {
+  font-size: 0.9rem;
+  color: var(--color-text-muted);
+}
+
+.outlook-browser-warning {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  color: #ff8f6b;
+}
+
+.outlook-browser-warning[hidden] {
+  display: none;
+}
+
+.outlook-browser-status {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.outlook-browser-status.is-error {
+  color: #ff9b99;
+}
+
+.outlook-browser-list {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.outlook-browser-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 0.95rem;
+  border-radius: 11px;
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-panel-elevated);
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.outlook-browser-item:hover,
+.outlook-browser-item:focus-visible {
+  border-color: var(--color-border-strong);
+  background: var(--color-panel-elevated);
+}
+
+.outlook-browser-item[aria-selected='true'] {
+  border-color: var(--color-border-focus);
+  background: var(--color-panel-elevated);
+}
+
+.outlook-browser-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.outlook-browser-entry span {
+  font-size: 0.82rem;
+  color: var(--color-text-muted);
+}
+
+.outlook-browser-empty {
+  padding: 1rem 1.1rem;
+  border-radius: 12px;
+  border: 1px dashed var(--color-border-subtle);
+  text-align: center;
+  color: var(--color-text-muted);
 }
 
 .form-divider {
@@ -1452,7 +1656,7 @@ pre {
   align-items: center;
   gap: 0.75rem;
   margin: 1rem 0 1.25rem;
-  color: rgba(232, 237, 245, 0.55);
+  color: var(--color-text-faint);
   font-size: 0.75rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1463,11 +1667,11 @@ pre {
   content: '';
   flex: 1;
   height: 1px;
-  background: rgba(88, 132, 255, 0.2);
+  background: rgba(102, 140, 255, 0.28);
 }
 
 .onedrive-actions,
-.gmail-actions {
+.outlook-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
@@ -1475,9 +1679,9 @@ pre {
 }
 
 .onedrive-status,
-.gmail-status {
+.outlook-status {
   margin-top: 1.25rem;
-  border-top: 1px solid rgba(88, 132, 255, 0.18);
+  border-top: 1px solid var(--color-border-subtle);
   padding-top: 1.25rem;
   display: grid;
   gap: 0.85rem 1.25rem;
@@ -1485,26 +1689,26 @@ pre {
 }
 
 .onedrive-status div,
-.gmail-status div {
+.outlook-status div {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
 }
 
 .onedrive-status dt,
-.gmail-status dt {
+.outlook-status dt {
   margin: 0;
   font-size: 0.75rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: rgba(232, 237, 245, 0.55);
+  color: var(--color-text-faint);
 }
 
 .onedrive-status dd,
-.gmail-status dd {
+.outlook-status dd {
   margin: 0;
   font-size: 0.95rem;
-  color: rgba(232, 237, 245, 0.88);
+  color: var(--color-text-primary);
   word-break: break-word;
 }
 
@@ -1563,7 +1767,7 @@ body.invoice-preview-open {
   justify-content: space-between;
   gap: 16px;
   padding: 16px 20px;
-  background: rgba(12, 14, 28, 0.9);
+  background: var(--color-panel-elevated);
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 

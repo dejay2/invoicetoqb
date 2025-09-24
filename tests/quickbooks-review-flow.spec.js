@@ -85,7 +85,7 @@ async function prepareFixtures() {
       accountsCount: 1,
       taxCodesCount: 1,
       oneDrive: null,
-      gmail: null,
+      outlook: null,
     },
   ]);
 
