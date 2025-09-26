@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node tests/quickbooks-companies-store.test.js && node tests/quickbooks-preview-state.test.js && node tests/vat-bucketing.test.js && node tests/onedrive-endpoints.test.js && node tests/quickbooks-companies-endpoint.test.js && node tests/deletion-endpoint.test.js",
+    "test": "node tests/run-all-tests.js",
     "start": "node src/server.js"
   },
   "keywords": [],

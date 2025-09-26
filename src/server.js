@@ -4112,7 +4112,64 @@ app.patch('/api/quickbooks/companies/:realmId/vendors/:vendorId/settings', async
 app.get('/api/invoices', async (req, res) => {
   try {
     const invoices = await readStoredInvoices();
-    res.json({ invoices });
+    console.log('[Invoices][Request]', { invoiceCount: Array.isArray(invoices) ? invoices.length : null });
+
+    const realmIds = Array.from(
+      new Set(
+        invoices
+          .map((invoice) => invoice?.metadata?.companyProfile?.realmId)
+          .filter((realmId) => typeof realmId === 'string' && realmId.trim())
+      )
+    );
+
+    const metadataCache = new Map();
+
+    await Promise.all(
+      realmIds.map(async (realmId) => {
+        try {
+          const metadata = await readQuickBooksCompanyMetadata(realmId);
+          const vendorCount = Array.isArray(metadata?.vendors?.items) ? metadata.vendors.items.length : 0;
+          const accountCount = Array.isArray(metadata?.accounts?.items) ? metadata.accounts.items.length : 0;
+          const taxCount = Array.isArray(metadata?.taxCodes?.items) ? metadata.taxCodes.items.length : 0;
+          console.log('[Invoices][Metadata]', {
+            realmId,
+            vendorCount,
+            accountCount,
+            taxCount,
+            hasVendorSettings: Boolean(metadata?.vendorSettings && Object.keys(metadata.vendorSettings).length),
+          });
+          metadataCache.set(realmId, metadata || null);
+        } catch (error) {
+          if (error?.code !== 'NOT_FOUND') {
+            console.warn('Unable to load QuickBooks metadata for realm', realmId, error.message || error);
+          }
+          metadataCache.set(realmId, null);
+        }
+      })
+    );
+
+    const enrichedInvoices = invoices.map((invoice) => {
+      const realmId = invoice?.metadata?.companyProfile?.realmId || null;
+      const companyMetadata = realmId ? metadataCache.get(realmId) || null : null;
+      const matches = buildInvoiceMatches(invoice, companyMetadata);
+      console.log('[Invoices][MatchDebug]', {
+        checksum: invoice?.metadata?.checksum || null,
+        realmId,
+        metadataLoaded: Boolean(companyMetadata),
+        metadataSummary: companyMetadata
+          ? {
+              vendors: Array.isArray(companyMetadata?.vendors?.items) ? companyMetadata.vendors.items.length : 0,
+              accounts: Array.isArray(companyMetadata?.accounts?.items) ? companyMetadata.accounts.items.length : 0,
+              taxCodes: Array.isArray(companyMetadata?.taxCodes?.items) ? companyMetadata.taxCodes.items.length : 0,
+              vendorSettings: companyMetadata?.vendorSettings ? Object.keys(companyMetadata.vendorSettings).length : 0,
+            }
+          : null,
+        matches,
+      });
+      return matches ? { ...invoice, matches } : invoice;
+    });
+
+    res.json({ invoices: enrichedInvoices });
   } catch (error) {
     console.error('Failed to load stored invoices', error);
     res.status(500).json({ error: 'Failed to load stored invoices.' });
@@ -4298,6 +4355,51 @@ app.post('/api/invoices/:checksum/status', async (req, res) => {
     console.error('Failed to update invoice status', error);
     res.status(500).json({ error: 'Failed to update invoice status.' });
   }
+});
+
+app.post('/api/invoices/bulk-status', async (req, res) => {
+  const { checksums, status } = req.body || {};
+
+  if (!Array.isArray(checksums) || checksums.length === 0) {
+    return res.status(400).json({ error: 'Checksums array is required.' });
+  }
+
+  if (status !== 'archive' && status !== 'review') {
+    return res.status(400).json({ error: 'Status must be archive or review.' });
+  }
+
+  const results = {
+    successful: 0,
+    failed: 0,
+    errors: [],
+    updatedChecksums: [],
+  };
+
+  for (const checksum of checksums) {
+    if (typeof checksum !== 'string' || !checksum.trim()) {
+      results.failed += 1;
+      results.errors.push('Encountered invalid checksum value.');
+      continue;
+    }
+
+    try {
+      const updated = await updateStoredInvoiceStatus(checksum, status);
+      if (!updated) {
+        results.failed += 1;
+        results.errors.push(`Invoice ${checksum}: Not found.`);
+        continue;
+      }
+
+      results.successful += 1;
+      results.updatedChecksums.push(checksum);
+    } catch (error) {
+      console.error('Failed to update invoice status', { checksum, error });
+      results.failed += 1;
+      results.errors.push(`Invoice ${checksum}: ${error.message}`);
+    }
+  }
+
+  res.json(results);
 });
 
 app.patch('/api/invoices/:checksum/review', async (req, res) => {
@@ -4704,6 +4806,7 @@ module.exports = {
   writeStoredInvoices,
   deleteStoredInvoice,
   deleteStoredInvoiceFile,
+  buildInvoiceMatches,
 };
 
 async function exchangeQuickBooksCode(code) {
@@ -7757,6 +7860,294 @@ function buildQuickBooksInvoicePayload(invoice, { metadata, realmId }) {
   }
 
   return payload;
+}
+
+function buildInvoiceMatches(invoice, metadata) {
+  if (!invoice || typeof invoice !== 'object') {
+    return {
+      vendor: createMatchResult(),
+      account: createMatchResult(),
+      taxCode: createMatchResult(),
+    };
+  }
+
+  const vendors = Array.isArray(metadata?.vendors?.items) ? metadata.vendors.items : [];
+  const accounts = Array.isArray(metadata?.accounts?.items) ? metadata.accounts.items : [];
+  const vendorLookup = buildQuickBooksLookup(vendors);
+  const accountLookup = buildQuickBooksLookup(accounts);
+  const taxLookup = buildQuickBooksLookup(Array.isArray(metadata?.taxCodes?.items) ? metadata.taxCodes.items : []);
+  const vendorSettings = metadata?.vendorSettings || {};
+
+  const vendorMatch = deriveVendorMatch(invoice, { vendorLookup, vendors });
+  const accountMatch = deriveAccountMatch(invoice, {
+    accountLookup,
+    accounts,
+    vendorSettings,
+    vendorMatch,
+  });
+  const taxMatch = deriveTaxMatch(invoice, {
+    taxLookup,
+    vendorSettings,
+    vendorMatch,
+  });
+
+  return {
+    vendor: vendorMatch,
+    account: accountMatch,
+    taxCode: taxMatch,
+  };
+}
+
+function deriveVendorMatch(invoice, { vendorLookup, vendors }) {
+  const selectionVendorId = normaliseNullableId(invoice?.reviewSelection?.vendorId);
+  const fallbackVendorLabel =
+    sanitiseOptionalString(invoice?.data?.vendor) ||
+    sanitiseOptionalString(invoice?.metadata?.invoiceFilename) ||
+    sanitiseOptionalString(invoice?.metadata?.originalName) ||
+    null;
+
+  if (selectionVendorId) {
+    const vendorEntry = vendorLookup?.get(selectionVendorId) || null;
+    const label =
+      sanitiseOptionalString(vendorEntry?.displayName) ||
+      sanitiseOptionalString(vendorEntry?.name) ||
+      sanitiseOptionalString(vendorEntry?.companyName) ||
+      sanitiseOptionalString(vendorEntry?.fullyQualifiedName) ||
+      fallbackVendorLabel;
+
+    return createMatchResult({
+      status: 'exact',
+      id: selectionVendorId,
+      label,
+      reason: null,
+    });
+  }
+
+  if (!Array.isArray(vendors) || !vendors.length) {
+    return createMatchResult({ status: 'unknown', id: null, label: fallbackVendorLabel });
+  }
+
+  const vendorName = sanitiseOptionalString(invoice?.data?.vendor) || fallbackVendorLabel;
+  if (!vendorName) {
+    return createMatchResult();
+  }
+
+  const invoiceForRanking =
+    invoice?.data?.vendor === vendorName
+      ? invoice
+      : {
+          ...invoice,
+          data: {
+            ...(invoice?.data || {}),
+            vendor: vendorName,
+          },
+        };
+
+  const candidates = rankVendorCandidates(invoiceForRanking, vendors);
+  const best = candidates && candidates.length ? candidates[0] : null;
+
+  if (best && best.vendor?.id && best.score >= 0.9) {
+    const vendorId = normaliseNullableId(best.vendor.id);
+    const vendorEntry = vendorId ? vendorLookup?.get(vendorId) || best.vendor : best.vendor;
+    const label =
+      sanitiseOptionalString(vendorEntry?.displayName) ||
+      sanitiseOptionalString(vendorEntry?.name) ||
+      sanitiseOptionalString(vendorEntry?.companyName) ||
+      sanitiseOptionalString(vendorEntry?.fullyQualifiedName) ||
+      vendorName;
+
+    return createMatchResult({
+      status: 'exact',
+      id: vendorId,
+      label,
+      reason: 'Matched vendor name',
+    });
+  }
+
+  if (best && best.vendor?.id && best.score >= 0.7) {
+    const vendorId = normaliseNullableId(best.vendor.id);
+    const vendorEntry = vendorId ? vendorLookup?.get(vendorId) || best.vendor : best.vendor;
+    const label =
+      sanitiseOptionalString(vendorEntry?.displayName) ||
+      sanitiseOptionalString(vendorEntry?.name) ||
+      vendorName;
+
+    const detail = best.matchedLabel ? `Possible match (${best.matchedLabel})` : 'Possible match';
+    return createMatchResult({
+      status: 'uncertain',
+      id: vendorId,
+      label,
+      reason: detail,
+    });
+  }
+
+  return createMatchResult({ status: 'unknown', id: null, label: vendorName });
+}
+
+function deriveAccountMatch(invoice, { accountLookup, accounts, vendorSettings, vendorMatch }) {
+  const selectionAccountId = normaliseNullableId(invoice?.reviewSelection?.accountId);
+  if (selectionAccountId) {
+    const accountEntry = accountLookup?.get(selectionAccountId) || null;
+    const label =
+      sanitiseOptionalString(accountEntry?.fullyQualifiedName) ||
+      sanitiseOptionalString(accountEntry?.name) ||
+      null;
+
+    return createMatchResult({
+      status: 'exact',
+      id: selectionAccountId,
+      label,
+      reason: null,
+    });
+  }
+
+  const vendorId =
+    normaliseNullableId(invoice?.reviewSelection?.vendorId) ||
+    normaliseNullableId(vendorMatch?.id);
+  const vendorDefaults = vendorId ? vendorSettings?.[vendorId] || null : null;
+
+  if (vendorDefaults?.accountId) {
+    const accountId = normaliseNullableId(vendorDefaults.accountId);
+    if (accountId) {
+      const accountEntry = accountLookup?.get(accountId) || null;
+      const label =
+        sanitiseOptionalString(accountEntry?.fullyQualifiedName) ||
+        sanitiseOptionalString(accountEntry?.name) ||
+        null;
+
+      return createMatchResult({
+        status: 'exact',
+        id: accountId,
+        label,
+        reason: 'Vendor default account',
+      });
+    }
+  }
+
+  const suggested = invoice?.data?.suggestedAccount || null;
+  if (suggested?.name) {
+    const match = findAccountMatchByLabel(suggested.name, accounts);
+    if (match?.account?.id) {
+      const accountId = normaliseNullableId(match.account.id);
+      if (accountId) {
+        const baseLabel =
+          sanitiseOptionalString(match.account.fullyQualifiedName) ||
+          sanitiseOptionalString(match.account.name) ||
+          sanitiseOptionalString(suggested.name);
+        const reason = suggested.reason || 'AI suggested account';
+        const confidence = (suggested.confidence || '').toString().toLowerCase();
+
+        if (confidence === 'high') {
+          return createMatchResult({ status: 'exact', id: accountId, label: baseLabel, reason });
+        }
+        if (confidence === 'medium') {
+          return createMatchResult({ status: 'uncertain', id: accountId, label: baseLabel, reason });
+        }
+      }
+    }
+  }
+
+  return createMatchResult();
+}
+
+function deriveTaxMatch(invoice, { taxLookup, vendorSettings, vendorMatch }) {
+  const selectionTaxId = normaliseNullableId(invoice?.reviewSelection?.taxCodeId);
+  if (selectionTaxId) {
+    const taxEntry = taxLookup?.get(selectionTaxId) || null;
+    const label = sanitiseOptionalString(taxEntry?.name) || null;
+    return createMatchResult({
+      status: 'exact',
+      id: selectionTaxId,
+      label,
+      reason: null,
+    });
+  }
+
+  const vendorId =
+    normaliseNullableId(invoice?.reviewSelection?.vendorId) ||
+    normaliseNullableId(vendorMatch?.id);
+  const vendorDefaults = vendorId ? vendorSettings?.[vendorId] || null : null;
+
+  if (vendorDefaults?.taxCodeId) {
+    const taxId = normaliseNullableId(vendorDefaults.taxCodeId);
+    if (taxId) {
+      const taxEntry = taxLookup?.get(taxId) || null;
+      const label = sanitiseOptionalString(taxEntry?.name) || null;
+      return createMatchResult({
+        status: 'exact',
+        id: taxId,
+        label,
+        reason: 'Vendor default tax code',
+      });
+    }
+  }
+
+  if (taxLookup && taxLookup.size) {
+    const candidateLabels = collectCandidateTaxCodeLabels(invoice);
+    const matchedTaxId = findTaxCodeIdFromLabels(candidateLabels, taxLookup);
+    if (matchedTaxId) {
+      const taxEntry = taxLookup.get(matchedTaxId) || null;
+      const label = sanitiseOptionalString(taxEntry?.name) || null;
+      return createMatchResult({
+        status: 'exact',
+        id: matchedTaxId,
+        label,
+        reason: 'Matched invoice tax code',
+      });
+    }
+  }
+
+  return createMatchResult();
+}
+
+function findAccountMatchByLabel(label, accounts) {
+  if (!label || !Array.isArray(accounts) || !accounts.length) {
+    return null;
+  }
+
+  const normalizedLabel = normaliseComparableText(label);
+  if (!normalizedLabel) {
+    return null;
+  }
+
+  let best = null;
+
+  accounts.forEach((account) => {
+    const candidates = [account?.fullyQualifiedName, account?.name].filter(Boolean);
+    candidates.forEach((candidate) => {
+      const normalizedCandidate = normaliseComparableText(candidate);
+      if (!normalizedCandidate) {
+        return;
+      }
+
+      if (normalizedCandidate === normalizedLabel) {
+        best = { account, score: 1 };
+        return;
+      }
+
+      const similarity = computeNormalisedSimilarity(normalizedLabel, normalizedCandidate);
+      if (!best || similarity > best.score) {
+        best = { account, score: similarity };
+      }
+    });
+  });
+
+  return best && best.score >= 0.88 ? best : null;
+}
+
+function createMatchResult({ status, id, label, reason } = {}) {
+  const allowed = new Set(['exact', 'uncertain', 'unknown']);
+  const normalisedStatus = allowed.has(status) ? status : 'unknown';
+  const normalisedId = normaliseNullableId(id);
+  const normalisedLabel = sanitiseOptionalString(label);
+  const normalisedReason = sanitiseOptionalString(reason);
+
+  return {
+    status: normalisedStatus,
+    id: normalisedId,
+    label: normalisedLabel || null,
+    reason: normalisedReason || null,
+  };
 }
 
 function resolveQuickBooksTaxCodes(invoice, taxLookup, vendorDefaults) {
