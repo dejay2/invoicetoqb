@@ -16,6 +16,10 @@ const importVendorDefaultsButton = document.getElementById('import-vendor-defaul
 const reviewTableBody = document.getElementById('review-table-body');
 const reviewSelectAllCheckbox = document.getElementById('review-select-all');
 const reviewBulkActions = document.getElementById('review-bulk-actions');
+const reviewBulkPreviewButton = document.getElementById('review-bulk-preview');
+const reviewBulkEditButton = document.getElementById('review-bulk-edit');
+const reviewBulkSaveButton = document.getElementById('review-bulk-save');
+const reviewBulkCancelButton = document.getElementById('review-bulk-cancel');
 const reviewBulkArchiveButton = document.getElementById('review-bulk-archive');
 const reviewBulkDeleteButton = document.getElementById('review-bulk-delete');
 const reviewSelectionCount = document.getElementById('review-selection-count');
@@ -134,6 +138,7 @@ const companyMetadataCache = new Map();
 const metadataRequests = new Map();
 let storedInvoices = [];
 const reviewSelectedChecksums = new Set();
+const reviewEditingChecksums = new Set();
 let lastQuickBooksPreviewPayload = '';
 let quickBooksPreviewEscapeHandler = null;
 let invoicePreviewWindow = null;
@@ -148,6 +153,9 @@ let sharedOutlookSettings = null;
 let outlookBrowseState = null;
 let lastOutlookBrowseTrigger = null;
 let outlookBrowseEscapeHandler = null;
+
+const autoMatchInFlight = new Set();
+const autoMatchedChecksums = new Set();
 
 const MATCH_BADGE_LABELS = {
   exact: 'Exact match',
@@ -579,6 +587,22 @@ function attachEventListeners() {
 
   if (reviewSelectAllCheckbox) {
     reviewSelectAllCheckbox.addEventListener('change', handleReviewSelectAllChange);
+  }
+
+  if (reviewBulkPreviewButton) {
+    reviewBulkPreviewButton.addEventListener('click', handleBulkPreviewSelected);
+  }
+
+  if (reviewBulkEditButton) {
+    reviewBulkEditButton.addEventListener('click', handleBulkEditSelected);
+  }
+
+  if (reviewBulkSaveButton) {
+    reviewBulkSaveButton.addEventListener('click', handleBulkSaveSelected);
+  }
+
+  if (reviewBulkCancelButton) {
+    reviewBulkCancelButton.addEventListener('click', handleBulkCancelSelected);
   }
 
   if (reviewBulkArchiveButton) {
@@ -1929,7 +1953,10 @@ async function loadCompanyMetadata(realmId, { force = false } = {}) {
       if (selectedRealmId === realmId) {
         renderVendorList(metadata, 'No vendors available for this company.');
         renderAccountList(metadata, 'No accounts available for this company.');
+        renderInvoices();
       }
+
+      autoMatchInvoices(realmId).catch((error) => console.warn('Auto-match scheduling failed', error));
 
       return metadata;
     } catch (error) {
@@ -1979,7 +2006,10 @@ async function refreshCompanyMetadata(realmId) {
     if (selectedRealmId === realmId) {
       renderVendorList(metadata, 'No vendors available for this company.');
       renderAccountList(metadata, 'No accounts available for this company.');
+      renderInvoices();
     }
+
+    autoMatchInvoices(realmId).catch((error) => console.warn('Auto-match scheduling failed', error));
 
     showStatus(globalStatus, 'QuickBooks metadata refreshed.', 'success');
   } catch (error) {
@@ -2340,10 +2370,12 @@ async function loadStoredInvoices() {
     }
     storedInvoices = Array.isArray(payload?.invoices) ? payload.invoices : [];
     renderInvoices();
+    autoMatchInvoices().catch((error) => console.warn('Auto-match scheduling failed', error));
   } catch (error) {
     storedInvoices = [];
     console.warn('Unable to load stored invoices', error);
     renderInvoices();
+    autoMatchInvoices().catch((error) => console.warn('Auto-match scheduling failed', error));
   }
 }
 
@@ -2358,7 +2390,7 @@ function renderInvoices() {
 
   if (!storedInvoices || storedInvoices.length === 0) {
     if (reviewTableBody) {
-      reviewTableBody.innerHTML = '<tr><td colspan="6" class="text-center">No invoices in review</td></tr>';
+      reviewTableBody.innerHTML = '<tr><td colspan="10" class="text-center">No invoices in review</td></tr>';
     }
     if (archiveTableBody) {
       archiveTableBody.innerHTML = '<tr><td colspan="5" class="text-center">No archived invoices</td></tr>';
@@ -2367,13 +2399,30 @@ function renderInvoices() {
   }
 
   // Separate invoices by status
-  const reviewInvoices = storedInvoices.filter(invoice => invoice.metadata?.status === 'review');
-  const archiveInvoices = storedInvoices.filter(invoice => invoice.metadata?.status === 'archive');
+  const reviewInvoices = storedInvoices.filter(
+    (invoice) => resolveStoredInvoiceStatus(invoice) === 'review'
+  );
+  const archiveInvoices = storedInvoices.filter(
+    (invoice) => resolveStoredInvoiceStatus(invoice) === 'archive'
+  );
+
+  if (reviewEditingChecksums.size) {
+    const reviewChecksums = new Set(
+      reviewInvoices
+        .map((invoice) => invoice?.metadata?.checksum)
+        .filter((value) => typeof value === 'string' && value)
+    );
+    for (const checksum of Array.from(reviewEditingChecksums)) {
+      if (!reviewChecksums.has(checksum)) {
+        reviewEditingChecksums.delete(checksum);
+      }
+    }
+  }
 
   // Render review invoices
   if (reviewTableBody) {
     if (reviewInvoices.length === 0) {
-      reviewTableBody.innerHTML = '<tr><td colspan="6" class="text-center">No invoices in review</td></tr>';
+      reviewTableBody.innerHTML = '<tr><td colspan="10" class="text-center">No invoices in review</td></tr>';
     } else {
       reviewInvoices.forEach(invoice => {
         const row = createInvoiceRow(invoice, true);
@@ -2398,57 +2447,555 @@ function renderInvoices() {
   updateBulkActionsState();
 }
 
+function resolveStoredInvoiceStatus(invoice) {
+  const status = typeof invoice?.status === 'string' ? invoice.status : invoice?.metadata?.status;
+  return status === 'review' ? 'review' : 'archive';
+}
+
 function createInvoiceRow(invoice, isReview) {
   const row = document.createElement('tr');
-  row.dataset.checksum = invoice.metadata?.checksum || '';
 
   const metadata = invoice.metadata || {};
-  const extracted = invoice.extracted || {};
+  const extracted = invoice?.extracted && typeof invoice.extracted === 'object' ? invoice.extracted : {};
+  const parsed = invoice?.data && typeof invoice.data === 'object' ? invoice.data : {};
+  const selection =
+    invoice?.reviewSelection && typeof invoice.reviewSelection === 'object'
+      ? { ...invoice.reviewSelection }
+      : {};
+
+  const checksum = metadata.checksum || '';
+  row.dataset.checksum = checksum;
+
+  const realmId = (metadata?.companyProfile && metadata.companyProfile.realmId) || selectedRealmId || '';
+  const companyMetadata = realmId ? companyMetadataCache.get(realmId) || null : null;
+  const isEditing = Boolean(isReview && checksum && reviewEditingChecksums.has(checksum));
+
+  const resolveField = (field) => {
+    const parsedValue = parsed[field];
+    if (parsedValue !== undefined && parsedValue !== null && parsedValue !== '') {
+      return parsedValue;
+    }
+
+    const extractedValue = extracted[field];
+    if (extractedValue !== undefined && extractedValue !== null && extractedValue !== '') {
+      return extractedValue;
+    }
+
+    return undefined;
+  };
+
+  const resolveNumericField = (field) => {
+    const value = resolveField(field);
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+
+    if (typeof value === 'string') {
+      const parsedNumber = Number.parseFloat(value.replace(/[^\d.+-]/g, ''));
+      if (!Number.isNaN(parsedNumber) && Number.isFinite(parsedNumber)) {
+        return parsedNumber;
+      }
+    }
+
+    return null;
+  };
+
+  const invoiceNumberRaw = resolveField('invoiceNumber');
+  const invoiceNumber = invoiceNumberRaw !== undefined && invoiceNumberRaw !== null && invoiceNumberRaw !== ''
+    ? String(invoiceNumberRaw)
+    : metadata.invoiceFilename || metadata.originalName || '—';
+
+  const invoiceDateRaw = resolveField('invoiceDate');
+  const invoiceDate = formatDate(invoiceDateRaw);
+
+  const invoiceVendorRaw =
+    resolveField('vendor') || metadata.invoiceFilename || metadata.originalName || 'Unknown';
+  const invoiceVendor = typeof invoiceVendorRaw === 'string' ? invoiceVendorRaw : String(invoiceVendorRaw);
+
+  const vendorSettingsEntries =
+    companyMetadata?.vendorSettings?.entries && typeof companyMetadata.vendorSettings.entries === 'object'
+      ? companyMetadata.vendorSettings.entries
+      : {};
+
+  const selectedVendorId = sanitizeReviewSelectionId(selection.vendorId);
+  let vendorId = selectedVendorId;
+  let vendorMatchType = vendorId ? 'exact' : 'unknown';
+  let vendorLabel = invoiceVendor;
+  let vendorReason = '';
+  let vendorMatch = null;
+
+  if (companyMetadata) {
+    if (!vendorId) {
+      vendorMatch = findBestVendorMatch(invoiceVendor, companyMetadata?.vendors?.items || []);
+      if (vendorMatch && vendorMatch.score >= 0.9) {
+        vendorId = vendorMatch.vendor.id;
+        vendorMatchType = 'exact';
+        vendorReason = 'Matched vendor name';
+      } else if (vendorMatch && vendorMatch.score >= 0.7) {
+        vendorMatchType = 'uncertain';
+        vendorReason = `Possible match (${vendorMatch.matchedLabel})`;
+      }
+    }
+
+    const vendorEntry =
+      vendorId && companyMetadata?.vendors?.lookup
+        ? companyMetadata.vendors.lookup.get(vendorId)
+        : null;
+    if (vendorEntry) {
+      vendorLabel =
+        vendorEntry.displayName ||
+        vendorEntry.companyName ||
+        vendorEntry.name ||
+        vendorEntry.fullyQualifiedName ||
+        vendorLabel;
+    }
+  }
+
+  const vendorDefaults =
+    vendorId && vendorSettingsEntries
+      ? vendorSettingsEntries[vendorId] || null
+      : null;
+  const selectedVendorDefaults =
+    selectedVendorId && vendorSettingsEntries ? vendorSettingsEntries[selectedVendorId] || null : null;
+
+  const selectedAccountId = sanitizeReviewSelectionId(selection.accountId);
+  let accountId = selectedAccountId;
+  let accountMatchType = accountId ? 'exact' : 'unknown';
+  let accountLabel = '—';
+  let accountReason = '';
+
+  if (!accountId && vendorDefaults?.accountId) {
+    accountId = vendorDefaults.accountId;
+    accountMatchType = 'exact';
+    accountReason = 'Vendor default';
+  }
+
+  let accountEntry =
+    accountId && companyMetadata?.accounts?.lookup
+      ? companyMetadata.accounts.lookup.get(accountId)
+      : null;
+
+  if (accountEntry) {
+    accountLabel =
+      accountEntry.fullyQualifiedName || accountEntry.name || `Account ${accountEntry.id}`;
+  } else if (parsed?.suggestedAccount?.name) {
+    accountLabel = parsed.suggestedAccount.name;
+    const aiConfidence = (parsed.suggestedAccount.confidence || '').toString().toLowerCase();
+    if (aiConfidence === 'high') {
+      accountMatchType = 'exact';
+    } else if (aiConfidence === 'medium') {
+      accountMatchType = 'uncertain';
+    } else {
+      accountMatchType = 'unknown';
+    }
+    accountReason = parsed.suggestedAccount.reason || '';
+  }
+
+  const resolvedAccountSelection = sanitizeReviewSelectionId(selection.accountId);
+  let accountSelectValue = resolvedAccountSelection;
+  if (accountSelectValue) {
+    accountId = accountSelectValue;
+  } else if (accountId) {
+    accountSelectValue = accountId;
+  }
+
+  let accountAutofilled = false;
+  if (!accountSelectValue && accountMatchType === 'exact') {
+    const matchedAccount = findAccountMatchByLabel(accountLabel, companyMetadata?.accounts?.items || []);
+    if (matchedAccount && matchedAccount.account) {
+      accountSelectValue = matchedAccount.account.id;
+      accountId = matchedAccount.account.id;
+      accountEntry = matchedAccount.account;
+      accountLabel =
+        matchedAccount.account.fullyQualifiedName ||
+        matchedAccount.account.name ||
+        accountLabel;
+      accountAutofilled = true;
+    }
+  }
+
+  if (accountAutofilled) {
+    row.dataset.autofilledAccount = 'true';
+    if (invoice && typeof invoice === 'object') {
+      const currentSelection =
+        invoice.reviewSelection && typeof invoice.reviewSelection === 'object'
+          ? invoice.reviewSelection
+          : (invoice.reviewSelection = {});
+      currentSelection.accountId = accountSelectValue;
+    }
+  }
+
+  let taxCodeId = sanitizeReviewSelectionId(selection.taxCodeId);
+  let taxMatchType = taxCodeId ? 'exact' : 'unknown';
+
+  if (!taxCodeId && vendorDefaults?.taxCodeId) {
+    taxCodeId = vendorDefaults.taxCodeId;
+    taxMatchType = 'exact';
+  }
+
+  const taxEntry =
+    taxCodeId && companyMetadata?.taxCodes?.lookup
+      ? companyMetadata.taxCodes.lookup.get(taxCodeId)
+      : null;
+
+  let taxCodeLabel = '—';
+  if (taxEntry) {
+    taxCodeLabel = taxEntry.name || `Tax Code ${taxEntry.id}`;
+  } else if (parsed.taxCode) {
+    taxCodeLabel = parsed.taxCode;
+    if (taxMatchType === 'unknown') {
+      taxMatchType = 'uncertain';
+    }
+  }
+
+  const subtotal = resolveNumericField('subtotal');
+  const vatAmount = resolveNumericField('vatAmount');
+  const totalAmount = resolveNumericField('totalAmount');
+
+  const netAmount = Number.isFinite(subtotal)
+    ? subtotal
+    : Number.isFinite(totalAmount) && Number.isFinite(vatAmount)
+      ? Math.max(totalAmount - vatAmount, 0)
+      : Number.isFinite(totalAmount)
+        ? totalAmount
+        : null;
+
+  const vatResolved = Number.isFinite(vatAmount)
+    ? vatAmount
+    : Number.isFinite(totalAmount) && Number.isFinite(netAmount)
+      ? Math.max(totalAmount - netAmount, 0)
+      : null;
+
+  const grossAmount = Number.isFinite(totalAmount)
+    ? totalAmount
+    : Number.isFinite(netAmount) && Number.isFinite(vatResolved)
+      ? netAmount + vatResolved
+      : netAmount;
+
+  const currencyCode = parsed.currency || extracted.currency || '';
+  const netDisplay = formatCurrencyAmount(netAmount, currencyCode);
+  const vatDisplay = formatCurrencyAmount(vatResolved, currencyCode);
+  const grossDisplay = formatCurrencyAmount(grossAmount, currencyCode);
+
+  const rowMatchClass =
+    vendorMatchType === 'exact' && accountMatchType === 'exact'
+      ? 'match-exact'
+      : vendorMatchType !== 'unknown' || accountMatchType !== 'unknown'
+        ? 'match-uncertain'
+        : 'match-unknown';
+  row.classList.add(rowMatchClass);
+
+  const vendorBadge = vendorMatchType !== 'unknown' ? buildMatchBadge(vendorMatchType) : '';
+  const accountBadge = accountMatchType !== 'unknown' ? buildMatchBadge(accountMatchType) : '';
+  const taxBadge = taxMatchType !== 'unknown' ? buildMatchBadge(taxMatchType) : '';
+
+  const invoiceSecondary = metadata.invoiceFilename || metadata.originalName || '';
+  const vendorSecondary = invoiceVendor && invoiceVendor !== vendorLabel ? invoiceVendor : '';
+
+  const vendorSelectValue = sanitizeReviewSelectionId(selection.vendorId) || vendorId || '';
+  const taxSelectValue = sanitizeReviewSelectionId(selection.taxCodeId) || taxCodeId || '';
+
+  const vendorOptionsHtml = buildVendorSelectOptions(companyMetadata, vendorSelectValue);
+  const accountOptionsHtml = buildAccountSelectOptions(companyMetadata, accountSelectValue);
+  const taxOptionsHtml = buildTaxSelectOptions(companyMetadata, taxSelectValue);
+
+  const vendorSelectDisabled = !companyMetadata || !Array.isArray(companyMetadata?.vendors?.items) || companyMetadata.vendors.items.length === 0;
+  const accountSelectDisabled = !companyMetadata || !Array.isArray(companyMetadata?.accounts?.items) || companyMetadata.accounts.items.length === 0;
+  const taxSelectDisabled = !companyMetadata || !Array.isArray(companyMetadata?.taxCodes?.items) || companyMetadata.taxCodes.items.length === 0;
+
+  const netInputValue = formatAmountInputValue(Number.isFinite(netAmount) ? netAmount : null);
+  const vatInputValue = formatAmountInputValue(Number.isFinite(vatResolved) ? vatResolved : null);
+  const grossInputValue = formatAmountInputValue(Number.isFinite(grossAmount) ? grossAmount : null);
+
+  const previewVendorId = selectedVendorId;
+  const previewAccountId =
+    selectedAccountId ||
+    sanitizeReviewSelectionId(selectedVendorDefaults?.accountId) ||
+    (accountSelectValue || null);
+  const previewDisabled = !previewVendorId || !previewAccountId;
+  let previewDisabledReason = '';
+  if (!previewVendorId) {
+    previewDisabledReason = 'Match this invoice to a QuickBooks vendor before previewing.';
+  } else if (!previewAccountId) {
+    const vendorDescriptor = vendorLabel || 'this vendor';
+    previewDisabledReason = `Assign a QuickBooks account to ${vendorDescriptor} in Account / category settings before previewing.`;
+  }
+
+  const previewButtonAttributes = [
+    'type="button"',
+    'class="review-action-button review-action-button--primary"',
+    'data-action="preview"',
+    `data-checksum="${escapeHtml(checksum)}"`,
+  ];
+  if (previewDisabled) {
+    previewButtonAttributes.push('disabled', 'aria-disabled="true"');
+    if (previewDisabledReason) {
+      previewButtonAttributes.push(`title="${escapeHtml(previewDisabledReason)}"`);
+    }
+  }
+  const previewButtonAttributeString = previewButtonAttributes.join(' ');
+
+  const vendorSelectAttributes = [
+    `id="review-vendor-${escapeHtml(checksum)}"`,
+    'class="review-field review-field--inline select-field"',
+    'data-field="vendorId"',
+    'aria-label="Vendor"',
+  ];
+
+  if (!isEditing || vendorSelectDisabled) {
+    vendorSelectAttributes.push('disabled');
+  }
+
+  if (!isEditing) {
+    vendorSelectAttributes.push('tabindex="-1"', 'data-readonly="true"', 'aria-disabled="true"');
+  } else if (vendorSelectDisabled) {
+    vendorSelectAttributes.push('aria-disabled="true"');
+  }
+
+  const vendorControl = `
+        <select ${vendorSelectAttributes.join(' ')}>
+          ${vendorOptionsHtml}
+        </select>
+      `;
+
+  const accountSelectAttributes = [
+    `id="review-account-${escapeHtml(checksum)}"`,
+    'class="review-field review-field--inline select-field"',
+    'data-field="accountId"',
+    'aria-label="Account"',
+  ];
+
+  if (!isEditing || accountSelectDisabled) {
+    accountSelectAttributes.push('disabled');
+  }
+
+  if (!isEditing) {
+    accountSelectAttributes.push('tabindex="-1"', 'data-readonly="true"', 'aria-disabled="true"');
+  } else if (accountSelectDisabled) {
+    accountSelectAttributes.push('aria-disabled="true"');
+  }
+
+  if (accountAutofilled) {
+    accountSelectAttributes.push('data-autofilled="true"');
+  }
+
+  const accountControl = `
+        <select ${accountSelectAttributes.join(' ')}>
+          ${accountOptionsHtml}
+        </select>
+      `;
+
+  const taxControl = isEditing
+    ? `
+        <select id="review-tax-${escapeHtml(checksum)}" class="review-field review-field--inline select-field"
+                data-field="taxCodeId" aria-label="Tax code" ${taxSelectDisabled ? 'disabled' : ''}>
+          ${taxOptionsHtml}
+        </select>
+      `
+    : '';
+
+  const netControl = isEditing
+    ? `
+        <input id="review-net-${escapeHtml(checksum)}" class="review-field review-field--inline review-field--amount"
+               data-field="netAmount" type="number" inputmode="decimal" step="0.01"
+               value="${escapeHtml(netInputValue)}" aria-label="Net amount">
+      `
+    : '';
+
+  const vatControl = isEditing
+    ? `
+        <input id="review-vat-${escapeHtml(checksum)}" class="review-field review-field--inline review-field--amount"
+               data-field="vatAmount" type="number" inputmode="decimal" step="0.01"
+               value="${escapeHtml(vatInputValue)}" aria-label="VAT amount">
+      `
+    : '';
+
+  const grossControl = isEditing
+    ? `
+        <input id="review-total-${escapeHtml(checksum)}" class="review-field review-field--inline review-field--amount"
+               data-field="totalAmount" type="number" inputmode="decimal" step="0.01"
+               value="${escapeHtml(grossInputValue)}" aria-label="Total amount">
+      `
+    : '';
+
+  const invoiceTitleAttr = invoiceSecondary
+    ? ` title="${escapeHtml(invoiceSecondary)}"`
+    : '';
+
+  const vendorTitleParts = [];
+  if (vendorSecondary) {
+    vendorTitleParts.push(vendorSecondary);
+  }
+  if (vendorReason) {
+    vendorTitleParts.push(vendorReason);
+  }
+  const vendorTitleAttr = vendorTitleParts.length
+    ? ` title="${escapeHtml(vendorTitleParts.join(' • '))}"`
+    : '';
+
+  const accountTitleParts = [];
+  if (accountReason) {
+    accountTitleParts.push(accountReason);
+  }
+  if (accountAutofilled && !accountReason) {
+    accountTitleParts.push('Auto-filled from QuickBooks metadata');
+  }
+  const accountTitleAttr = accountTitleParts.length
+    ? ` title="${escapeHtml(accountTitleParts.join(' • '))}"`
+    : '';
+
+  const taxTitleAttr = taxBadge && taxCodeLabel
+    ? ` title="${escapeHtml(taxCodeLabel)}"`
+    : '';
+
+  const vendorDisplayLabel = vendorLabel || 'Select vendor';
+  const vendorStatusRowParts = [];
+  if (vendorBadge) {
+    vendorStatusRowParts.push(vendorBadge);
+  }
+  vendorStatusRowParts.push(`<span class="cell-inline-label">${escapeHtml(vendorDisplayLabel)}</span>`);
+  if (vendorSecondary) {
+    vendorStatusRowParts.push(`<span class="cell-status-note">${escapeHtml(vendorSecondary)}</span>`);
+  }
+
+  const vendorCellContent = `
+        <div class="cell-stack"${vendorTitleAttr}>
+          <div class="cell-status-row">
+            ${vendorStatusRowParts.join('\n            ')}
+          </div>
+          ${vendorControl}
+        </div>
+      `;
+
+  const accountDisplayLabel = accountLabel || 'Select account';
+  const accountHasSelection = Boolean(accountSelectValue);
+  const accountStatusRowParts = [];
+  if (accountBadge) {
+    accountStatusRowParts.push(accountBadge);
+  }
+  if (!accountHasSelection) {
+    accountStatusRowParts.push(`<span class="cell-inline-label">${escapeHtml(accountDisplayLabel)}</span>`);
+  } else if (accountReason) {
+    accountStatusRowParts.push(`<span class="cell-status-note">${escapeHtml(accountReason)}</span>`);
+  } else if (accountAutofilled) {
+    accountStatusRowParts.push('<span class="cell-status-note">Auto-filled from QuickBooks metadata</span>');
+  }
+
+  const accountCellContent = `
+        <div class="cell-stack"${accountTitleAttr}>
+          <div class="cell-status-row">
+            ${accountStatusRowParts.join('\n            ')}
+          </div>
+          ${accountControl}
+        </div>
+      `;
+
+  const taxCellContent = isEditing
+    ? taxControl
+    : `<span class="cell-inline-label">${escapeHtml(taxCodeLabel)}</span>`;
+
+  const netCellContent = isEditing
+    ? netControl
+    : `<span class="cell-inline-label">${escapeHtml(netDisplay)}</span>`;
+
+  const vatCellContent = isEditing
+    ? vatControl
+    : `<span class="cell-inline-label">${escapeHtml(vatDisplay)}</span>`;
+
+  const grossCellContent = isEditing
+    ? grossControl
+    : `<span class="cell-inline-label">${escapeHtml(grossDisplay)}</span>`;
 
   if (isReview) {
-    // Review table row with checkbox
     row.innerHTML = `
-      <td>
+      <td class="cell-select">
         <input type="checkbox" class="form-check-input review-checkbox"
-               data-checksum="${metadata.checksum || ''}"
-               ${reviewSelectedChecksums.has(metadata.checksum) ? 'checked' : ''}>
+               data-checksum="${escapeHtml(checksum)}"
+               ${reviewSelectedChecksums.has(checksum) ? 'checked' : ''}>
       </td>
-      <td>${extracted.vendor || metadata.invoiceFilename || 'Unknown'}</td>
-      <td>${extracted.invoiceNumber || '-'}</td>
-      <td>${extracted.invoiceDate || '-'}</td>
-      <td>$${Number(extracted.totalAmount || 0).toFixed(2)}</td>
-      <td>
-        <div class="btn-group btn-group-sm">
-          <button type="button" class="btn btn-outline-primary"
-                  data-action="preview" data-checksum="${metadata.checksum || ''}">
+      <td class="cell-invoice"${invoiceTitleAttr}>
+        <span class="cell-inline-label">${escapeHtml(invoiceNumber || '—')}</span>
+      </td>
+      <td class="cell-date">${escapeHtml(invoiceDate)}</td>
+      <td class="cell-vendor">
+        ${vendorCellContent}
+      </td>
+      <td class="cell-account">
+        ${accountCellContent}
+      </td>
+      <td class="cell-tax">
+        <div class="cell-inline"${taxTitleAttr}>
+          ${taxBadge || ''}
+          ${taxCellContent}
+        </div>
+      </td>
+      <td class="numeric cell-amount">
+        <div class="cell-inline" title="${escapeHtml(netDisplay)}">
+          ${netCellContent}
+        </div>
+      </td>
+      <td class="numeric cell-amount">
+        <div class="cell-inline" title="${escapeHtml(vatDisplay)}">
+          ${vatCellContent}
+        </div>
+      </td>
+      <td class="numeric cell-amount">
+        <div class="cell-inline" title="${escapeHtml(grossDisplay)}">
+          ${grossCellContent}
+        </div>
+      </td>
+      <td class="cell-actions${isEditing ? ' is-editing' : ''}">
+        <div class="review-row-actions">
+          ${isEditing
+            ? `
+          <button type="button" class="review-action-button review-action-button--primary" disabled aria-disabled="true"
+                  title="Save changes before previewing.">
             Preview
           </button>
-          <button type="button" class="btn btn-outline-secondary"
-                  data-action="edit" data-checksum="${metadata.checksum || ''}">
-            Edit
+          <button type="button" class="review-action-button review-action-button--primary"
+                  data-action="save" data-checksum="${escapeHtml(checksum)}">
+            Save
           </button>
-          <button type="button" class="btn btn-outline-danger"
-                  data-action="delete" data-checksum="${metadata.checksum || ''}">
+          <button type="button" class="review-action-button review-action-button--secondary"
+                  data-action="cancel" data-checksum="${escapeHtml(checksum)}">
+            Cancel
+          </button>
+          <button type="button" class="review-action-button review-action-button--danger"
+                  data-action="delete" data-checksum="${escapeHtml(checksum)}">
             Delete
           </button>
+          `
+            : `
+          <button ${previewButtonAttributeString}>
+            Preview
+          </button>
+          <button type="button" class="review-action-button review-action-button--secondary"
+                  data-action="edit" data-checksum="${escapeHtml(checksum)}">
+            Edit
+          </button>
+          <button type="button" class="review-action-button review-action-button--danger"
+                  data-action="delete" data-checksum="${escapeHtml(checksum)}">
+            Delete
+          </button>
+          `}
         </div>
       </td>
     `;
   } else {
-    // Archive table row without checkbox
     row.innerHTML = `
-      <td>${extracted.vendor || metadata.invoiceFilename || 'Unknown'}</td>
-      <td>${extracted.invoiceNumber || '-'}</td>
-      <td>${extracted.invoiceDate || '-'}</td>
-      <td>$${Number(extracted.totalAmount || 0).toFixed(2)}</td>
-      <td>
-        <div class="btn-group btn-group-sm">
-          <button type="button" class="btn btn-outline-primary"
-                  data-action="preview" data-checksum="${metadata.checksum || ''}">
+      <td class="cell-invoice"${invoiceTitleAttr}>
+        <span class="cell-inline-label">${escapeHtml(invoiceNumber || '—')}</span>
+      </td>
+      <td>${escapeHtml(vendorLabel)}</td>
+      <td class="cell-date">${escapeHtml(invoiceDate)}</td>
+      <td class="numeric">${escapeHtml(grossDisplay)}</td>
+      <td class="cell-actions">
+        <div class="review-row-actions">
+          <button ${previewButtonAttributeString}>
             Preview
           </button>
-          <button type="button" class="btn btn-outline-danger"
-                  data-action="delete" data-checksum="${metadata.checksum || ''}">
+          <button type="button" class="review-action-button review-action-button--danger"
+                  data-action="delete" data-checksum="${escapeHtml(checksum)}">
             Delete
           </button>
         </div>
@@ -2459,16 +3006,156 @@ function createInvoiceRow(invoice, isReview) {
   return row;
 }
 
-function updateBulkActionsState() {
-  const hasSelections = reviewSelectedChecksums.size > 0;
+function buildVendorSelectOptions(metadata, selectedValue) {
+  const vendors = Array.isArray(metadata?.vendors?.items) ? metadata.vendors.items : [];
+  const options = ['<option value="">Select vendor</option>'];
 
-  if (reviewBulkActions) {
-    reviewBulkActions.style.display = hasSelections ? 'flex' : 'none';
+  if (!vendors.length) {
+    return options.join('');
   }
+
+  const sorted = [...vendors].sort((left, right) => {
+    const leftLabel = (left?.displayName || left?.companyName || left?.fullyQualifiedName || left?.id || '').toLowerCase();
+    const rightLabel = (right?.displayName || right?.companyName || right?.fullyQualifiedName || right?.id || '').toLowerCase();
+    return leftLabel.localeCompare(rightLabel, undefined, { sensitivity: 'base' });
+  });
+
+  sorted.forEach((vendor) => {
+    const value = sanitizeReviewSelectionId(vendor?.id);
+    if (!value) {
+      return;
+    }
+
+    const baseLabel = vendor?.displayName || vendor?.companyName || vendor?.fullyQualifiedName || `Vendor ${vendor.id}`;
+    const details = [];
+    if (vendor?.companyName && vendor.companyName !== vendor.displayName) {
+      details.push(vendor.companyName);
+    }
+    if (vendor?.email) {
+      details.push(vendor.email);
+    }
+
+    const label = details.length ? `${baseLabel} • ${details.join(' • ')}` : baseLabel;
+    const isSelected = value === selectedValue;
+    options.push(
+      `<option value="${escapeHtml(value)}"${isSelected ? ' selected' : ''}>${escapeHtml(label)}</option>`
+    );
+  });
+
+  return options.join('');
+}
+
+function buildAccountSelectOptions(metadata, selectedValue) {
+  const accounts = Array.isArray(metadata?.accounts?.items) ? metadata.accounts.items : [];
+  const options = ['<option value="">Select account</option>'];
+
+  if (!accounts.length) {
+    return options.join('');
+  }
+
+  const sorted = [...accounts].sort((left, right) => {
+    const leftLabel = (left?.fullyQualifiedName || left?.name || left?.id || '').toLowerCase();
+    const rightLabel = (right?.fullyQualifiedName || right?.name || right?.id || '').toLowerCase();
+    return leftLabel.localeCompare(rightLabel, undefined, { sensitivity: 'base' });
+  });
+
+  sorted.forEach((account) => {
+    const value = sanitizeReviewSelectionId(account?.id);
+    if (!value) {
+      return;
+    }
+
+    const baseLabel = account?.fullyQualifiedName || account?.name || `Account ${account.id}`;
+    const parts = [baseLabel];
+    if (account?.accountType) {
+      parts.push(account.accountType);
+    }
+    if (account?.accountSubType && account.accountSubType !== account.accountType) {
+      parts.push(account.accountSubType);
+    }
+    const label = parts.join(' • ');
+    const isSelected = value === selectedValue;
+    options.push(
+      `<option value="${escapeHtml(value)}"${isSelected ? ' selected' : ''}>${escapeHtml(label)}</option>`
+    );
+  });
+
+  return options.join('');
+}
+
+function buildTaxSelectOptions(metadata, selectedValue) {
+  const taxCodes = Array.isArray(metadata?.taxCodes?.items) ? metadata.taxCodes.items : [];
+  const options = ['<option value="">Select tax code</option>'];
+
+  if (!taxCodes.length) {
+    return options.join('');
+  }
+
+  const sorted = [...taxCodes].sort((left, right) => {
+    const leftLabel = (left?.name || left?.id || '').toLowerCase();
+    const rightLabel = (right?.name || right?.id || '').toLowerCase();
+    return leftLabel.localeCompare(rightLabel, undefined, { sensitivity: 'base' });
+  });
+
+  sorted.forEach((code) => {
+    const value = sanitizeReviewSelectionId(code?.id);
+    if (!value) {
+      return;
+    }
+
+    const baseLabel = code?.name || `Tax Code ${code.id}`;
+    const numericRate = typeof code?.rate === 'number' && Number.isFinite(code.rate) ? code.rate : null;
+    const label = numericRate !== null ? `${baseLabel} • ${Number(numericRate).toFixed(2)}%` : baseLabel;
+    const isSelected = value === selectedValue;
+    options.push(
+      `<option value="${escapeHtml(value)}"${isSelected ? ' selected' : ''}>${escapeHtml(label)}</option>`
+    );
+  });
+
+  return options.join('');
+}
+
+function formatAmountInputValue(value) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return '';
+  }
+
+  return numeric.toFixed(2);
+}
+
+function updateBulkActionsState() {
+  const selections = Array.from(reviewSelectedChecksums);
+  const selectionCount = selections.length;
+  const hasSelections = selectionCount > 0;
+  const editingSelections = selections.filter((checksum) => reviewEditingChecksums.has(checksum));
+  const hasEditingSelections = editingSelections.length > 0;
+  const allEditing = hasSelections && editingSelections.length === selectionCount;
 
   if (reviewSelectionCount) {
-    reviewSelectionCount.textContent = reviewSelectedChecksums.size;
+    reviewSelectionCount.textContent = hasSelections
+      ? `${selectionCount} selected`
+      : 'No invoices selected.';
   }
+
+  setBulkButtonState(reviewBulkPreviewButton, selectionCount === 1);
+  setBulkButtonState(reviewBulkEditButton, hasSelections);
+  setBulkButtonState(reviewBulkSaveButton, allEditing);
+  setBulkButtonState(reviewBulkCancelButton, hasEditingSelections);
+  setBulkButtonState(reviewBulkArchiveButton, hasSelections);
+  setBulkButtonState(reviewBulkDeleteButton, hasSelections);
+}
+
+function setBulkButtonState(button, enabled) {
+  if (!button) {
+    return;
+  }
+
+  button.disabled = !enabled;
 }
 
 async function handleImportVendorDefaults() {
@@ -2626,18 +3313,23 @@ async function handleArchiveAction(event) {
   if (action === 'delete') {
     await handleIndividualDelete(checksum);
   } else if (action === 'preview') {
-    showStatus(globalStatus, 'Preview functionality not yet implemented.', 'info');
+    await handleInvoicePreview(checksum);
   }
 }
 
 async function handleReviewAction(event) {
-  event.preventDefault();
   const target = event.target;
-  const button = target.closest('button');
+  if (target && target.closest && target.closest('input[type="checkbox"]')) {
+    return;
+  }
+
+  const button = target && target.closest ? target.closest('button') : null;
 
   if (!button || !button.dataset.action || !button.dataset.checksum) {
     return;
   }
+
+  event.preventDefault();
 
   const action = button.dataset.action;
   const checksum = button.dataset.checksum;
@@ -2645,10 +3337,261 @@ async function handleReviewAction(event) {
   if (action === 'delete') {
     await handleIndividualDelete(checksum);
   } else if (action === 'preview') {
-    showStatus(globalStatus, 'Preview functionality not yet implemented.', 'info');
+    await handleInvoicePreview(checksum);
   } else if (action === 'edit') {
-    showStatus(globalStatus, 'Edit functionality not yet implemented.', 'info');
+    enterReviewEditMode(checksum);
+  } else if (action === 'cancel') {
+    exitReviewEditMode(checksum);
+  } else if (action === 'save') {
+    await handleReviewSave(checksum, button);
   }
+}
+
+function enterReviewEditMode(checksum) {
+  if (!checksum) {
+    return;
+  }
+
+  reviewEditingChecksums.add(checksum);
+  renderInvoices();
+
+  const scheduleFocus = typeof queueMicrotask === 'function'
+    ? queueMicrotask
+    : (cb) => Promise.resolve().then(cb);
+
+  scheduleFocus(() => {
+    const row = findReviewRowElement(checksum);
+    if (!row) {
+      return;
+    }
+
+    const focusTarget =
+      row.querySelector('[data-field="vendorId"]:not([disabled])') ||
+      row.querySelector('[data-field="accountId"]:not([disabled])') ||
+      row.querySelector('[data-field="taxCodeId"]:not([disabled])') ||
+      row.querySelector('[data-field="netAmount"]');
+
+    if (focusTarget && typeof focusTarget.focus === 'function') {
+      focusTarget.focus({ preventScroll: true });
+    }
+  });
+}
+
+function exitReviewEditMode(checksum) {
+  if (!checksum) {
+    return;
+  }
+
+  reviewEditingChecksums.delete(checksum);
+  renderInvoices();
+}
+
+async function handleReviewSave(checksum, triggerButton) {
+  if (!checksum) {
+    return;
+  }
+
+  const invoice = findStoredInvoice(checksum);
+  if (!invoice) {
+    showStatus(globalStatus, 'Unable to locate invoice for editing.', 'error');
+    return;
+  }
+
+  const row = findReviewRowElement(checksum);
+  if (!row) {
+    showStatus(globalStatus, 'Unable to locate invoice row for editing.', 'error');
+    return;
+  }
+
+  const selectionUpdates = {};
+  const amountUpdates = {};
+  let hasChanges = false;
+
+  const vendorSelect = row.querySelector('[data-field="vendorId"]');
+  if (vendorSelect) {
+    const newVendorId = sanitizeReviewSelectionId(vendorSelect.value);
+    const currentVendorId = sanitizeReviewSelectionId(invoice?.reviewSelection?.vendorId);
+    if (newVendorId !== currentVendorId) {
+      selectionUpdates.vendorId = newVendorId;
+      hasChanges = true;
+    }
+  }
+
+  const accountSelect = row.querySelector('[data-field="accountId"]');
+  if (accountSelect) {
+    const newAccountId = sanitizeReviewSelectionId(accountSelect.value);
+    const currentAccountId = sanitizeReviewSelectionId(invoice?.reviewSelection?.accountId);
+    if (newAccountId !== currentAccountId) {
+      selectionUpdates.accountId = newAccountId;
+      hasChanges = true;
+    }
+  }
+
+  const taxSelect = row.querySelector('[data-field="taxCodeId"]');
+  if (taxSelect) {
+    const newTaxCodeId = sanitizeReviewSelectionId(taxSelect.value);
+    const currentTaxCodeId = sanitizeReviewSelectionId(invoice?.reviewSelection?.taxCodeId);
+    if (newTaxCodeId !== currentTaxCodeId) {
+      selectionUpdates.taxCodeId = newTaxCodeId;
+      hasChanges = true;
+    }
+  }
+
+  const netInput = row.querySelector('[data-field="netAmount"]');
+  const vatInput = row.querySelector('[data-field="vatAmount"]');
+  const totalInput = row.querySelector('[data-field="totalAmount"]');
+
+  const netParsed = parseAmountInputValue(netInput);
+  if (netParsed.provided) {
+    if (!netParsed.valid) {
+      showStatus(globalStatus, 'Enter a valid net amount (for example 71.22).', 'error');
+      if (netInput && typeof netInput.focus === 'function') {
+        netInput.focus({ preventScroll: true });
+      }
+      return;
+    }
+    const currentNet = normaliseAmountValue(invoice?.data?.subtotal);
+    if (amountValuesDiffer(netParsed.value, currentNet)) {
+      amountUpdates.netAmount = netParsed.value;
+      hasChanges = true;
+    }
+  }
+
+  const vatParsed = parseAmountInputValue(vatInput);
+  if (vatParsed.provided) {
+    if (!vatParsed.valid) {
+      showStatus(globalStatus, 'Enter a valid VAT amount (for example 11.87).', 'error');
+      if (vatInput && typeof vatInput.focus === 'function') {
+        vatInput.focus({ preventScroll: true });
+      }
+      return;
+    }
+    const currentVat = normaliseAmountValue(invoice?.data?.vatAmount);
+    if (amountValuesDiffer(vatParsed.value, currentVat)) {
+      amountUpdates.vatAmount = vatParsed.value;
+      hasChanges = true;
+    }
+  }
+
+  const totalParsed = parseAmountInputValue(totalInput);
+  if (totalParsed.provided) {
+    if (!totalParsed.valid) {
+      showStatus(globalStatus, 'Enter a valid total amount (for example 82.45).', 'error');
+      if (totalInput && typeof totalInput.focus === 'function') {
+        totalInput.focus({ preventScroll: true });
+      }
+      return;
+    }
+    const currentTotal = normaliseAmountValue(invoice?.data?.totalAmount);
+    if (amountValuesDiffer(totalParsed.value, currentTotal)) {
+      amountUpdates.totalAmount = totalParsed.value;
+      hasChanges = true;
+    }
+  }
+
+  if (!hasChanges) {
+    exitReviewEditMode(checksum);
+    return;
+  }
+
+  const payload = { ...selectionUpdates };
+  if (Object.keys(amountUpdates).length) {
+    payload.amounts = amountUpdates;
+  }
+
+  if (!Object.keys(payload).length) {
+    exitReviewEditMode(checksum);
+    return;
+  }
+
+  if (triggerButton) {
+    triggerButton.disabled = true;
+  }
+
+  showStatus(globalStatus, 'Saving invoice updates…', 'info');
+
+  try {
+    const updatedInvoice = await patchInvoiceReviewSelection(checksum, payload);
+
+    if (updatedInvoice && typeof updatedInvoice === 'object') {
+      const index = storedInvoices.findIndex((entry) => entry?.metadata?.checksum === checksum);
+      if (index !== -1) {
+        storedInvoices[index] = updatedInvoice;
+      }
+    }
+
+    reviewEditingChecksums.delete(checksum);
+    renderInvoices();
+    showStatus(globalStatus, 'Invoice updates saved.', 'success');
+  } catch (error) {
+    console.error('Failed to save review updates', error);
+    if (triggerButton) {
+      triggerButton.disabled = false;
+    }
+    showStatus(globalStatus, error.message || 'Failed to save invoice updates.', 'error');
+  }
+}
+
+function findReviewRowElement(checksum) {
+  if (!reviewTableBody || !checksum) {
+    return null;
+  }
+
+  const selectorValue = escapeSelectorValue(checksum);
+  return reviewTableBody.querySelector(`tr[data-checksum="${selectorValue}"]`);
+}
+
+function escapeSelectorValue(value) {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+    return CSS.escape(value);
+  }
+
+  return value.replace(/['"\\\[\]]/g, '\\$&');
+}
+
+function parseAmountInputValue(input) {
+  if (!input) {
+    return { provided: false, valid: true, value: null };
+  }
+
+  const raw = typeof input.value === 'string' ? input.value.trim() : '';
+  if (!raw) {
+    return { provided: true, valid: true, value: null };
+  }
+
+  const normalised = raw.replace(/,/g, '');
+  const numeric = Number(normalised);
+  if (!Number.isFinite(numeric)) {
+    return { provided: true, valid: false, value: null };
+  }
+
+  const rounded = Math.round(numeric * 100) / 100;
+  return { provided: true, valid: true, value: rounded };
+}
+
+function normaliseAmountValue(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+
+  return Math.round(numeric * 100) / 100;
+}
+
+function amountValuesDiffer(left, right) {
+  if (left === null && right === null) {
+    return false;
+  }
+
+  if (left === null || right === null) {
+    return true;
+  }
+
+  return Math.abs(Number(left) - Number(right)) > 0.005;
 }
 
 async function handleIndividualDelete(checksum) {
@@ -2683,9 +3626,7 @@ function handleReviewChange(event) {
     reviewSelectedChecksums.delete(checksum);
   }
 
-  if (reviewSelectionCount) {
-    reviewSelectionCount.textContent = `${reviewSelectedChecksums.size} selected`;
-  }
+  updateBulkActionsState();
 }
 
 function handleReviewSelectAllChange(event) {
@@ -2694,6 +3635,57 @@ function handleReviewSelectAllChange(event) {
     reviewSelectAllCheckbox.checked = false;
   }
   showStatus(globalStatus, 'Select individual invoices to apply actions.', 'info');
+}
+
+function getSelectedReviewChecksums() {
+  return Array.from(reviewSelectedChecksums);
+}
+
+async function handleBulkPreviewSelected() {
+  const selections = getSelectedReviewChecksums();
+
+  if (selections.length !== 1) {
+    showStatus(globalStatus, 'Select a single invoice to preview.', 'info');
+    return;
+  }
+
+  await handleInvoicePreview(selections[0]);
+}
+
+function handleBulkEditSelected() {
+  const selections = getSelectedReviewChecksums();
+
+  if (!selections.length) {
+    showStatus(globalStatus, 'Select invoices before entering edit mode.', 'info');
+    return;
+  }
+
+  selections.forEach((checksum) => enterReviewEditMode(checksum));
+}
+
+async function handleBulkSaveSelected() {
+  const selections = getSelectedReviewChecksums().filter((checksum) => reviewEditingChecksums.has(checksum));
+
+  if (!selections.length) {
+    showStatus(globalStatus, 'Edit an invoice before saving changes.', 'info');
+    return;
+  }
+
+  for (const checksum of selections) {
+    // eslint-disable-next-line no-await-in-loop
+    await handleReviewSave(checksum, null);
+  }
+}
+
+function handleBulkCancelSelected() {
+  const selections = getSelectedReviewChecksums().filter((checksum) => reviewEditingChecksums.has(checksum));
+
+  if (!selections.length) {
+    showStatus(globalStatus, 'No edited invoices to cancel.', 'info');
+    return;
+  }
+
+  selections.forEach((checksum) => exitReviewEditMode(checksum));
 }
 
 function handleBulkArchiveSelected() {
@@ -2858,6 +3850,89 @@ function showDeleteConfirmation(itemDescription) {
   });
 }
 
+function findStoredInvoice(checksum) {
+  if (!checksum || !Array.isArray(storedInvoices)) {
+    return null;
+  }
+
+  return storedInvoices.find((entry) => entry?.metadata?.checksum === checksum) || null;
+}
+
+function showQuickBooksPreviewModal() {
+  if (!qbPreviewModal) {
+    return;
+  }
+
+  qbPreviewModal.hidden = false;
+  qbPreviewModal.setAttribute('aria-hidden', 'false');
+
+  if (qbPreviewJson) {
+    qbPreviewJson.scrollTop = 0;
+  }
+
+  if (!quickBooksPreviewEscapeHandler) {
+    quickBooksPreviewEscapeHandler = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        hideQuickBooksPreviewModal();
+      }
+    };
+    document.addEventListener('keydown', quickBooksPreviewEscapeHandler);
+  }
+
+  if (qbPreviewCloseButton) {
+    qbPreviewCloseButton.focus({ preventScroll: true });
+  }
+}
+
+function buildQuickBooksPreviewSummary(invoice, metadata, context) {
+  if (!invoice || !metadata || !context) {
+    return '';
+  }
+
+  const { realmId, url, payload } = context;
+  const companyEntry = quickBooksCompanies.find((company) => company.realmId === realmId) || null;
+  const companyName = companyEntry?.companyName || companyEntry?.legalName || realmId;
+
+  const selection = invoice?.reviewSelection && typeof invoice.reviewSelection === 'object'
+    ? invoice.reviewSelection
+    : {};
+
+  const vendorId = sanitizeReviewSelectionId(selection.vendorId);
+  const accountId = sanitizeReviewSelectionId(selection.accountId);
+  const taxCodeId = sanitizeReviewSelectionId(selection.taxCodeId);
+
+  const vendorEntry = vendorId && metadata?.vendors?.lookup instanceof Map
+    ? metadata.vendors.lookup.get(vendorId)
+    : null;
+  const accountEntry = accountId && metadata?.accounts?.lookup instanceof Map
+    ? metadata.accounts.lookup.get(accountId)
+    : null;
+  const taxEntry = taxCodeId && metadata?.taxCodes?.lookup instanceof Map
+    ? metadata.taxCodes.lookup.get(taxCodeId)
+    : null;
+
+  const vendorName = vendorEntry?.displayName || vendorEntry?.companyName || vendorEntry?.name || 'Not selected';
+  const accountName = accountEntry?.fullyQualifiedName || accountEntry?.name || 'Not selected';
+  const taxCodeName = taxEntry?.name || (taxCodeId ? `Tax Code ${taxCodeId}` : 'Not selected');
+
+  const payloadTotal = payload?.TotalAmt ?? invoice?.data?.totalAmount ?? null;
+  const payloadCurrency = payload?.CurrencyRef?.value || invoice?.data?.currency || null;
+  const totalDisplay = formatCurrencyAmount(payloadTotal, payloadCurrency);
+
+  const lines = [
+    `Company: ${companyName} (Realm ${realmId})`,
+    url ? `Endpoint: ${url}` : 'Endpoint: —',
+    `Vendor: ${vendorName}`,
+    `Account: ${accountName}`,
+    `Tax code: ${taxCodeName}`,
+    `Invoice total: ${totalDisplay}`,
+  ];
+
+  return lines.join('\n');
+}
+
+
 async function copyQuickBooksPreviewPayload() {
   if (!lastQuickBooksPreviewPayload) {
     showStatus(globalStatus, 'Nothing to copy yet.', 'info');
@@ -2882,6 +3957,143 @@ async function copyQuickBooksPreviewPayload() {
   } catch (error) {
     console.error(error);
     showStatus(globalStatus, 'Failed to copy QuickBooks payload.', 'error');
+  }
+}
+
+async function handleInvoicePreview(checksum) {
+  if (!checksum) {
+    showStatus(globalStatus, 'Invoice reference is missing for preview.', 'error');
+    return;
+  }
+
+  const invoice = findStoredInvoice(checksum);
+  if (!invoice) {
+    showStatus(globalStatus, 'Unable to locate invoice for preview.', 'error');
+    return;
+  }
+
+  const invoiceRealmId = sanitizeReviewSelectionId(invoice?.metadata?.companyProfile?.realmId);
+  const realmId = invoiceRealmId || selectedRealmId || '';
+
+  if (!realmId) {
+    showStatus(globalStatus, 'Select a QuickBooks company before previewing.', 'error');
+    return;
+  }
+
+  showStatus(globalStatus, 'Generating QuickBooks preview…', 'info');
+
+  try {
+    const metadata = await loadCompanyMetadata(realmId, { force: false }).catch((error) => {
+      console.warn('Unable to load metadata for preview', error);
+      return null;
+    });
+
+    if (!metadata) {
+      throw new Error('QuickBooks metadata is unavailable. Refresh data and try again.');
+    }
+
+    const selection =
+      invoice?.reviewSelection && typeof invoice.reviewSelection === 'object'
+        ? invoice.reviewSelection
+        : {};
+    const selectedVendorId = sanitizeReviewSelectionId(selection.vendorId);
+    if (!selectedVendorId) {
+      throw new Error('Select a QuickBooks vendor before previewing.');
+    }
+
+    const vendorLookup =
+      metadata?.vendors?.lookup instanceof Map ? metadata.vendors.lookup : null;
+    const vendorSettingsEntries =
+      metadata?.vendorSettings?.entries && typeof metadata.vendorSettings.entries === 'object'
+        ? metadata.vendorSettings.entries
+        : {};
+    const selectedVendorDefaults = vendorSettingsEntries[selectedVendorId] || null;
+    const accountIdFromSelection = sanitizeReviewSelectionId(selection.accountId);
+    const effectiveAccountId =
+      accountIdFromSelection ||
+      (selectedVendorDefaults
+        ? sanitizeReviewSelectionId(selectedVendorDefaults.accountId)
+        : null);
+
+    if (!effectiveAccountId) {
+      const vendorEntry = vendorLookup ? vendorLookup.get(selectedVendorId) : null;
+      const vendorDescriptor =
+        vendorEntry?.displayName ||
+        vendorEntry?.companyName ||
+        vendorEntry?.name ||
+        vendorEntry?.fullyQualifiedName ||
+        'this vendor';
+      throw new Error(
+        `Assign a QuickBooks account to ${vendorDescriptor} in Account / category settings before previewing.`
+      );
+    }
+
+    const params = new URLSearchParams({ invoiceId: checksum, realmId });
+    const response = await fetch(`/api/preview-quickbooks?${params.toString()}`);
+    const bodyText = await response.text();
+    let body = {};
+    if (bodyText) {
+      try {
+        body = JSON.parse(bodyText);
+      } catch (error) {
+        console.warn('Unable to parse QuickBooks preview body', error);
+      }
+    }
+
+    if (!response.ok) {
+      let message = body?.error || 'Failed to build QuickBooks preview.';
+      const detailParts = [];
+      if (Array.isArray(body?.missing) && body.missing.length) {
+        detailParts.push(`Missing: ${body.missing.join(', ')}`);
+      }
+      if (body?.details && typeof body.details === 'object') {
+        Object.entries(body.details).forEach(([key, value]) => {
+          if (value === undefined || value === null || value === '') {
+            return;
+          }
+          detailParts.push(`${key}: ${value}`);
+        });
+      }
+      if (detailParts.length) {
+        message = `${message} (${detailParts.join('; ')})`;
+      }
+      throw new Error(message);
+    }
+
+    const method = body?.method || 'POST';
+    const url = body?.url || '';
+    const payload = body?.payload || {};
+
+    lastQuickBooksPreviewPayload = JSON.stringify(payload, null, 2);
+
+    if (qbPreviewMethod) {
+      qbPreviewMethod.textContent = method;
+    }
+
+    if (qbPreviewJson) {
+      qbPreviewJson.textContent = lastQuickBooksPreviewPayload;
+    }
+
+    if (qbPreviewSummary) {
+      const summary = buildQuickBooksPreviewSummary(invoice, metadata, {
+        realmId,
+        url,
+        payload,
+      });
+      if (summary) {
+        qbPreviewSummary.textContent = summary;
+        qbPreviewSummary.hidden = false;
+      } else {
+        qbPreviewSummary.textContent = '';
+        qbPreviewSummary.hidden = true;
+      }
+    }
+
+    showQuickBooksPreviewModal();
+    showStatus(globalStatus, 'QuickBooks preview generated.', 'success');
+  } catch (error) {
+    console.error('QuickBooks preview error', error);
+    showStatus(globalStatus, error.message || 'Failed to generate QuickBooks preview.', 'error');
   }
 }
 
@@ -4973,6 +6185,391 @@ function evaluateQuickBooksPreviewState(invoice, metadata) {
   return result;
 }
 
+
+function buildMatchBadge(type) {
+  const key = MATCH_BADGE_LABELS[type] ? type : 'unknown';
+  const label = MATCH_BADGE_LABELS[key];
+  return `<span class="match-badge match-${key}">${escapeHtml(label)}</span>`;
+}
+
+function formatCurrencyAmount(value, currencyCode) {
+  if (value === null || value === undefined || value === '') {
+    return '—';
+  }
+
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return '—';
+  }
+
+  const amount = formatAmount(number);
+  const symbol = currencySymbolFromCode(currencyCode);
+
+  if (symbol) {
+    return `${symbol}${amount}`;
+  }
+
+  const code = typeof currencyCode === 'string' && currencyCode.trim();
+  if (code) {
+    return `${code.toUpperCase()} ${amount}`;
+  }
+
+  return `£${amount}`;
+}
+
+function currencySymbolFromCode(code) {
+  if (!code) {
+    return '';
+  }
+
+  const upper = code.toString().trim().toUpperCase();
+  if (upper === 'GBP') {
+    return '£';
+  }
+  if (upper === 'USD') {
+    return '$';
+  }
+  if (upper === 'EUR') {
+    return '€';
+  }
+
+  return '';
+}
+
+function escapeHtml(value) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+
+  return value
+    .toString()
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function normaliseComparableText(value) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+
+  const text = value.toString().toLowerCase();
+  const normalized = typeof text.normalize === 'function' ? text.normalize('NFD') : text;
+
+  return normalized
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function computeVendorSimilarity(normalizedVendor, normalizedCandidate) {
+  let score = computeNormalisedSimilarity(normalizedVendor, normalizedCandidate);
+  let label = normalizedCandidate;
+
+  if (!normalizedVendor || !normalizedCandidate) {
+    return { score, label };
+  }
+
+  if (normalizedCandidate.includes(normalizedVendor) || normalizedVendor.includes(normalizedCandidate)) {
+    score = Math.max(score, 0.9);
+  }
+
+  const candidateTokens = normalizedCandidate.split(' ').filter(Boolean);
+  candidateTokens.forEach((token) => {
+    if (token.length < 3) {
+      return;
+    }
+    const tokenSimilarity = computeNormalisedSimilarity(normalizedVendor, token);
+    if (tokenSimilarity > score) {
+      score = tokenSimilarity;
+      label = token;
+    }
+    if (normalizedVendor.includes(token) && token.length >= 4) {
+      score = Math.max(score, 0.86);
+      label = token;
+    }
+  });
+
+  return { score, label };
+}
+
+function computeNormalisedSimilarity(a, b) {
+  if (!a || !b) {
+    return 0;
+  }
+  if (a === b) {
+    return 1;
+  }
+
+  const distance = levenshteinDistance(a, b);
+  const longest = Math.max(a.length, b.length) || 1;
+  return (longest - distance) / longest;
+}
+
+function levenshteinDistance(a, b) {
+  if (a === b) {
+    return 0;
+  }
+
+  const aLength = a.length;
+  const bLength = b.length;
+
+  if (!aLength) {
+    return bLength;
+  }
+
+  if (!bLength) {
+    return aLength;
+  }
+
+  const matrix = Array.from({ length: aLength + 1 }, () => new Array(bLength + 1).fill(0));
+
+  for (let i = 0; i <= aLength; i += 1) {
+    matrix[i][0] = i;
+  }
+  for (let j = 0; j <= bLength; j += 1) {
+    matrix[0][j] = j;
+  }
+
+  for (let i = 1; i <= aLength; i += 1) {
+    for (let j = 1; j <= bLength; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1,
+        matrix[i][j - 1] + 1,
+        matrix[i - 1][j - 1] + cost
+      );
+    }
+  }
+
+  return matrix[aLength][bLength];
+}
+
+function findAccountMatchByLabel(label, accounts) {
+  if (!label || !Array.isArray(accounts) || !accounts.length) {
+    return null;
+  }
+
+  const normalizedLabel = normaliseComparableText(label);
+  if (!normalizedLabel) {
+    return null;
+  }
+
+  let best = null;
+
+  accounts.forEach((account) => {
+    const candidates = [
+      account?.fullyQualifiedName,
+      account?.name,
+    ].filter(Boolean);
+
+    candidates.forEach((candidate) => {
+      const normalizedCandidate = normaliseComparableText(candidate);
+      if (!normalizedCandidate) {
+        return;
+      }
+
+      if (normalizedCandidate === normalizedLabel) {
+        best = { account, score: 1 };
+        return;
+      }
+
+      const similarity = computeNormalisedSimilarity(normalizedLabel, normalizedCandidate);
+      if (!best || similarity > best.score) {
+        best = { account, score: similarity };
+      }
+    });
+  });
+
+  return best && best.score >= 0.88 ? best : null;
+}
+
+function findBestVendorMatch(vendorName, vendors) {
+  if (!vendorName || !Array.isArray(vendors) || !vendors.length) {
+    return null;
+  }
+
+  const normalizedVendor = normaliseComparableText(vendorName);
+  if (!normalizedVendor) {
+    return null;
+  }
+
+  let best = null;
+
+  vendors.forEach((vendor) => {
+    const labels = [
+      vendor.displayName,
+      vendor.name,
+      vendor.companyName,
+      vendor.fullyQualifiedName,
+    ].filter(Boolean);
+
+    labels.forEach((label) => {
+      const normalizedCandidate = normaliseComparableText(label);
+      if (!normalizedCandidate) {
+        return;
+      }
+
+      const similarity = computeVendorSimilarity(normalizedVendor, normalizedCandidate);
+      if (!best || similarity.score > best.score) {
+        best = {
+          vendor,
+          score: similarity.score,
+          matchedLabel: similarity.label,
+        };
+      }
+    });
+  });
+
+  return best && best.score >= 0.4 ? best : null;
+}
+
+async function autoMatchInvoices(targetRealmId = selectedRealmId) {
+  if (!storedInvoices.length) {
+    return;
+  }
+
+  const realmId = targetRealmId || '';
+  if (!realmId) {
+    return;
+  }
+
+  const metadata = companyMetadataCache.get(realmId);
+  if (!metadata) {
+    return;
+  }
+
+  const relevantInvoices = storedInvoices.filter((invoice) => {
+    if (resolveStoredInvoiceStatus(invoice) !== 'review') {
+      return false;
+    }
+    const invoiceRealmId = invoice?.metadata?.companyProfile?.realmId || selectedRealmId || '';
+    return !invoiceRealmId || invoiceRealmId === realmId;
+  });
+
+  for (const invoice of relevantInvoices) {
+    // eslint-disable-next-line no-await-in-loop
+    await autoMatchInvoice(invoice, metadata);
+  }
+}
+
+async function autoMatchInvoice(invoice, metadata) {
+  const checksum = invoice?.metadata?.checksum;
+  if (!checksum || autoMatchInFlight.has(checksum) || autoMatchedChecksums.has(checksum)) {
+    return;
+  }
+
+  const selection =
+    invoice?.reviewSelection && typeof invoice.reviewSelection === 'object'
+      ? invoice.reviewSelection
+      : {};
+
+  const currentVendorId = sanitizeReviewSelectionId(selection.vendorId);
+  const currentAccountId = sanitizeReviewSelectionId(selection.accountId);
+  const currentTaxCodeId = sanitizeReviewSelectionId(selection.taxCodeId);
+
+  const invoiceVendor =
+    invoice?.data?.vendor ||
+    invoice?.metadata?.invoiceFilename ||
+    invoice?.metadata?.originalName ||
+    '';
+
+  let updates = {};
+  let canonicalVendorId = currentVendorId || null;
+
+  if (!canonicalVendorId) {
+    const vendorMatch = findBestVendorMatch(invoiceVendor, metadata?.vendors?.items || []);
+    if (vendorMatch && vendorMatch.score >= 0.9) {
+      canonicalVendorId = vendorMatch.vendor.id;
+      updates.vendorId = canonicalVendorId;
+    }
+  }
+
+  const vendorDefaults = canonicalVendorId
+    ? metadata?.vendorSettings?.entries?.[canonicalVendorId] || null
+    : null;
+
+  if (!currentAccountId && vendorDefaults?.accountId) {
+    updates.accountId = vendorDefaults.accountId;
+  }
+
+  if (!currentAccountId && !updates.accountId) {
+    const suggestedAccount = invoice?.data?.suggestedAccount || null;
+    const confidence = (suggestedAccount?.confidence || '').toString().toLowerCase();
+    if (suggestedAccount?.name && confidence === 'high') {
+      const matchedAccount = findAccountMatchByLabel(
+        suggestedAccount.name,
+        metadata?.accounts?.items || []
+      );
+      if (matchedAccount?.account?.id) {
+        updates.accountId = matchedAccount.account.id;
+      }
+    }
+  }
+
+  if (!currentTaxCodeId && vendorDefaults?.taxCodeId) {
+    updates.taxCodeId = vendorDefaults.taxCodeId;
+  }
+
+  if (!Object.keys(updates).length) {
+    return;
+  }
+
+  autoMatchInFlight.add(checksum);
+  try {
+    const updatedInvoice = await patchInvoiceReviewSelection(checksum, updates);
+    if (updatedInvoice && typeof updatedInvoice === 'object') {
+      const index = storedInvoices.findIndex((entry) => entry?.metadata?.checksum === checksum);
+      if (index !== -1) {
+        storedInvoices[index] = updatedInvoice;
+      }
+    } else {
+      const currentSelection = invoice.reviewSelection && typeof invoice.reviewSelection === 'object'
+        ? invoice.reviewSelection
+        : (invoice.reviewSelection = {});
+      if (updates.vendorId) {
+        currentSelection.vendorId = updates.vendorId;
+      }
+      if (updates.accountId) {
+        currentSelection.accountId = updates.accountId;
+      }
+      if (updates.taxCodeId) {
+        currentSelection.taxCodeId = updates.taxCodeId;
+      }
+    }
+
+    autoMatchedChecksums.add(checksum);
+    renderInvoices();
+  } catch (error) {
+    console.warn('Auto-match failed', error);
+  } finally {
+    autoMatchInFlight.delete(checksum);
+  }
+}
+
+async function patchInvoiceReviewSelection(checksum, updates) {
+  if (!checksum || !updates || !Object.keys(updates).length) {
+    return null;
+  }
+
+  const response = await fetch(`/api/invoices/${encodeURIComponent(checksum)}/review`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(updates),
+  });
+
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = body?.error || 'Failed to update invoice review selection.';
+    throw new Error(message);
+  }
+
+  return body?.invoice || null;
+}
 
 
 function formatTimestamp(value) {

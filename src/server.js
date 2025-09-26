@@ -4320,11 +4320,24 @@ app.patch('/api/invoices/:checksum/review', async (req, res) => {
   const hasTaxUpdate = Object.prototype.hasOwnProperty.call(body, 'taxCodeId');
   const hasSecondaryTaxUpdate = Object.prototype.hasOwnProperty.call(body, 'secondaryTaxCodeId');
 
+  const amountsPayload = typeof body?.amounts === 'object' && body.amounts ? body.amounts : null;
+  const amountUpdates = {};
+
+  ['netAmount', 'vatAmount', 'totalAmount'].forEach((key) => {
+    if (amountsPayload && Object.prototype.hasOwnProperty.call(amountsPayload, key)) {
+      amountUpdates[key] = amountsPayload[key];
+    } else if (Object.prototype.hasOwnProperty.call(body, key)) {
+      amountUpdates[key] = body[key];
+    }
+  });
+
+  const hasAmountUpdate = Object.keys(amountUpdates).length > 0;
+
   if (!checksum) {
     return res.status(400).json({ error: 'Checksum is required.' });
   }
 
-  if (!hasVendorUpdate && !hasAccountUpdate && !hasTaxUpdate && !hasSecondaryTaxUpdate) {
+  if (!hasVendorUpdate && !hasAccountUpdate && !hasTaxUpdate && !hasSecondaryTaxUpdate && !hasAmountUpdate) {
     return res.status(400).json({ error: 'No review updates provided.' });
   }
 
@@ -4343,7 +4356,7 @@ app.patch('/api/invoices/:checksum/review', async (req, res) => {
   }
 
   try {
-    const updated = await updateStoredInvoiceReviewSelection(checksum, updates);
+    const updated = await updateStoredInvoiceReviewSelection(checksum, updates, amountUpdates);
 
     if (!updated) {
       return res.status(404).json({ error: 'Invoice not found.' });
@@ -8675,7 +8688,7 @@ async function updateStoredInvoiceStatus(checksum, status) {
   return invoices[index];
 }
 
-async function updateStoredInvoiceReviewSelection(checksum, updates = {}) {
+async function updateStoredInvoiceReviewSelection(checksum, updates = {}, amountUpdates = {}) {
   if (!checksum) {
     return null;
   }
@@ -8689,12 +8702,13 @@ async function updateStoredInvoiceReviewSelection(checksum, updates = {}) {
   const hasVendorUpdate = Object.prototype.hasOwnProperty.call(updates, 'vendorId');
   const hasAccountUpdate = Object.prototype.hasOwnProperty.call(updates, 'accountId');
   const hasTaxUpdate = Object.prototype.hasOwnProperty.call(updates, 'taxCodeId');
-  const hasSecondaryTaxUpdate = Object.prototype.hasOwnProperty.call(
-    updates,
-    'secondaryTaxCodeId'
-  );
+  const hasSecondaryTaxUpdate = Object.prototype.hasOwnProperty.call(updates, 'secondaryTaxCodeId');
+  const hasNetAmountUpdate = Object.prototype.hasOwnProperty.call(amountUpdates, 'netAmount');
+  const hasVatAmountUpdate = Object.prototype.hasOwnProperty.call(amountUpdates, 'vatAmount');
+  const hasTotalAmountUpdate = Object.prototype.hasOwnProperty.call(amountUpdates, 'totalAmount');
+  const hasAmountUpdate = hasNetAmountUpdate || hasVatAmountUpdate || hasTotalAmountUpdate;
 
-  if (!hasVendorUpdate && !hasAccountUpdate && !hasTaxUpdate && !hasSecondaryTaxUpdate) {
+  if (!hasVendorUpdate && !hasAccountUpdate && !hasTaxUpdate && !hasSecondaryTaxUpdate && !hasAmountUpdate) {
     return invoices[index];
   }
 
@@ -8721,9 +8735,34 @@ async function updateStoredInvoiceReviewSelection(checksum, updates = {}) {
 
   const normalizedSelection = normalizeReviewSelection(currentSelection);
 
+  let updatedData = invoices[index]?.data && typeof invoices[index].data === 'object'
+    ? { ...invoices[index].data }
+    : null;
+
+  if (hasAmountUpdate) {
+    if (!updatedData) {
+      updatedData = {};
+    }
+
+    if (hasNetAmountUpdate) {
+      const normalisedNet = normaliseMoneyValue(amountUpdates.netAmount);
+      updatedData.subtotal = normalisedNet;
+      updatedData.netAmount = normalisedNet;
+    }
+
+    if (hasVatAmountUpdate) {
+      updatedData.vatAmount = normaliseMoneyValue(amountUpdates.vatAmount);
+    }
+
+    if (hasTotalAmountUpdate) {
+      updatedData.totalAmount = normaliseMoneyValue(amountUpdates.totalAmount);
+    }
+  }
+
   const updatedInvoice = {
     ...invoices[index],
     reviewSelection: normalizedSelection,
+    data: hasAmountUpdate ? updatedData : invoices[index].data,
   };
 
   invoices[index] = updatedInvoice;

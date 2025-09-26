@@ -303,12 +303,16 @@
         <div class="panel-card">
           <h2>To Review</h2>
           <p class="panel-summary">Invoices awaiting manual checks before export are listed below.</p>
-          <div id="review-bulk-actions" class="review-bulk-actions" hidden>
-            <span id="review-selection-count" class="bulk-selection-count">No invoices selected.</span>
-            <div class="review-bulk-buttons">
-              <button type="button" id="review-bulk-archive" class="bulk-action" disabled>Move selected to archive</button>
-              <button type="button" id="review-bulk-delete" class="bulk-action destructive" disabled>Delete selected</button>
+          <div id="review-bulk-actions" class="review-bulk-actions">
+            <div class="review-bulk-toolbar" role="group" aria-label="Invoice actions">
+              <button type="button" id="review-bulk-preview" class="bulk-action" disabled>Preview</button>
+              <button type="button" id="review-bulk-edit" class="bulk-action" disabled>Edit</button>
+              <button type="button" id="review-bulk-save" class="bulk-action" disabled>Save</button>
+              <button type="button" id="review-bulk-cancel" class="bulk-action" disabled>Cancel</button>
+              <button type="button" id="review-bulk-archive" class="bulk-action" disabled>Archive</button>
+              <button type="button" id="review-bulk-delete" class="bulk-action destructive" disabled>Delete</button>
             </div>
+            <span id="review-selection-count" class="bulk-selection-count" aria-live="polite">No invoices selected.</span>
           </div>
           <div class="table-wrapper">
             <table class="review-table">
@@ -317,15 +321,15 @@
                   <th scope="col" class="col-select">
                     <input type="checkbox" id="review-select-all" aria-label="Select all invoices awaiting review" />
                   </th>
-                  <th scope="col">Invoice</th>
-                  <th scope="col">Invoice date</th>
-                  <th scope="col">Vendor</th>
-                  <th scope="col">Account</th>
-                  <th scope="col">Tax code</th>
-                  <th scope="col">Total ex VAT</th>
-                  <th scope="col">VAT</th>
-                  <th scope="col">Grand total</th>
-                  <th scope="col">Actions</th>
+                  <th scope="col" class="col-invoice">Invoice</th>
+                  <th scope="col" class="col-date">Invoice date</th>
+                  <th scope="col" class="col-vendor">Vendor</th>
+                  <th scope="col" class="col-account">Account</th>
+                  <th scope="col" class="col-tax">Tax code</th>
+                  <th scope="col" class="col-amount">Total ex VAT</th>
+                  <th scope="col" class="col-amount">VAT</th>
+                  <th scope="col" class="col-amount">Grand total</th>
+                  <th scope="col" class="col-actions">Actions</th>
                 </tr>
               </thead>
               <tbody id="review-table-body">
