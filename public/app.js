@@ -142,6 +142,8 @@ const reviewEditingChecksums = new Set();
 let lastQuickBooksPreviewPayload = '';
 let quickBooksPreviewEscapeHandler = null;
 let invoicePreviewWindow = null;
+let invoicePdfWindow = null;
+let invoicePdfObjectUrl = null;
 const MONITORED_DEFAULT_SUMMARY = 'No folder selected.';
 const PROCESSED_DEFAULT_SUMMARY =
   'Processed invoices will move into a “Synced” folder inside the monitored location.';
@@ -2813,6 +2815,12 @@ function createInvoiceRow(invoice, isReview) {
     }
   }
   const previewButtonAttributeString = previewButtonAttributes.join(' ');
+  const viewPdfButtonHtml = `
+          <button type="button" class="review-action-button review-action-button--secondary"
+                  data-action="view-pdf" data-checksum="${escapeHtml(checksum)}"
+                  title="Open source PDF in a new window" aria-label="Open source PDF in a new window">
+            View PDF
+          </button>`;
 
   const vendorSelectClasses = ['review-field', 'review-field--inline', 'select-field', vendorMatchClass];
   const filteredVendorSelectClasses = vendorSelectClasses.filter(Boolean);
@@ -3048,6 +3056,7 @@ function createInvoiceRow(invoice, isReview) {
                   title="Save changes before previewing.">
             Preview
           </button>
+${viewPdfButtonHtml}
           <button type="button" class="review-action-button review-action-button--primary"
                   data-action="save" data-checksum="${escapeHtml(checksum)}">
             Save
@@ -3065,6 +3074,7 @@ function createInvoiceRow(invoice, isReview) {
           <button ${previewButtonAttributeString}>
             Preview
           </button>
+${viewPdfButtonHtml}
           <button type="button" class="review-action-button review-action-button--secondary"
                   data-action="edit" data-checksum="${escapeHtml(checksum)}">
             Edit
@@ -3090,6 +3100,7 @@ function createInvoiceRow(invoice, isReview) {
           <button ${previewButtonAttributeString}>
             Preview
           </button>
+${viewPdfButtonHtml}
           <button type="button" class="review-action-button review-action-button--danger"
                   data-action="delete" data-checksum="${escapeHtml(checksum)}">
             Delete
@@ -3458,6 +3469,8 @@ async function handleArchiveAction(event) {
     await handleIndividualDelete(checksum);
   } else if (action === 'preview') {
     await handleInvoicePreview(checksum);
+  } else if (action === 'view-pdf') {
+    await handleInvoicePdfView(checksum);
   }
 }
 
@@ -3482,6 +3495,8 @@ async function handleReviewAction(event) {
     await handleIndividualDelete(checksum);
   } else if (action === 'preview') {
     await handleInvoicePreview(checksum);
+  } else if (action === 'view-pdf') {
+    await handleInvoicePdfView(checksum);
   } else if (action === 'edit') {
     enterReviewEditMode(checksum);
   } else if (action === 'cancel') {
@@ -4410,6 +4425,225 @@ async function copyQuickBooksPreviewPayload() {
   } catch (error) {
     console.error(error);
     showStatus(globalStatus, 'Failed to copy QuickBooks payload.', 'error');
+  }
+}
+
+function revokeInvoicePdfObjectUrl() {
+  if (!invoicePdfObjectUrl) {
+    return;
+  }
+
+  try {
+    URL.revokeObjectURL(invoicePdfObjectUrl);
+  } catch (error) {
+    console.warn('Unable to revoke invoice PDF object URL', error);
+  }
+
+  invoicePdfObjectUrl = null;
+}
+
+function renderInvoicePdfWindowContent(targetWindow, title, body) {
+  if (!targetWindow || targetWindow.closed) {
+    return;
+  }
+
+  try {
+    const doc = targetWindow.document;
+    doc.open();
+    doc.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
+      <style>
+        :root { color-scheme: light dark; }
+        body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+        .shell {
+          min-height: 100vh;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 1rem;
+          padding: 2rem;
+          background: #f4f4f6;
+          color: #1f2933;
+        }
+        .shell--error { background: #fff1f2; color: #9f1239; }
+        .spinner {
+          width: 2.5rem;
+          height: 2.5rem;
+          border-radius: 50%;
+          border: 0.4rem solid rgba(0, 0, 0, 0.1);
+          border-top-color: rgba(59, 130, 246, 0.9);
+          animation: spin 0.85s linear infinite;
+        }
+        @keyframes spin {
+          100% { transform: rotate(360deg); }
+        }
+        embed, iframe {
+          border: 0;
+          width: 100%;
+          height: 100%;
+          flex: 1 1 auto;
+        }
+        .pdf-container {
+          position: fixed;
+          inset: 0;
+          display: flex;
+          flex-direction: column;
+          background: #111827;
+        }
+        .pdf-container > embed,
+        .pdf-container > iframe {
+          flex: 1;
+        }
+      </style>
+    </head><body>${body}</body></html>`);
+    doc.close();
+  } catch (error) {
+    console.warn('Unable to render invoice PDF content', error);
+  }
+}
+
+function renderInvoicePdfLoading(targetWindow) {
+  const body = `
+    <main class="shell">
+      <div class="spinner" role="presentation" aria-hidden="true"></div>
+      <p>Loading invoice PDF…</p>
+    </main>
+  `;
+  renderInvoicePdfWindowContent(targetWindow, 'Loading invoice PDF…', body);
+}
+
+function renderInvoicePdfError(targetWindow, message) {
+  const body = `
+    <main class="shell shell--error">
+      <strong>Could not open the invoice PDF.</strong>
+      <p>${escapeHtml(message)}</p>
+    </main>
+  `;
+  renderInvoicePdfWindowContent(targetWindow, 'Invoice PDF unavailable', body);
+}
+
+function renderInvoicePdfEmbed(targetWindow, objectUrl) {
+  const body = `
+    <div class="pdf-container">
+      <embed src="${escapeHtml(objectUrl)}" type="application/pdf" />
+    </div>
+  `;
+  renderInvoicePdfWindowContent(targetWindow, 'Invoice PDF', body);
+}
+
+async function extractApiErrorMessage(response, defaultMessage) {
+  const fallback = defaultMessage || 'Request failed.';
+  if (!response || typeof response.clone !== 'function') {
+    return fallback;
+  }
+
+  try {
+    const cloned = response.clone();
+    const contentType = cloned.headers?.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const body = await cloned.json().catch(() => ({}));
+      const message = body?.error || body?.message || null;
+      if (message) {
+        return String(message);
+      }
+    } else {
+      const text = await cloned.text().catch(() => '');
+      if (text) {
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed && typeof parsed === 'object') {
+            const message = parsed.error || parsed.message || null;
+            if (message) {
+              return String(message);
+            }
+          }
+        } catch (_error) {
+          if (text.trim()) {
+            return text.trim();
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.warn('Failed to extract API error message', error);
+  }
+
+  return response.statusText || fallback;
+}
+
+async function handleInvoicePdfView(checksum) {
+  if (!checksum) {
+    showStatus(globalStatus, 'Invoice reference is missing for PDF view.', 'error');
+    return;
+  }
+
+  const targetUrl = `/api/invoices/${encodeURIComponent(checksum)}/file`;
+
+  if (!invoicePdfWindow || invoicePdfWindow.closed) {
+    invoicePdfWindow = window.open('', 'invoice-pdf', 'width=1024,height=768');
+
+    if (invoicePdfWindow) {
+      try {
+        invoicePdfWindow.opener = null;
+      } catch (_) {
+        // Some browsers prevent modifying opener; ignore to preserve isolation.
+      }
+    }
+  } else {
+    invoicePdfWindow.focus();
+  }
+
+  if (!invoicePdfWindow) {
+    showStatus(globalStatus, 'Allow pop-ups in your browser to view the invoice PDF.', 'error');
+    return;
+  }
+
+  renderInvoicePdfLoading(invoicePdfWindow);
+  invoicePdfWindow.focus();
+
+  invoicePdfWindow.onbeforeunload = () => {
+    revokeInvoicePdfObjectUrl();
+    invoicePdfWindow = null;
+  };
+
+  try {
+    const response = await fetch(targetUrl);
+
+    if (!response.ok) {
+      const message = await extractApiErrorMessage(response, 'Failed to load invoice PDF.');
+      renderInvoicePdfError(invoicePdfWindow, message);
+      showStatus(globalStatus, message, 'error');
+      return;
+    }
+
+    const contentType = (response.headers?.get('content-type') || '').toLowerCase();
+    if (!contentType.includes('application/pdf')) {
+      const message = await extractApiErrorMessage(response, 'The invoice file is unavailable.');
+      renderInvoicePdfError(invoicePdfWindow, message);
+      showStatus(globalStatus, message, 'error');
+      return;
+    }
+
+    const blob = await response.blob();
+    revokeInvoicePdfObjectUrl();
+    invoicePdfObjectUrl = URL.createObjectURL(blob);
+    let navigatedToBlob = false;
+    try {
+      invoicePdfWindow.location.replace(invoicePdfObjectUrl);
+      navigatedToBlob = true;
+    } catch (navigationError) {
+      console.warn('Failed to navigate popup directly to PDF blob', navigationError);
+    }
+
+    if (!navigatedToBlob) {
+      renderInvoicePdfEmbed(invoicePdfWindow, invoicePdfObjectUrl);
+    }
+    invoicePdfWindow.focus();
+  } catch (error) {
+    console.error('Unable to load invoice PDF', error);
+    revokeInvoicePdfObjectUrl();
+    renderInvoicePdfError(invoicePdfWindow, 'Unable to load invoice PDF. Please try again.');
+    showStatus(globalStatus, 'Unable to load invoice PDF. Please try again.', 'error');
   }
 }
 
