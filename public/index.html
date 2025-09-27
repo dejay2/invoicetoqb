@@ -34,6 +34,7 @@
         <button class="tab" data-company-tab="vendor-settings" role="tab" aria-selected="false" aria-controls="vendor-settings">Vendor settings</button>
         <button class="tab" data-company-tab="account-settings" role="tab" aria-selected="false" aria-controls="account-settings">Account / category settings</button>
         <button class="tab" data-company-tab="to-review" role="tab" aria-selected="false" aria-controls="to-review">To review</button>
+        <button class="tab" data-company-tab="needs-split" role="tab" aria-selected="false" aria-controls="needs-split">Needs Split</button>
         <button class="tab" data-company-tab="archive" role="tab" aria-selected="false" aria-controls="archive">Archive</button>
       </nav>
 
@@ -342,24 +343,70 @@
         </div>
       </section>
 
+      <section id="needs-split" class="company-panel" role="tabpanel" hidden>
+        <div class="panel-card">
+          <h2>Needs Split</h2>
+          <p class="panel-summary">PDFs that may contain multiple invoices are listed below. Choose to split them into segments or accept as single invoices.</p>
+          <div id="split-bulk-actions" class="review-bulk-actions">
+            <div class="review-bulk-toolbar" role="group" aria-label="Invoice actions">
+              <button type="button" id="split-bulk-preview" class="bulk-action" disabled>Preview</button>
+              <button type="button" id="split-bulk-split" class="bulk-action" disabled>Split selected</button>
+              <button type="button" id="split-bulk-single" class="bulk-action" disabled>Mark as single</button>
+              <button type="button" id="split-bulk-delete" class="bulk-action destructive" disabled>Delete</button>
+            </div>
+            <span id="split-selection-count" class="bulk-selection-count" aria-live="polite">No invoices selected.</span>
+          </div>
+          <div class="table-wrapper">
+            <table class="review-table">
+              <thead>
+                <tr>
+                  <th scope="col" class="col-select">
+                    <input type="checkbox" id="split-select-all" aria-label="Select all invoices needing split" />
+                  </th>
+                  <th scope="col" class="col-invoice">Invoice</th>
+                  <th scope="col" class="col-account">Detected segments</th>
+                  <th scope="col" class="col-amount">Totals</th>
+                  <th scope="col" class="col-actions">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="split-table-body">
+                <tr class="empty-row">
+                  <td colspan="5">No invoices need splitting.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
       <section id="archive" class="company-panel" role="tabpanel" hidden>
         <div class="panel-card">
           <h2>Archive</h2>
           <p class="panel-summary">Invoices parsed with Gemini are stored here until they are moved for review or removed.</p>
+          <div id="archive-bulk-actions" class="review-bulk-actions">
+            <div class="review-bulk-toolbar" role="group" aria-label="Invoice actions">
+              <button type="button" id="archive-bulk-preview" class="bulk-action" disabled>Preview</button>
+              <button type="button" id="archive-bulk-delete" class="bulk-action destructive" disabled>Delete</button>
+            </div>
+            <span id="archive-selection-count" class="bulk-selection-count" aria-live="polite">No invoices selected.</span>
+          </div>
           <div class="table-wrapper">
             <table class="archive-table">
               <thead>
                 <tr>
-                  <th scope="col">Invoice</th>
-                  <th scope="col">Vendor</th>
-                  <th scope="col">Invoice date</th>
-                  <th scope="col">Total</th>
-                  <th scope="col">Actions</th>
+                  <th scope="col" class="col-select">
+                    <input type="checkbox" id="archive-select-all" aria-label="Select all archived invoices" />
+                  </th>
+                  <th scope="col" class="col-invoice">Invoice</th>
+                  <th scope="col" class="col-vendor">Vendor</th>
+                  <th scope="col" class="col-date">Invoice date</th>
+                  <th scope="col" class="col-amount">Total</th>
+                  <th scope="col" class="col-actions">Actions</th>
                 </tr>
               </thead>
               <tbody id="archive-table-body">
                 <tr class="empty-row">
-                  <td colspan="5">No archived invoices yet.</td>
+                  <td colspan="6">No archived invoices yet.</td>
                 </tr>
               </tbody>
             </table>

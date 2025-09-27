@@ -22,8 +22,22 @@ const reviewBulkSaveButton = document.getElementById('review-bulk-save');
 const reviewBulkCancelButton = document.getElementById('review-bulk-cancel');
 const reviewBulkArchiveButton = document.getElementById('review-bulk-archive');
 const reviewBulkDeleteButton = document.getElementById('review-bulk-delete');
-const reviewSelectionCount = document.getElementById('review-selection-count');
+const reviewSelectionCountLabel = document.getElementById('review-selection-count');
 const archiveTableBody = document.getElementById('archive-table-body');
+const archiveSelectAllCheckbox = document.getElementById('archive-select-all');
+const archiveBulkPreviewButton = document.getElementById('archive-bulk-preview');
+const archiveBulkDeleteButton = document.getElementById('archive-bulk-delete');
+const archiveSelectionCountLabel = document.getElementById('archive-selection-count');
+
+// Split tab elements
+const splitTableBody = document.getElementById('split-table-body');
+const splitSelectAllCheckbox = document.getElementById('split-select-all');
+const splitBulkActions = document.getElementById('split-bulk-actions');
+const splitBulkPreviewButton = document.getElementById('split-bulk-preview');
+const splitBulkSplitButton = document.getElementById('split-bulk-split');
+const splitBulkSingleButton = document.getElementById('split-bulk-single');
+const splitBulkDeleteButton = document.getElementById('split-bulk-delete');
+const splitSelectionCountLabel = document.getElementById('split-selection-count');
 const dropZone = document.getElementById('invoice-drop-zone');
 const uploadInput = document.getElementById('invoice-upload-input');
 const uploadStatusList = document.getElementById('upload-status-list');
@@ -139,6 +153,8 @@ const metadataRequests = new Map();
 let storedInvoices = [];
 const reviewSelectedChecksums = new Set();
 const reviewEditingChecksums = new Set();
+const archiveSelectedChecksums = new Set();
+const splitSelectedChecksums = new Set();
 let lastQuickBooksPreviewPayload = '';
 let quickBooksPreviewEscapeHandler = null;
 let invoicePreviewWindow = null;
@@ -588,6 +604,7 @@ function attachEventListeners() {
 
   if (archiveTableBody) {
     archiveTableBody.addEventListener('click', handleArchiveAction);
+    archiveTableBody.addEventListener('change', handleArchiveChange);
   }
 
   if (reviewTableBody) {
@@ -621,6 +638,39 @@ function attachEventListeners() {
 
   if (reviewBulkDeleteButton) {
     reviewBulkDeleteButton.addEventListener('click', handleBulkDeleteSelected);
+  }
+
+  if (archiveSelectAllCheckbox) {
+    archiveSelectAllCheckbox.addEventListener('change', handleArchiveSelectAllChange);
+  }
+
+  if (archiveBulkPreviewButton) {
+    archiveBulkPreviewButton.addEventListener('click', handleArchiveBulkPreviewSelected);
+  }
+
+  if (archiveBulkDeleteButton) {
+    archiveBulkDeleteButton.addEventListener('click', handleArchiveBulkDeleteSelected);
+  }
+
+  // Split tab event listeners
+  if (splitBulkPreviewButton) {
+    splitBulkPreviewButton.addEventListener('click', handleSplitBulkPreviewSelected);
+  }
+  if (splitBulkSplitButton) {
+    splitBulkSplitButton.addEventListener('click', handleSplitBulkSplitSelected);
+  }
+  if (splitBulkSingleButton) {
+    splitBulkSingleButton.addEventListener('click', handleSplitBulkSingleSelected);
+  }
+  if (splitBulkDeleteButton) {
+    splitBulkDeleteButton.addEventListener('click', handleSplitBulkDeleteSelected);
+  }
+  if (splitSelectAllCheckbox) {
+    splitSelectAllCheckbox.addEventListener('change', handleSplitSelectAllChange);
+  }
+  if (splitTableBody) {
+    splitTableBody.addEventListener('change', handleSplitChange);
+    splitTableBody.addEventListener('click', handleSplitAction);
   }
 
   if (qbPreviewCloseButton) {
@@ -945,8 +995,20 @@ async function uploadAndProcessFile(file, statusEntry) {
       throw new Error(message);
     }
 
-    const checksum = payload?.invoice?.metadata?.checksum;
-    if (checksum) {
+    if (Array.isArray(payload?.conflicts) && payload.conflicts.length) {
+      console.warn('Multi-invoice segmentation conflicts detected', payload.conflicts);
+    }
+
+    const invoices = Array.isArray(payload?.invoices) ? payload.invoices : [];
+    const storedInvoices = invoices.filter((entry) => entry?.stored && !entry?.duplicate);
+    const duplicateInvoices = invoices.filter((entry) => entry?.duplicate);
+
+    for (const entry of storedInvoices) {
+      const checksum = entry?.stored?.metadata?.checksum;
+      if (!checksum) {
+        // eslint-disable-next-line no-continue
+        continue;
+      }
       try {
         const statusResponse = await fetch(`/api/invoices/${encodeURIComponent(checksum)}/status`, {
           method: 'POST',
@@ -966,9 +1028,32 @@ async function uploadAndProcessFile(file, statusEntry) {
       }
     }
 
-    await loadStoredInvoices();
-    setUploadStatus(statusEntry, 'Parsed and routed to review.', 'success');
-    return true;
+    if (storedInvoices.length > 0) {
+      await loadStoredInvoices();
+    }
+
+    const multiInvoice = Boolean(payload?.multiInvoice);
+    const storedCount = storedInvoices.length;
+    const duplicateCount = duplicateInvoices.length;
+
+    if (storedCount > 0) {
+      const statusMessage = multiInvoice
+        ? `Parsed ${storedCount} invoice${storedCount === 1 ? '' : 's'}; multi-invoice detected—review each segment.`
+        : 'Parsed and routed to review.';
+      setUploadStatus(statusEntry, statusMessage, 'success');
+      return true;
+    }
+
+    if (duplicateCount > 0) {
+      const duplicateMessage = multiInvoice
+        ? 'All detected segments were already processed; no new invoices stored.'
+        : 'Invoice already processed; no new records stored.';
+      setUploadStatus(statusEntry, duplicateMessage, 'info');
+      return true;
+    }
+
+    setUploadStatus(statusEntry, 'No invoice data returned from Gemini.', 'error');
+    return false;
   } catch (error) {
     console.error(error);
     setUploadStatus(statusEntry, error.message || 'Upload failed.', 'error');
@@ -2394,6 +2479,9 @@ function renderInvoices() {
   if (reviewTableBody) {
     reviewTableBody.innerHTML = '';
   }
+  if (splitTableBody) {
+    splitTableBody.innerHTML = '';
+  }
   if (archiveTableBody) {
     archiveTableBody.innerHTML = '';
   }
@@ -2402,8 +2490,11 @@ function renderInvoices() {
     if (reviewTableBody) {
       reviewTableBody.innerHTML = '<tr><td colspan="10" class="text-center">No invoices in review</td></tr>';
     }
+    if (splitTableBody) {
+      splitTableBody.innerHTML = '<tr><td colspan="5" class="text-center">No invoices need splitting</td></tr>';
+    }
     if (archiveTableBody) {
-      archiveTableBody.innerHTML = '<tr><td colspan="5" class="text-center">No archived invoices</td></tr>';
+      archiveTableBody.innerHTML = '<tr><td colspan="6" class="text-center">No archived invoices</td></tr>';
     }
     updateBulkActionsState();
     return;
@@ -2412,6 +2503,9 @@ function renderInvoices() {
   // Separate invoices by status
   const reviewInvoices = storedInvoices.filter(
     (invoice) => resolveStoredInvoiceStatus(invoice) === 'review'
+  );
+  const splitInvoices = storedInvoices.filter(
+    (invoice) => resolveStoredInvoiceStatus(invoice) === 'needs-split'
   );
   const archiveInvoices = storedInvoices.filter(
     (invoice) => resolveStoredInvoiceStatus(invoice) === 'archive'
@@ -2436,8 +2530,34 @@ function renderInvoices() {
       reviewTableBody.innerHTML = '<tr><td colspan="10" class="text-center">No invoices in review</td></tr>';
     } else {
       reviewInvoices.forEach(invoice => {
-        const row = createInvoiceRow(invoice, true);
+        const row = createReviewRow(invoice);
         reviewTableBody.appendChild(row);
+      });
+    }
+  }
+
+  // Clean up split selections for invoices that have moved
+  if (splitSelectedChecksums.size) {
+    const splitChecksums = new Set(
+      splitInvoices
+        .map((invoice) => invoice?.metadata?.checksum)
+        .filter((value) => typeof value === 'string' && value)
+    );
+    for (const checksum of Array.from(splitSelectedChecksums)) {
+      if (!splitChecksums.has(checksum)) {
+        splitSelectedChecksums.delete(checksum);
+      }
+    }
+  }
+
+  // Render split invoices
+  if (splitTableBody) {
+    if (splitInvoices.length === 0) {
+      splitTableBody.innerHTML = '<tr><td colspan="5" class="text-center">No invoices need splitting</td></tr>';
+    } else {
+      splitInvoices.forEach(invoice => {
+        const row = createSplitRow(invoice);
+        splitTableBody.appendChild(row);
       });
     }
   }
@@ -2445,10 +2565,10 @@ function renderInvoices() {
   // Render archive invoices
   if (archiveTableBody) {
     if (archiveInvoices.length === 0) {
-      archiveTableBody.innerHTML = '<tr><td colspan="5" class="text-center">No archived invoices</td></tr>';
+      archiveTableBody.innerHTML = '<tr><td colspan="6" class="text-center">No archived invoices</td></tr>';
     } else {
       archiveInvoices.forEach(invoice => {
-        const row = createInvoiceRow(invoice, false);
+        const row = createArchiveRow(invoice);
         archiveTableBody.appendChild(row);
       });
     }
@@ -2460,10 +2580,18 @@ function renderInvoices() {
 
 function resolveStoredInvoiceStatus(invoice) {
   const status = typeof invoice?.status === 'string' ? invoice.status : invoice?.metadata?.status;
-  return status === 'review' ? 'review' : 'archive';
+  return status === 'review' ? 'review' : status === 'needs-split' ? 'needs-split' : 'archive';
 }
 
-function createInvoiceRow(invoice, isReview) {
+function createReviewRow(invoice) {
+  return buildInvoiceRow(invoice, true);
+}
+
+function createArchiveRow(invoice) {
+  return buildInvoiceRow(invoice, false);
+}
+
+function buildInvoiceRow(invoice, isReview) {
   const row = document.createElement('tr');
 
   const metadata = invoice.metadata || {};
@@ -3089,6 +3217,11 @@ ${viewPdfButtonHtml}
     `;
   } else {
     row.innerHTML = `
+      <td class="cell-select">
+        <input type="checkbox" class="form-check-input archive-checkbox"
+               data-checksum="${escapeHtml(checksum)}"
+               ${archiveSelectedChecksums.has(checksum) ? 'checked' : ''}>
+      </td>
       <td class="cell-invoice"${invoiceTitleAttr}>
         <span class="cell-inline-label">${escapeHtml(invoiceNumber || '—')}</span>
       </td>
@@ -3111,6 +3244,159 @@ ${viewPdfButtonHtml}
   }
 
   return row;
+}
+
+function createSplitRow(invoice) {
+  const row = document.createElement('tr');
+
+  const metadata = invoice?.metadata || {};
+  const checksum = metadata.checksum || '';
+  const originalName = metadata.originalName || 'Invoice';
+  const candidates = Array.isArray(metadata.segmentCandidates) ? metadata.segmentCandidates : [];
+
+  row.dataset.checksum = checksum;
+  if (originalName) {
+    row.dataset.originalName = originalName;
+  }
+
+  const totalsDisplay = renderSplitTotals(invoice);
+  const hintsHtml = renderSegmentHints(candidates);
+  const checkboxState = splitSelectedChecksums.has(checksum) ? ' checked' : '';
+
+  row.innerHTML = `
+    <td class="cell-select">
+      <input type="checkbox" class="split-checkbox" data-checksum="${escapeHtml(checksum)}"${checkboxState}>
+    </td>
+    <td class="split-cell split-cell--meta">
+      <div class="split-file-name">${escapeHtml(originalName)}</div>
+    </td>
+    <td class="split-cell split-cell--hints">
+      ${hintsHtml}
+    </td>
+    <td class="split-cell split-cell--totals">
+      ${totalsDisplay ? `<span>${escapeHtml(totalsDisplay)}</span>` : '<span class="text-muted">No totals detected</span>'}
+    </td>
+    <td class="cell-actions">
+      <div class="split-row-actions">
+        <button type="button" data-action="preview" data-checksum="${escapeHtml(checksum)}">
+          Preview
+        </button>
+        <button type="button" data-action="split" data-checksum="${escapeHtml(checksum)}">
+          Split into invoices
+        </button>
+        <button type="button" data-action="single" data-checksum="${escapeHtml(checksum)}">
+          Treat as single
+        </button>
+        <button type="button" data-action="download" data-checksum="${escapeHtml(checksum)}" data-original-name="${escapeHtml(originalName)}">
+          Download
+        </button>
+      </div>
+    </td>
+  `;
+
+  return row;
+}
+
+function renderSegmentHints(candidates) {
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    return '<span class="text-muted small">No split hints available</span>';
+  }
+
+  const hintLines = candidates.map((candidate, index) => {
+    const startPage = Number.parseInt(candidate?.startPage, 10);
+    const endPage = Number.parseInt(candidate?.endPage, 10);
+    let pageLabel = '';
+
+    if (Number.isFinite(startPage) && Number.isFinite(endPage)) {
+      pageLabel = startPage === endPage
+        ? `Page ${startPage}`
+        : `Pages ${startPage}-${endPage}`;
+    } else if (Number.isFinite(startPage)) {
+      pageLabel = `Page ${startPage}`;
+    } else {
+      pageLabel = `Segment ${index + 1}`;
+    }
+
+    const descriptors = [];
+    if (candidate?.invoiceNumber) {
+      descriptors.push(`invoice ${candidate.invoiceNumber}`);
+    }
+
+    const totalAmount = resolveSplitNumericValue(candidate?.totalAmount);
+    if (totalAmount !== null) {
+      descriptors.push(`total ${formatAmount(totalAmount)}`);
+    }
+
+    let description = descriptors.length ? `${pageLabel}: ${descriptors.join(', ')}` : pageLabel;
+
+    const snippetSource = (candidate?.sampleText || candidate?.normalizedSample || '')
+      .toString()
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (snippetSource) {
+      const snippet = snippetSource.length > 140 ? `${snippetSource.slice(0, 137)}…` : snippetSource;
+      description = `${description} • ${snippet}`;
+    }
+
+    return `<div class="split-hint-line">${escapeHtml(description)}</div>`;
+  });
+
+  return hintLines.join('');
+}
+
+function renderSplitTotals(invoice) {
+  const currencyCode = invoice?.data?.currency || invoice?.extracted?.currency || invoice?.metadata?.currency || '';
+  const netAmount = resolveInvoiceAmount(invoice, 'netAmount');
+  const vatAmount = resolveInvoiceAmount(invoice, 'vatAmount');
+  let totalAmount = resolveInvoiceAmount(invoice, 'totalAmount');
+
+  if (totalAmount === null && netAmount !== null && vatAmount !== null) {
+    totalAmount = Math.round((netAmount + vatAmount) * 100) / 100;
+  }
+
+  const fragments = [];
+  if (totalAmount !== null) {
+    fragments.push(`Total ${formatCurrencyAmount(totalAmount, currencyCode)}`);
+  }
+  if (netAmount !== null) {
+    fragments.push(`Net ${formatCurrencyAmount(netAmount, currencyCode)}`);
+  }
+  if (vatAmount !== null) {
+    fragments.push(`VAT ${formatCurrencyAmount(vatAmount, currencyCode)}`);
+  }
+
+  return fragments.join(' • ');
+}
+
+function resolveInvoiceAmount(invoice, field) {
+  const parsed = invoice?.data && typeof invoice.data === 'object' ? invoice.data : {};
+  const extracted = invoice?.extracted && typeof invoice.extracted === 'object' ? invoice.extracted : {};
+
+  const value = parsed[field] ?? extracted[field];
+  return resolveSplitNumericValue(value);
+}
+
+function resolveSplitNumericValue(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const cleaned = value.replace(/[^\d.+-]/g, '');
+    if (!cleaned) {
+      return null;
+    }
+    const numeric = Number.parseFloat(cleaned);
+    if (Number.isFinite(numeric)) {
+      return numeric;
+    }
+  }
+
+  return null;
 }
 
 function buildVendorSelectOptions(metadata, selectedValue) {
@@ -3281,28 +3567,134 @@ function syncReviewSelectAllState() {
   reviewSelectAllCheckbox.indeterminate = true;
 }
 
-function updateBulkActionsState() {
-  const selections = Array.from(reviewSelectedChecksums);
-  const selectionCount = selections.length;
-  const hasSelections = selectionCount > 0;
-  const editingSelections = selections.filter((checksum) => reviewEditingChecksums.has(checksum));
-  const hasEditingSelections = editingSelections.length > 0;
-  const allEditing = hasSelections && editingSelections.length === selectionCount;
+function syncArchiveSelectAllState() {
+  if (!archiveSelectAllCheckbox || !archiveTableBody) {
+    return;
+  }
 
-  if (reviewSelectionCount) {
-    reviewSelectionCount.textContent = hasSelections
-      ? `${selectionCount} selected`
+  const checkboxNodes = archiveTableBody.querySelectorAll('input.archive-checkbox');
+  if (!checkboxNodes.length) {
+    archiveSelectAllCheckbox.checked = false;
+    archiveSelectAllCheckbox.indeterminate = false;
+    return;
+  }
+
+  let checkedCount = 0;
+  checkboxNodes.forEach((checkbox) => {
+    if (checkbox.checked) {
+      checkedCount += 1;
+    }
+  });
+
+  if (checkedCount === checkboxNodes.length) {
+    archiveSelectAllCheckbox.checked = true;
+    archiveSelectAllCheckbox.indeterminate = false;
+    return;
+  }
+
+  if (checkedCount === 0) {
+    archiveSelectAllCheckbox.checked = false;
+    archiveSelectAllCheckbox.indeterminate = false;
+    return;
+  }
+
+  archiveSelectAllCheckbox.checked = false;
+  archiveSelectAllCheckbox.indeterminate = true;
+}
+
+function syncSplitSelectAllState() {
+  if (!splitSelectAllCheckbox || !splitTableBody) {
+    return;
+  }
+
+  const checkboxNodes = splitTableBody.querySelectorAll('input.split-checkbox');
+  if (!checkboxNodes.length) {
+    splitSelectAllCheckbox.checked = false;
+    splitSelectAllCheckbox.indeterminate = false;
+    return;
+  }
+
+  let checkedCount = 0;
+  checkboxNodes.forEach((checkbox) => {
+    if (checkbox.checked) {
+      checkedCount += 1;
+    }
+  });
+
+  if (checkedCount === checkboxNodes.length) {
+    splitSelectAllCheckbox.checked = true;
+    splitSelectAllCheckbox.indeterminate = false;
+    return;
+  }
+
+  if (checkedCount === 0) {
+    splitSelectAllCheckbox.checked = false;
+    splitSelectAllCheckbox.indeterminate = false;
+    return;
+  }
+
+  splitSelectAllCheckbox.checked = false;
+  splitSelectAllCheckbox.indeterminate = true;
+}
+
+function updateBulkActionsState() {
+  const reviewSelections = Array.from(reviewSelectedChecksums);
+  const reviewSelectionTotal = reviewSelections.length;
+  const hasReviewSelections = reviewSelectionTotal > 0;
+  const reviewEditingSelections = reviewSelections.filter((checksum) => reviewEditingChecksums.has(checksum));
+  const hasReviewEditingSelections = reviewEditingSelections.length > 0;
+  const allReviewEditing = hasReviewSelections && reviewEditingSelections.length === reviewSelectionTotal;
+
+  const splitSelections = Array.from(splitSelectedChecksums);
+  const splitSelectionTotal = splitSelections.length;
+  const hasSplitSelections = splitSelectionTotal > 0;
+
+  const archiveSelections = Array.from(archiveSelectedChecksums);
+  const archiveSelectionTotal = archiveSelections.length;
+  const hasArchiveSelections = archiveSelectionTotal > 0;
+
+  // Update review selection count
+  if (reviewSelectionCountLabel) {
+    reviewSelectionCountLabel.textContent = hasReviewSelections
+      ? `${reviewSelectionTotal} selected`
       : 'No invoices selected.';
   }
 
-  setBulkButtonState(reviewBulkPreviewButton, selectionCount === 1);
-  setBulkButtonState(reviewBulkEditButton, hasSelections);
-  setBulkButtonState(reviewBulkSaveButton, allEditing);
-  setBulkButtonState(reviewBulkCancelButton, hasEditingSelections);
-  setBulkButtonState(reviewBulkArchiveButton, hasSelections);
-  setBulkButtonState(reviewBulkDeleteButton, hasSelections);
+  // Update split selection count
+  if (splitSelectionCountLabel) {
+    splitSelectionCountLabel.textContent = hasSplitSelections
+      ? `${splitSelectionTotal} selected`
+      : 'No invoices selected.';
+  }
+
+  // Update archive selection count
+  if (archiveSelectionCountLabel) {
+    archiveSelectionCountLabel.textContent = hasArchiveSelections
+      ? `${archiveSelectionTotal} selected`
+      : 'No invoices selected.';
+  }
+
+  // Update review bulk action buttons
+  setBulkButtonState(reviewBulkPreviewButton, reviewSelectionTotal === 1);
+  setBulkButtonState(reviewBulkEditButton, hasReviewSelections);
+  setBulkButtonState(reviewBulkSaveButton, allReviewEditing);
+  setBulkButtonState(reviewBulkCancelButton, hasReviewEditingSelections);
+  setBulkButtonState(reviewBulkArchiveButton, hasReviewSelections);
+  setBulkButtonState(reviewBulkDeleteButton, hasReviewSelections);
+
+  // Update split bulk action buttons
+  setBulkButtonState(splitBulkPreviewButton, splitSelectionTotal === 1);
+  setBulkButtonState(splitBulkSplitButton, hasSplitSelections);
+  setBulkButtonState(splitBulkSingleButton, hasSplitSelections);
+  setBulkButtonState(splitBulkDeleteButton, hasSplitSelections);
+
+  // Update archive bulk action buttons
+  setBulkButtonState(archiveBulkPreviewButton, archiveSelectionTotal === 1);
+  setBulkButtonState(archiveBulkDeleteButton, hasArchiveSelections);
 
   syncReviewSelectAllState();
+  syncSplitSelectAllState();
+  syncArchiveSelectAllState();
 }
 
 function setBulkButtonState(button, enabled) {
@@ -3765,6 +4157,13 @@ async function handleIndividualDelete(checksum) {
   try {
     await deleteInvoice(checksum);
     showStatus(globalStatus, 'Invoice deleted successfully.', 'success');
+
+    // Clean up selection state
+    reviewSelectedChecksums.delete(checksum);
+    reviewEditingChecksums.delete(checksum);
+    archiveSelectedChecksums.delete(checksum);
+    updateBulkActionsState();
+
     await loadStoredInvoices();
   } catch (error) {
     console.error('Individual delete error:', error);
@@ -4198,7 +4597,9 @@ async function performBulkDeleteIndividual(checksums) {
   }
 
   // Clear selections and refresh
+  checksums.forEach((checksum) => reviewEditingChecksums.delete(checksum));
   reviewSelectedChecksums.clear();
+  updateBulkActionsState();
   await loadStoredInvoices();
 }
 
@@ -7357,4 +7758,425 @@ function hide(element) {
     return;
   }
   element.hidden = true;
+}
+
+// Archive table event handlers
+function handleArchiveChange(event) {
+  const target = event.target && event.target.matches ? event.target : null;
+  if (!target) {
+    return;
+  }
+
+  if (target.type === 'checkbox' && target.dataset.checksum) {
+    const checksum = target.dataset.checksum;
+    if (target.checked) {
+      archiveSelectedChecksums.add(checksum);
+    } else {
+      archiveSelectedChecksums.delete(checksum);
+    }
+
+    updateBulkActionsState();
+    return;
+  }
+}
+
+function handleArchiveSelectAllChange(event) {
+  if (!archiveTableBody) {
+    return;
+  }
+
+  const checkboxNodes = archiveTableBody.querySelectorAll('input.archive-checkbox');
+  if (!checkboxNodes.length) {
+    archiveSelectedChecksums.clear();
+    updateBulkActionsState();
+    return;
+  }
+
+  const shouldSelectAll = Boolean(event?.target?.checked);
+
+  archiveSelectedChecksums.clear();
+
+  checkboxNodes.forEach((checkbox) => {
+    checkbox.checked = shouldSelectAll;
+    const checksum = checkbox.dataset.checksum;
+    if (shouldSelectAll && checksum) {
+      archiveSelectedChecksums.add(checksum);
+    }
+  });
+
+  updateBulkActionsState();
+}
+
+function getSelectedArchiveChecksums() {
+  return Array.from(archiveSelectedChecksums);
+}
+
+async function handleArchiveBulkPreviewSelected() {
+  const selections = getSelectedArchiveChecksums();
+
+  if (selections.length !== 1) {
+    showStatus(globalStatus, 'Select exactly one invoice to preview.', 'info');
+    return;
+  }
+
+  await handleInvoicePreview(selections[0]);
+}
+
+async function handleArchiveBulkDeleteSelected() {
+  if (!archiveSelectedChecksums.size) {
+    showStatus(globalStatus, 'Select invoices before running a bulk action.', 'info');
+    return;
+  }
+
+  const checksums = Array.from(archiveSelectedChecksums);
+  const confirmed = await showDeleteConfirmation(`${checksums.length} invoice${checksums.length === 1 ? '' : 's'}`);
+
+  if (!confirmed) {
+    return;
+  }
+
+  // Show progress
+  showStatus(globalStatus, `Deleting ${checksums.length} invoice${checksums.length === 1 ? '' : 's'}...`, 'info');
+
+  try {
+    // Try bulk delete endpoint first
+    const response = await fetch('/api/invoices/bulk-delete', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ checksums })
+    });
+
+    if (response.ok) {
+      const result = await response.json();
+      const successful = result.successful || 0;
+      const failed = result.failed || 0;
+
+      if (failed === 0) {
+        showStatus(globalStatus, `Successfully deleted ${successful} invoice${successful === 1 ? '' : 's'}.`, 'success');
+      } else {
+        showStatus(globalStatus, `Deleted ${successful} invoice${successful === 1 ? '' : 's'}. ${failed} failed.`, 'warning');
+      }
+
+      // Clear selections and refresh
+      archiveSelectedChecksums.clear();
+      updateBulkActionsState();
+      await loadStoredInvoices();
+    } else {
+      // Fallback to individual deletions
+      await performArchiveBulkDeleteIndividual(checksums);
+    }
+  } catch (error) {
+    console.error('Archive bulk delete error:', error);
+    // Fallback to individual deletions
+    await performArchiveBulkDeleteIndividual(checksums);
+  }
+}
+
+// Split tab handlers
+function handleSplitChange(event) {
+  const target = event.target;
+  if (!target || target.type !== 'checkbox' || !target.dataset.checksum) {
+    return;
+  }
+
+  if (!target.classList.contains('split-checkbox')) {
+    return;
+  }
+
+  const checksum = target.dataset.checksum;
+  if (target.checked) {
+    splitSelectedChecksums.add(checksum);
+  } else {
+    splitSelectedChecksums.delete(checksum);
+  }
+
+  updateBulkActionsState();
+}
+
+function handleSplitSelectAllChange(event) {
+  if (!splitTableBody) {
+    return;
+  }
+
+  const checkboxNodes = splitTableBody.querySelectorAll('input.split-checkbox');
+  if (!checkboxNodes.length) {
+    splitSelectedChecksums.clear();
+    updateBulkActionsState();
+    return;
+  }
+
+  const shouldSelectAll = Boolean(event?.target?.checked);
+
+  splitSelectedChecksums.clear();
+
+  checkboxNodes.forEach((checkbox) => {
+    const checksum = checkbox.dataset.checksum;
+    if (typeof checksum === 'string' && checksum) {
+      checkbox.checked = shouldSelectAll;
+      if (shouldSelectAll) {
+        splitSelectedChecksums.add(checksum);
+      }
+    }
+  });
+
+  updateBulkActionsState();
+}
+
+function getSelectedSplitChecksums() {
+  return Array.from(splitSelectedChecksums);
+}
+
+async function handleSplitBulkPreviewSelected() {
+  const selections = getSelectedSplitChecksums();
+
+  if (selections.length !== 1) {
+    showStatus(globalStatus, 'Select exactly one invoice to preview.', 'info');
+    return;
+  }
+
+  await handleInvoicePreview(selections[0]);
+}
+
+async function handleSplitBulkSplitSelected() {
+  const selections = getSelectedSplitChecksums();
+
+  if (!selections.length) {
+    showStatus(globalStatus, 'Select invoices to split.', 'info');
+    return;
+  }
+
+  const confirmed = confirm(`Split ${selections.length} invoice${selections.length === 1 ? '' : 's'} into multiple segments?`);
+  if (!confirmed) {
+    return;
+  }
+
+  for (const checksum of selections) {
+    try {
+      await handleSplitInvoiceDecision(checksum, 'split');
+    } catch (error) {
+      console.error(`Failed to split invoice ${checksum}:`, error);
+    }
+  }
+}
+
+async function handleSplitBulkSingleSelected() {
+  const selections = getSelectedSplitChecksums();
+
+  if (!selections.length) {
+    showStatus(globalStatus, 'Select invoices to mark as single.', 'info');
+    return;
+  }
+
+  const confirmed = confirm(`Mark ${selections.length} invoice${selections.length === 1 ? '' : 's'} as single invoices?`);
+  if (!confirmed) {
+    return;
+  }
+
+  for (const checksum of selections) {
+    try {
+      await handleSplitInvoiceDecision(checksum, 'single');
+    } catch (error) {
+      console.error(`Failed to mark invoice ${checksum} as single:`, error);
+    }
+  }
+}
+
+async function handleSplitBulkDeleteSelected() {
+  if (!splitSelectedChecksums.size) {
+    showStatus(globalStatus, 'Select invoices before running a bulk action.', 'info');
+    return;
+  }
+
+  const checksums = Array.from(splitSelectedChecksums);
+  const confirmed = await showDeleteConfirmation(`${checksums.length} invoice${checksums.length === 1 ? '' : 's'}`);
+
+  if (!confirmed) {
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/invoices/bulk-delete', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ checksums })
+    });
+
+    if (response.ok) {
+      const result = await response.json();
+      const successful = result.successful || 0;
+      const failed = result.failed || 0;
+
+      if (failed === 0) {
+        showStatus(globalStatus, `Successfully deleted ${successful} invoice${successful === 1 ? '' : 's'}.`, 'success');
+      } else {
+        showStatus(globalStatus, `Deleted ${successful} invoice${successful === 1 ? '' : 's'}. ${failed} failed.`, 'warning');
+      }
+
+      // Clear selections and refresh
+      splitSelectedChecksums.clear();
+      updateBulkActionsState();
+      await loadStoredInvoices();
+    } else {
+      throw new Error('Bulk delete request failed');
+    }
+  } catch (error) {
+    console.error('Split bulk delete error:', error);
+    showStatus(globalStatus, 'Failed to delete invoices.', 'error');
+  }
+}
+
+async function handleSplitInvoicePreview(checksum) {
+  await handleInvoicePreview(checksum);
+}
+
+async function handleSplitInvoiceDecision(checksum, action) {
+  try {
+    const response = await fetch(`/api/invoices/${encodeURIComponent(checksum)}/decide`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ action })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(errorText || 'Failed to process split decision');
+    }
+
+    const result = await response.json();
+
+    if (action === 'split' && result.success) {
+      showStatus(globalStatus, `Successfully split invoice into ${result.createdInvoices?.length || 0} segments.`, 'success');
+    } else if (action === 'single') {
+      showStatus(globalStatus, 'Marked invoice as single and moved to review.', 'success');
+    }
+
+    // Refresh the invoice list
+    await loadStoredInvoices();
+  } catch (error) {
+    console.error('Split decision error:', error);
+    showStatus(globalStatus, `Failed to ${action} invoice: ${error.message}`, 'error');
+  }
+}
+
+async function handleInvoiceDownload(checksum, fallbackName) {
+  if (!checksum) {
+    showStatus(globalStatus, 'Invoice reference is missing for download.', 'error');
+    return;
+  }
+
+  const targetUrl = `/api/invoices/${encodeURIComponent(checksum)}/file`;
+
+  try {
+    const response = await fetch(targetUrl);
+    if (!response.ok) {
+      const message = await extractApiErrorMessage(response, 'Failed to download invoice.');
+      showStatus(globalStatus, message, 'error');
+      return;
+    }
+
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const filename = extractFilenameFromContentDisposition(response.headers?.get('content-disposition'))
+      || fallbackName
+      || `${checksum}.pdf`;
+
+    const anchor = document.createElement('a');
+    anchor.href = objectUrl;
+    anchor.download = filename;
+    anchor.style.display = 'none';
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+
+    setTimeout(() => {
+      URL.revokeObjectURL(objectUrl);
+    }, 0);
+  } catch (error) {
+    console.error('Invoice download error:', error);
+    showStatus(globalStatus, 'Failed to download invoice.', 'error');
+  }
+}
+
+function extractFilenameFromContentDisposition(headerValue) {
+  if (!headerValue || typeof headerValue !== 'string') {
+    return '';
+  }
+
+  const utf8Match = headerValue.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match && utf8Match[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch (error) {
+      console.warn('Failed to decode UTF-8 filename from content disposition', error);
+    }
+  }
+
+  const quotedMatch = headerValue.match(/filename="([^\"]+)"/i);
+  if (quotedMatch && quotedMatch[1]) {
+    return quotedMatch[1];
+  }
+
+  const bareMatch = headerValue.match(/filename=([^;]+)/i);
+  if (bareMatch && bareMatch[1]) {
+    return bareMatch[1].trim();
+  }
+
+  return '';
+}
+
+function handleSplitAction(event) {
+  const target = event.target;
+  if (!target || !target.closest) {
+    return;
+  }
+
+  const actionButton = target.closest('button');
+  if (!actionButton || !actionButton.dataset.action) {
+    return;
+  }
+
+  const row = target.closest('tr');
+  if (!row || !row.dataset.checksum) {
+    return;
+  }
+
+  const checksum = row.dataset.checksum;
+  const action = actionButton.dataset.action;
+
+  if (action === 'preview') {
+    handleSplitInvoicePreview(checksum);
+  } else if (action === 'split') {
+    handleSplitInvoiceDecision(checksum, 'split');
+  } else if (action === 'single') {
+    handleSplitInvoiceDecision(checksum, 'single');
+  } else if (action === 'download') {
+    const originalName = actionButton.dataset.originalName || row.dataset.originalName || '';
+    handleInvoiceDownload(checksum, originalName);
+  }
+}
+
+async function performArchiveBulkDeleteIndividual(checksums) {
+  const results = await Promise.allSettled(
+    checksums.map(checksum => deleteInvoice(checksum))
+  );
+
+  const successful = results.filter(r => r.status === 'fulfilled').length;
+  const failed = results.filter(r => r.status === 'rejected').length;
+
+  if (failed === 0) {
+    showStatus(globalStatus, `Successfully deleted ${successful} invoice${successful === 1 ? '' : 's'}.`, 'success');
+  } else {
+    showStatus(globalStatus, `Deleted ${successful} invoice${successful === 1 ? '' : 's'}. ${failed} failed.`, 'warning');
+  }
+
+  // Clear selections and refresh
+  archiveSelectedChecksums.clear();
+  updateBulkActionsState();
+  await loadStoredInvoices();
 }

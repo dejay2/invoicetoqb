@@ -9,6 +9,8 @@ const TEST_FILES = [
   'quickbooks-companies-endpoint.test.js',
   'deletion-endpoint.test.js',
   'invoice-matches.test.js',
+  'ingestion-flow.test.js',
+  'split-flow.test.js',
 ];
 
 let failures = 0;

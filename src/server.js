@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs').promises;
 const crypto = require('crypto');
 
+const { PDFDocument } = require('pdf-lib');
 const { createWorker } = require('tesseract.js');
 
 let fetchFn = globalThis.fetch;
@@ -40,6 +41,9 @@ const QUICKBOOKS_COMPANIES_FILE = process.env.QUICKBOOKS_COMPANIES_FILE
   : path.join(__dirname, '..', 'data', 'quickbooks_companies.json');
 const QUICKBOOKS_METADATA_DIR = path.join(__dirname, '..', 'data', 'quickbooks');
 const QUICKBOOKS_AUTH_URL = 'https://appcenter.intuit.com/connect/oauth2';
+const ALLOW_MULTI_INVOICE_SPLIT = process.env.ALLOW_MULTI_INVOICE_SPLIT !== 'false';
+const INVOICE_TOTAL_TOLERANCE = 0.5;
+const INVOICE_STATUS_SPLIT = 'needs-split';
 
 let quickBooksCompaniesWriteMutex = Promise.resolve();
 const QUICKBOOKS_HEALTH_METRICS = [];
@@ -1069,22 +1073,16 @@ async function ingestInvoiceFromSource({
     throw error;
   }
 
-  const sourceBuffer = Buffer.isBuffer(buffer)
-    ? buffer
-    : Buffer.from(buffer);
-
+  const sourceBuffer = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
   const invoiceBuffer = Buffer.allocUnsafe(sourceBuffer.length);
   sourceBuffer.copy(invoiceBuffer);
-  const storageBuffer = Buffer.allocUnsafe(sourceBuffer.length);
-  sourceBuffer.copy(storageBuffer);
 
-  const checksum = crypto.createHash('sha256').update(invoiceBuffer).digest('hex');
+  const originalChecksum = crypto.createHash('sha256').update(invoiceBuffer).digest('hex');
 
-  const metadata = {
+  const metadataBase = {
     originalName: typeof originalName === 'string' && originalName.trim() ? originalName.trim() : 'invoice',
     mimeType,
     size: typeof fileSize === 'number' && Number.isFinite(fileSize) ? fileSize : sourceBuffer.length,
-    checksum,
   };
 
   let resolvedRealmId = typeof realmId === 'string' ? realmId.trim() : '';
@@ -1113,46 +1111,331 @@ async function ingestInvoiceFromSource({
       }
     : null;
 
-  if (remoteSource) {
-    const normalisedRemote = normalizeRemoteSourceMetadata(remoteSource);
-    if (normalisedRemote) {
-      metadata.remoteSource = normalisedRemote;
-    }
-  }
-
   const existingInvoices = await readStoredInvoices();
 
-  if (metadata.remoteSource?.provider) {
-    const duplicateByRemote = existingInvoices.find((entry) =>
-      isSameRemoteSource(entry?.metadata?.remoteSource, metadata.remoteSource)
-    );
-    if (duplicateByRemote) {
-      return {
-        invoice: duplicateByRemote,
-        duplicate: {
-          reason: 'Remote file already processed.',
-          match: duplicateByRemote,
-        },
-        skipped: true,
-      };
+  let normalisedRemote = null;
+  if (remoteSource) {
+    normalisedRemote = normalizeRemoteSourceMetadata(remoteSource);
+  }
+
+  const preprocessing = await preprocessInvoice(invoiceBuffer, mimeType);
+  logPreprocessingResult(metadataBase.originalName, preprocessing);
+
+  const firstPageEntry = Array.isArray(preprocessing.pages) && preprocessing.pages.length
+    ? preprocessing.pages[0]
+    : null;
+  const defaultRawSnippet = typeof firstPageEntry?.text === 'string' ? firstPageEntry.text.slice(0, 300) : '';
+  const defaultNormalizedSnippet = normalizeForInvoiceDetection(firstPageEntry?.text || '').slice(0, 300);
+
+  const defaultSegment = {
+    invoiceNumber: null,
+    total: null,
+    startPage: Array.isArray(preprocessing.pages) && preprocessing.pages.length && Number.isInteger(preprocessing.pages[0]?.number)
+      ? preprocessing.pages[0].number
+      : 1,
+    endPage: Array.isArray(preprocessing.pages) && preprocessing.pages.length && Number.isInteger(preprocessing.pages[preprocessing.pages.length - 1]?.number)
+      ? preprocessing.pages[preprocessing.pages.length - 1].number
+      : preprocessing.totalPages || 1,
+    rawSnippet: defaultRawSnippet,
+    normalizedSnippet: defaultNormalizedSnippet,
+  };
+  if (!Number.isInteger(defaultSegment.endPage) || defaultSegment.endPage < defaultSegment.startPage) {
+    defaultSegment.endPage = defaultSegment.startPage;
+  }
+  defaultSegment.index = 1;
+  defaultSegment.pageCount = defaultSegment.endPage - defaultSegment.startPage + 1;
+
+  let segmentsInfo = [defaultSegment];
+  let segmentConflicts = [];
+  let detectedSegments = [];
+  let detectedSegmentCount = 0;
+
+  if (mimeType === 'application/pdf' && ALLOW_MULTI_INVOICE_SPLIT && Array.isArray(preprocessing.pages) && preprocessing.pages.length) {
+    const detection = detectInvoiceSegments(preprocessing.pages);
+    if (Array.isArray(detection.segments) && detection.segments.length) {
+      segmentsInfo = detection.segments.map((segment) => ({ ...segment }));
+    } else {
+      segmentsInfo = [defaultSegment];
+    }
+
+    segmentConflicts = Array.isArray(detection.conflicts) ? detection.conflicts : [];
+    if (Array.isArray(detection.detectedSegments) && detection.detectedSegments.length) {
+      detectedSegments = detection.detectedSegments.map((segment) => ({ ...segment }));
+    }
+    if (Number.isInteger(detection.detectedSegmentCount)) {
+      detectedSegmentCount = detection.detectedSegmentCount;
+    } else if (detectedSegments.length) {
+      detectedSegmentCount = detectedSegments.length;
     }
   }
 
-  const duplicateByChecksum = existingInvoices.find((entry) => entry.metadata?.checksum === metadata.checksum) || null;
+  segmentsInfo.forEach((segment, index) => {
+    if (!Number.isInteger(segment.index)) {
+      segment.index = index + 1;
+    }
+    if (!Number.isInteger(segment.pageCount)) {
+      const count = segment.endPage >= segment.startPage ? segment.endPage - segment.startPage + 1 : 1;
+      segment.pageCount = count;
+    }
+  });
 
-  const preprocessing = await preprocessInvoice(invoiceBuffer, mimeType);
-  logPreprocessingResult(metadata.originalName, preprocessing);
+  const totalPages = Number.isFinite(preprocessing?.totalPages)
+    ? Number(preprocessing.totalPages)
+    : Array.isArray(preprocessing?.pages)
+      ? preprocessing.pages.length
+      : 0;
+
+  if (!detectedSegmentCount && segmentsInfo.length > 1) {
+    detectedSegmentCount = segmentsInfo.length;
+  }
+
+  const pageCount = preprocessing.totalPages || 1;
+  const hasMultiSegments = segmentsInfo.length > 1;
+  const shouldForceSplit = !hasMultiSegments && segmentConflicts.length === 0 && pageCount > 1
+    ? false
+    : hasMultiSegments;
+
+  const splittingEnabled = mimeType === 'application/pdf'
+    && ALLOW_MULTI_INVOICE_SPLIT
+    && !shouldForceSplit
+    && hasMultiSegments
+    && segmentConflicts.length === 0;
+
+  const multiInvoice = hasMultiSegments;
+
+  const totalDetectedSegments = detectedSegmentCount || segmentsInfo.length;
+
+  const segmentCandidatesForMetadata = segmentsInfo.map((segment) => {
+    const pageMatch = preprocessing?.pages?.find((page) => Number(page?.number) === segment.startPage) || null;
+    const pageText = typeof pageMatch?.text === 'string' ? pageMatch.text : '';
+    const rawSnippet = segment.rawSnippet || pageText.slice(0, 300) || '';
+    const normalizedSnippet = segment.normalizedSnippet || normalizeForInvoiceDetection(pageText).slice(0, 300) || '';
+    return {
+      ...segment,
+      sampleText: pageText ? pageText.slice(0, 300) : rawSnippet,
+      normalizedSample: normalizedSnippet || null,
+    };
+  });
+
+  const segmentsToProcess = splittingEnabled
+    ? segmentsInfo
+    : shouldForceSplit || segmentConflicts.length > 0
+      ? [defaultSegment]
+      : [segmentsInfo[0] || defaultSegment];
+
+  const existingBySource = existingInvoices.filter((entry) => {
+    const sourceDoc = entry?.metadata?.sourceDocument;
+    if (sourceDoc?.checksum === originalChecksum) {
+      return true;
+    }
+    return entry?.metadata?.checksum === originalChecksum;
+  });
+
+  const processedSegmentIndexes = new Set(
+    existingBySource
+      .map((entry) => {
+        const sourceDoc = entry?.metadata?.sourceDocument;
+        if (Number.isInteger(sourceDoc?.segmentIndex)) {
+          return sourceDoc.segmentIndex;
+        }
+        if (Number.isInteger(entry?.metadata?.segment?.index)) {
+          return entry.metadata.segment.index;
+        }
+        return 1;
+      })
+      .filter((value) => Number.isInteger(value))
+  );
+
+  const remoteProcessedSegmentIndexes = new Set();
+  if (normalisedRemote) {
+    existingInvoices.forEach((entry) => {
+      if (isSameRemoteSource(entry?.metadata?.remoteSource, normalisedRemote)) {
+        const idx = Number.isInteger(entry?.metadata?.segment?.index)
+          ? entry.metadata.segment.index
+          : Number.isInteger(entry?.metadata?.sourceDocument?.segmentIndex)
+            ? entry.metadata.sourceDocument.segmentIndex
+            : 1;
+        if (Number.isInteger(idx)) {
+          remoteProcessedSegmentIndexes.add(idx);
+        }
+      }
+    });
+  }
+
+  const results = [];
+  let pdfDocument = null;
+  let originalPageCount = 0;
+  if (splittingEnabled) {
+    pdfDocument = await PDFDocument.load(invoiceBuffer);
+    originalPageCount = pdfDocument.getPageCount();
+  }
+
+  const seenIndexesForSource = new Set(processedSegmentIndexes);
+  const seenIndexesForRemote = new Set(remoteProcessedSegmentIndexes);
+
+  for (const segment of segmentsToProcess) {
+    const segmentIndex = Number.isInteger(segment.index) ? segment.index : 1;
+
+    const alreadyProcessed = seenIndexesForSource.has(segmentIndex) || seenIndexesForRemote.has(segmentIndex);
+    if (alreadyProcessed) {
+      const existingMatch = existingBySource.find((entry) => {
+        const sourceDoc = entry?.metadata?.sourceDocument;
+        if (sourceDoc?.checksum === originalChecksum && Number(sourceDoc?.segmentIndex || 1) === segmentIndex) {
+          return true;
+        }
+        if (!sourceDoc?.segmentIndex && entry?.metadata?.checksum === originalChecksum) {
+          return true;
+        }
+        return false;
+      }) || null;
+
+      results.push({
+        segment,
+        invoice: existingMatch,
+        duplicate: existingMatch
+          ? {
+              reason: 'Segment already processed.',
+              match: existingMatch,
+            }
+          : null,
+        stored: existingMatch,
+        skipped: true,
+      });
+      continue;
+    }
+
+    let segmentBuffer = invoiceBuffer;
+    if (splittingEnabled) {
+      const pageIndexes = [];
+      for (let page = segment.startPage; page <= segment.endPage; page += 1) {
+        const zeroBased = page - 1;
+        if (zeroBased >= 0 && zeroBased < originalPageCount) {
+          pageIndexes.push(zeroBased);
+        }
+      }
+      const segmentDoc = await PDFDocument.create();
+      const copiedPages = await segmentDoc.copyPages(pdfDocument, pageIndexes);
+      copiedPages.forEach((page) => segmentDoc.addPage(page));
+      const bytes = await segmentDoc.save();
+      segmentBuffer = Buffer.from(bytes);
+    }
+
+    const segmentChecksum = crypto.createHash('sha256').update(segmentBuffer).digest('hex');
+    const segmentDetectedTotal = segment.total !== null && segment.total !== undefined ? Number(segment.total) : null;
+    const segmentFilename = deriveSegmentInvoiceFilename(segment, metadataBase.originalName);
+
+    const metadata = {
+      ...metadataBase,
+      checksum: segmentChecksum,
+      size: segmentBuffer.length,
+      invoiceFilename: segmentFilename,
+      segment: {
+        index: segmentIndex,
+        count: totalDetectedSegments,
+        startPage: segment.startPage,
+        endPage: segment.endPage,
+        pageCount: segment.pageCount,
+        invoiceNumber: segment.invoiceNumber || null,
+        detectedTotal: segmentDetectedTotal,
+      },
+      sourceDocument: {
+        checksum: originalChecksum,
+        segmentIndex,
+        segmentCount: totalDetectedSegments,
+        detectedMultiInvoice: multiInvoice,
+        originalName: metadataBase.originalName,
+      },
+    };
+
+    if (normalisedRemote) {
+      metadata.remoteSource = splittingEnabled ? { ...normalisedRemote, segmentIndex } : { ...normalisedRemote };
+    }
+
+    const segmentPreprocessing = splittingEnabled ? buildSegmentPreprocessing(segment, preprocessing) : preprocessing;
+
+    const result = await ingestInvoiceSegment({
+      buffer: segmentBuffer,
+      mimeType,
+      metadata,
+      companyProfile,
+      businessType: resolvedBusinessType,
+      defaultStatus,
+      existingInvoices,
+      preprocessingOverride: segmentPreprocessing,
+      segmentConflicts,
+      needsSplitRouting: shouldForceSplit,
+      segmentCandidates: segmentCandidatesForMetadata,
+    });
+
+    if (result?.stored) {
+      existingInvoices.push(result.stored);
+      seenIndexesForSource.add(segmentIndex);
+      if (metadata.remoteSource) {
+        seenIndexesForRemote.add(segmentIndex);
+      }
+    }
+
+    results.push({
+      ...result,
+      segment,
+    });
+  }
+
+  const primary = results[0] || null;
+  return {
+    invoices: results,
+    multiInvoice,
+    conflicts: segmentConflicts,
+    status: primary?.stored?.status || null,
+    invoice: primary?.invoice || null,
+    duplicate: primary?.duplicate || null,
+    stored: primary?.stored || null,
+  };
+}
+
+async function ingestInvoiceSegment({
+  buffer,
+  mimeType,
+  metadata,
+  companyProfile,
+  businessType,
+  defaultStatus = 'archive',
+  existingInvoices,
+  preprocessingOverride = null,
+  segmentConflicts = [],
+  needsSplitRouting = false,
+  segmentCandidates = null,
+}) {
+  if (!buffer) {
+    throw new Error('Invoice buffer is required.');
+  }
+
+  const sourceBuffer = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+  const invoiceBuffer = Buffer.allocUnsafe(sourceBuffer.length);
+  sourceBuffer.copy(invoiceBuffer);
+  const storageBuffer = Buffer.allocUnsafe(sourceBuffer.length);
+  sourceBuffer.copy(storageBuffer);
+
+  const checksum = metadata?.checksum || crypto.createHash('sha256').update(invoiceBuffer).digest('hex');
+  const mergedMetadata = {
+    ...metadata,
+    checksum,
+    size: typeof metadata?.size === 'number' && Number.isFinite(metadata.size) ? metadata.size : sourceBuffer.length,
+  };
+
+  const preprocessing = preprocessingOverride || (await preprocessInvoice(invoiceBuffer, mimeType));
+  logPreprocessingResult(mergedMetadata.invoiceFilename || mergedMetadata.originalName, preprocessing);
 
   const parsedInvoice = await extractWithGemini(invoiceBuffer, mimeType, {
     extractedText: preprocessing.text,
-    originalName: metadata.originalName,
-    businessType: resolvedBusinessType,
+    originalName: mergedMetadata.invoiceFilename || mergedMetadata.originalName,
+    businessType,
   });
 
   const enrichedInvoice = {
     parsedAt: new Date().toISOString(),
     metadata: {
-      ...metadata,
+      ...mergedMetadata,
       companyProfile,
       extraction: {
         method: preprocessing.method,
@@ -1166,24 +1449,122 @@ async function ingestInvoiceFromSource({
     data: parsedInvoice,
   };
 
+  const validation = validateInvoiceTotals(parsedInvoice, {
+    detectedTotal: mergedMetadata?.segment?.detectedTotal ?? null,
+    tolerance: INVOICE_TOTAL_TOLERANCE,
+  });
+  enrichedInvoice.metadata.validation = validation || null;
+
+  const duplicateByRemote = enrichedInvoice.metadata.remoteSource
+    ? existingInvoices.find((entry) => isSameRemoteSource(entry?.metadata?.remoteSource, enrichedInvoice.metadata.remoteSource))
+    : null;
+  const duplicateByChecksum = existingInvoices.find((entry) => entry?.metadata?.checksum === enrichedInvoice.metadata.checksum) || null;
+  const duplicateBySourceSegment = enrichedInvoice.metadata?.sourceDocument?.checksum
+    ? existingInvoices.find((entry) => {
+        const sourceDoc = entry?.metadata?.sourceDocument;
+        if (!sourceDoc || sourceDoc.checksum !== enrichedInvoice.metadata.sourceDocument.checksum) {
+          return false;
+        }
+        const entryIndex = Number.isInteger(sourceDoc.segmentIndex)
+          ? sourceDoc.segmentIndex
+          : Number.isInteger(entry?.metadata?.segment?.index)
+            ? entry.metadata.segment.index
+            : 1;
+        const candidateIndex = Number.isInteger(enrichedInvoice.metadata.sourceDocument.segmentIndex)
+          ? enrichedInvoice.metadata.sourceDocument.segmentIndex
+          : Number.isInteger(enrichedInvoice.metadata.segment?.index)
+            ? enrichedInvoice.metadata.segment.index
+            : 1;
+        return entryIndex === candidateIndex;
+      })
+    : null;
   const duplicateInvoice = findDuplicateInvoice(existingInvoices, enrichedInvoice.data);
-  const duplicateMatch = duplicateInvoice || duplicateByChecksum || null;
+
+  const duplicateMatch = duplicateInvoice || duplicateByChecksum || duplicateByRemote || duplicateBySourceSegment || null;
   const duplicateReason = duplicateInvoice
     ? 'Matched existing invoice fields'
     : duplicateByChecksum
       ? 'File contents match an existing invoice (checksum)'
-      : null;
+      : duplicateByRemote
+        ? 'Remote file already processed.'
+        : duplicateBySourceSegment
+          ? 'Source document segment already processed.'
+          : null;
 
   const resolvedDefaultStatus = defaultStatus === 'review' ? 'review' : 'archive';
-  const storageStatus = duplicateMatch ? 'archive' : resolvedDefaultStatus;
+  let storageStatus = duplicateMatch ? 'archive' : resolvedDefaultStatus;
+  if (validation && validation.status === 'mismatch') {
+    storageStatus = 'review';
+  }
+
+  const totalPages = Number.isFinite(preprocessing?.totalPages)
+    ? Number(preprocessing.totalPages)
+    : Array.isArray(preprocessing?.pages)
+      ? preprocessing.pages.length
+      : 1;
+
+  if (needsSplitRouting) {
+    storageStatus = INVOICE_STATUS_SPLIT;
+  } else if (mimeType === 'application/pdf'
+      && ALLOW_MULTI_INVOICE_SPLIT
+      && preprocessing?.pages?.length > 1
+      && Array.isArray(segmentConflicts)
+      && segmentConflicts.length > 0) {
+    storageStatus = INVOICE_STATUS_SPLIT;
+  }
+
+  const metadataForStorage = {
+    ...enrichedInvoice.metadata,
+  };
+
+  if (storageStatus === INVOICE_STATUS_SPLIT) {
+    const normalizedCandidates = Array.isArray(segmentCandidates)
+      ? segmentCandidates.map((candidate) => {
+          const pageMatch = preprocessing?.pages?.find((page) => Number(page?.number) === Number(candidate?.startPage)) || null;
+          const pageText = typeof pageMatch?.text === 'string' ? pageMatch.text : '';
+          const rawSnippet = typeof candidate?.rawSnippet === 'string' && candidate.rawSnippet
+            ? candidate.rawSnippet
+            : typeof candidate?.sampleText === 'string'
+              ? candidate.sampleText
+              : '';
+          const normalizedSnippet = typeof candidate?.normalizedSnippet === 'string' && candidate.normalizedSnippet
+            ? candidate.normalizedSnippet
+            : typeof candidate?.normalizedSample === 'string' && candidate.normalizedSample
+              ? candidate.normalizedSample
+              : normalizeForInvoiceDetection(pageText).slice(0, 300);
+
+          return {
+            ...candidate,
+            sampleText: pageText ? pageText.slice(0, 300) : rawSnippet.slice(0, 300),
+            normalizedSample: normalizedSnippet ? normalizedSnippet.slice(0, 300) : null,
+          };
+        })
+      : [];
+
+    metadataForStorage.segmentCandidates = normalizedCandidates;
+    metadataForStorage.splitDecision = 'pending';
+    metadataForStorage.segmentConflicts = Array.isArray(segmentConflicts) ? segmentConflicts : [];
+    metadataForStorage.preprocessing = preprocessing;
+
+    const candidateCount = normalizedCandidates.length;
+    console.warn(
+      `[MultiInvoice] Routed to needs-split: ${metadata?.originalName || metadata?.invoiceFilename || 'invoice'} pages=${totalPages} segments=${candidateCount}`
+    );
+  } else {
+    delete metadataForStorage.segmentCandidates;
+    delete metadataForStorage.splitDecision;
+    delete metadataForStorage.segmentConflicts;
+    delete metadataForStorage.preprocessing;
+  }
 
   const storagePayload = {
     ...enrichedInvoice,
     duplicateOf: duplicateMatch?.metadata?.checksum || null,
     status: storageStatus,
+    metadata: metadataForStorage,
   };
 
-  await ensureInvoiceFileStored(metadata, storageBuffer);
+  await ensureInvoiceFileStored(enrichedInvoice.metadata, storageBuffer);
   await persistInvoice(existingInvoices, storagePayload);
 
   return {
@@ -1778,25 +2159,57 @@ async function pollOneDriveForCompany(company, { reason = 'manual', forceFull = 
       try {
         const result = await processOneDriveItem(company, config, driveContext, item, { reason: syncReason });
         const displayName = result?.originalName || item.name || item.id;
+        const storedCountForItem = Number.isInteger(result?.storedCount) ? result.storedCount : 0;
+        const duplicateCountForItem = Number.isInteger(result?.duplicateCount) ? result.duplicateCount : 0;
 
-        if (result?.skipped) {
+        if (result?.multiInvoice && storedCountForItem + duplicateCountForItem > 1) {
+          activityLog.push(`Detected multi-invoice PDF: ${displayName} (${storedCountForItem} stored, ${duplicateCountForItem} duplicates).`);
+        }
+
+        if (result?.skipped && storedCountForItem === 0 && duplicateCountForItem === 0) {
           skippedCount += 1;
           const skipReason = result?.skipReason || result?.reason || 'Skipped file.';
           activityLog.push(`Skipped ${displayName}: ${skipReason}`);
-        } else if (result?.duplicate) {
-          duplicateCount += 1;
-          const duplicateReason = result?.duplicateReason || 'Duplicate invoice detected.';
-          activityLog.push(`Duplicate ${displayName}: ${duplicateReason}`);
-        } else if (result?.stored) {
-          createdCount += 1;
-          let message = `Imported ${displayName}`;
-          if (result?.checksum) {
-            message += ` (${result.checksum.slice(0, 8)})`;
+        }
+
+        if (duplicateCountForItem > 0) {
+          duplicateCount += duplicateCountForItem;
+          const duplicatesForLogging = Array.isArray(result?.duplicateEntries) && result.duplicateEntries.length
+            ? result.duplicateEntries
+            : [];
+          const duplicateReasonFallback = result?.duplicateReason || 'Duplicate invoice detected.';
+
+          if (duplicatesForLogging.length) {
+            duplicatesForLogging.forEach((entry) => {
+              const segmentInfo = entry?.segment || entry?.stored?.metadata?.segment;
+              const segmentLabel = segmentInfo?.index && result?.multiInvoice ? ` (segment ${segmentInfo.index})` : '';
+              const reason = entry?.duplicate?.reason || duplicateReasonFallback;
+              activityLog.push(`Duplicate ${displayName}${segmentLabel}: ${reason}`);
+            });
+          } else {
+            activityLog.push(`Duplicate ${displayName}: ${duplicateReasonFallback}`);
           }
-          if (result?.movedTo) {
-            message += ` → ${result.movedTo}`;
-          }
-          activityLog.push(message);
+        }
+
+        if (storedCountForItem > 0) {
+          createdCount += storedCountForItem;
+          const storedInvoicesForLogging = Array.isArray(result?.invoices) ? result.invoices : [];
+          storedInvoicesForLogging.forEach((entry) => {
+            if (!entry?.stored || entry?.duplicate) {
+              return;
+            }
+            const segmentInfo = entry?.segment || entry?.stored?.metadata?.segment;
+            const segmentLabel = segmentInfo?.index && result?.multiInvoice ? ` (segment ${segmentInfo.index})` : '';
+            let message = `Imported ${displayName}${segmentLabel}`;
+            const checksum = entry?.stored?.metadata?.checksum;
+            if (checksum) {
+              message += ` (${checksum.slice(0, 8)})`;
+            }
+            if (result?.movedTo) {
+              message += ` → ${result.movedTo}`;
+            }
+            activityLog.push(message);
+          });
         }
 
         if (result?.moveError) {
@@ -1918,9 +2331,21 @@ async function processOneDriveItem(company, config, driveContext, item, { reason
     defaultStatus: 'review',
   });
 
+  const invoices = Array.isArray(ingestion?.invoices) ? ingestion.invoices : [];
+  const storedEntries = invoices.filter((entry) => entry?.stored && !entry?.duplicate);
+  const duplicateEntries = invoices.filter((entry) => entry?.duplicate);
+  const firstStored = storedEntries[0]?.stored || null;
+  const firstDuplicate = duplicateEntries[0]?.duplicate || null;
+  const createdChecksums = storedEntries
+    .map((entry) => entry?.stored?.metadata?.checksum)
+    .filter(Boolean);
+  const duplicateMatches = duplicateEntries
+    .map((entry) => entry?.duplicate?.match)
+    .filter(Boolean);
+
   let movedTo = null;
   let moveError = null;
-  if (ingestion?.stored && !ingestion.duplicate) {
+  if (storedEntries.length > 0) {
     try {
       const destination = await moveProcessedOneDriveItem(company, config, driveContext, item);
       movedTo = destination?.name || destination?.path || config.processedFolder?.name || null;
@@ -1934,16 +2359,31 @@ async function processOneDriveItem(company, config, driveContext, item, { reason
   }
 
   return {
-    ...ingestion,
-    skipped: Boolean(ingestion?.skipped),
-    duplicate: Boolean(ingestion?.duplicate),
-    duplicateReason: ingestion?.duplicate?.reason || null,
+    invoices,
+    stored: firstStored,
+    storedCount: storedEntries.length,
+    createdChecksums,
+    duplicate: Boolean(firstDuplicate || ingestion?.duplicate),
+    duplicateEntries,
+    duplicateCount: duplicateEntries.length,
+    duplicateReason: firstDuplicate?.reason || ingestion?.duplicate?.reason || null,
+    duplicateMatches,
+    multiInvoice: Boolean(ingestion?.multiInvoice),
+    conflicts: Array.isArray(ingestion?.conflicts) ? ingestion.conflicts : [],
+    skipped: storedEntries.length === 0 && duplicateEntries.length === 0,
     originalName: download.originalName || item.name || null,
     checksum:
-      ingestion?.stored?.metadata?.checksum || ingestion?.duplicate?.match?.metadata?.checksum || null,
+      createdChecksums[0] ||
+      duplicateMatches[0]?.metadata?.checksum ||
+      ingestion?.stored?.metadata?.checksum ||
+      ingestion?.duplicate?.match?.metadata?.checksum ||
+      null,
     movedTo,
     moveError,
-    skipReason: ingestion?.skipped ? ingestion?.duplicate?.reason || 'Skipped by ingestion.' : null,
+    skipReason:
+      storedEntries.length === 0 && duplicateEntries.length === 0
+        ? ingestion?.duplicate?.reason || 'Skipped by ingestion.'
+        : null,
   };
 }
 
@@ -2982,8 +3422,9 @@ app.post('/api/parse-invoice', upload.single('invoice'), async (req, res) => {
     });
 
     return res.json({
-      invoice: result.invoice,
-      duplicate: result.duplicate,
+      invoices: Array.isArray(result?.invoices) ? result.invoices : [],
+      multiInvoice: Boolean(result?.multiInvoice),
+      conflicts: Array.isArray(result?.conflicts) ? result.conflicts : [],
     });
   } catch (error) {
     console.error('Failed to process invoice', error);
@@ -4111,7 +4552,12 @@ app.patch('/api/quickbooks/companies/:realmId/vendors/:vendorId/settings', async
 
 app.get('/api/invoices', async (req, res) => {
   try {
-    const invoices = await readStoredInvoices();
+    const { status } = req.query || {};
+    let invoices = await readStoredInvoices();
+
+    if (status && typeof status === 'string') {
+      invoices = invoices.filter(invoice => invoice?.status === status);
+    }
     console.log('[Invoices][Request]', { invoiceCount: Array.isArray(invoices) ? invoices.length : null });
 
     const realmIds = Array.from(
@@ -4341,8 +4787,8 @@ app.post('/api/invoices/:checksum/status', async (req, res) => {
     return res.status(400).json({ error: 'Checksum is required.' });
   }
 
-  if (status !== 'archive' && status !== 'review') {
-    return res.status(400).json({ error: 'Status must be archive or review.' });
+  if (status !== 'archive' && status !== 'review' && status !== 'needs-split') {
+    return res.status(400).json({ error: 'Status must be archive, review, or needs-split.' });
   }
 
   try {
@@ -4364,8 +4810,8 @@ app.post('/api/invoices/bulk-status', async (req, res) => {
     return res.status(400).json({ error: 'Checksums array is required.' });
   }
 
-  if (status !== 'archive' && status !== 'review') {
-    return res.status(400).json({ error: 'Status must be archive or review.' });
+  if (status !== 'archive' && status !== 'review' && status !== 'needs-split') {
+    return res.status(400).json({ error: 'Status must be archive, review, or needs-split.' });
   }
 
   const results = {
@@ -4400,6 +4846,144 @@ app.post('/api/invoices/bulk-status', async (req, res) => {
   }
 
   res.json(results);
+});
+
+// Split decision endpoint
+app.post('/api/invoices/:checksum/decide', async (req, res) => {
+  const checksum = req.params.checksum;
+  const { action } = req.body || {};
+
+  if (!checksum) {
+    return res.status(400).json({ error: 'Checksum is required.' });
+  }
+
+  if (action !== 'split' && action !== 'single') {
+    return res.status(400).json({ error: 'Action must be split or single.' });
+  }
+
+  try {
+    const invoices = await readStoredInvoices();
+    const invoice = invoices.find(inv => inv?.metadata?.checksum === checksum);
+
+    if (!invoice) {
+      return res.status(404).json({ error: 'Invoice not found.' });
+    }
+
+    if (invoice.status !== 'needs-split') {
+      return res.status(400).json({ error: 'Invoice is not in needs-split status.' });
+    }
+
+    if (action === 'single') {
+      // Mark as single invoice - change status to review
+      const updated = await updateStoredInvoiceStatus(checksum, 'review');
+      if (!updated) {
+        return res.status(404).json({ error: 'Failed to update invoice status.' });
+      }
+
+      // Update metadata to reflect the decision
+      const updatedInvoice = { ...updated };
+      if (updatedInvoice.metadata) {
+        updatedInvoice.metadata.splitDecision = 'single';
+      }
+      await persistInvoice(invoices.filter(inv => inv.metadata?.checksum !== checksum), updatedInvoice);
+
+      return res.json({ invoice: updatedInvoice });
+    }
+
+    if (action === 'split') {
+      const { PDFDocument } = require('pdf-lib');
+      const sourceBuffer = await getStoredInvoiceFile(invoice.metadata);
+      if (!sourceBuffer) {
+        return res.status(404).json({ error: 'Original PDF file not found.' });
+      }
+
+      const segments = invoice.metadata?.segmentCandidates || [];
+      if (!Array.isArray(segments) || segments.length < 2) {
+        return res.status(400).json({ error: 'Cannot split - no valid segments found.' });
+      }
+
+      const createdInvoices = [];
+
+      for (const segment of segments) {
+        if (!segment.startPage || !segment.endPage || segment.startPage > segment.endPage) {
+          continue;
+        }
+
+        try {
+          // Create new PDF for this segment
+          const pdfDoc = await PDFDocument.create();
+          const source = await PDFDocument.load(sourceBuffer);
+
+          // PDF pages are 1-indexed in metadata, but 0-indexed in pdf-lib
+          const pageIndexes = Array.from(
+            { length: segment.endPage - segment.startPage + 1 },
+            (_, i) => segment.startPage - 1 + i
+          );
+
+          const copiedPages = await pdfDoc.copyPages(source, pageIndexes);
+          copiedPages.forEach((page) => pdfDoc.addPage(page));
+
+          const splitBytes = await pdfDoc.save();
+
+          // Create a new invoice from this segment
+          const segmentMetadata = {
+            ...invoice.metadata,
+            checksum: crypto.createHash('sha256').update(splitBytes).digest('hex'),
+            sourceDocument: {
+              checksum: invoice.metadata.checksum,
+              segmentIndex: segment.index,
+              startPage: segment.startPage,
+              endPage: segment.endPage,
+            },
+            segment: {
+              index: segment.index,
+              startPage: segment.startPage,
+              endPage: segment.endPage,
+              pageCount: segment.pageCount,
+            },
+            splitDecision: undefined,
+            segmentCandidates: undefined,
+            preprocessing: undefined,
+          };
+
+          const segmentInvoice = {
+            ...invoice,
+            metadata: segmentMetadata,
+            status: 'review',
+            duplicateOf: null,
+          };
+
+          // Store the segment invoice
+          await ensureInvoiceFileStored(segmentMetadata, splitBytes);
+          await persistInvoice(invoices, segmentInvoice);
+          createdInvoices.push(segmentInvoice);
+
+        } catch (segmentError) {
+          console.error(`Failed to create segment ${segment.index}:`, segmentError);
+        }
+      }
+
+      if (createdInvoices.length === 0) {
+        return res.status(500).json({ error: 'Failed to create any segments.' });
+      }
+
+      // Delete or archive the original
+      await deleteStoredInvoice(checksum);
+
+      return res.json({
+        success: true,
+        createdInvoices: createdInvoices.map(inv => ({
+          checksum: inv.metadata.checksum,
+          status: inv.status,
+          segmentIndex: inv.metadata.segment?.index
+        }))
+      });
+    }
+
+  } catch (error) {
+    console.error('Failed to process split decision', error);
+    res.status(500).json({ error: 'Failed to process split decision.' });
+  }
 });
 
 app.patch('/api/invoices/:checksum/review', async (req, res) => {
@@ -4807,6 +5391,11 @@ module.exports = {
   deleteStoredInvoice,
   deleteStoredInvoiceFile,
   buildInvoiceMatches,
+  ingestInvoiceFromSource,
+  detectInvoiceSegments,
+  validateInvoiceTotals,
+  normalizeStoredInvoice,
+  INVOICE_STATUS_SPLIT,
 };
 
 async function exchangeQuickBooksCode(code) {
@@ -6804,6 +7393,7 @@ async function preprocessInvoice(buffer, mimeType) {
           truncated: pdfResult.truncated,
           totalPages: pdfResult.totalPages,
           processedPages: pdfResult.processedPages,
+          pages: Array.isArray(pdfResult.pages) ? pdfResult.pages : [],
         };
       }
       return {
@@ -6811,6 +7401,7 @@ async function preprocessInvoice(buffer, mimeType) {
         method: 'pdf-text-empty',
         totalPages: pdfResult.totalPages,
         processedPages: pdfResult.processedPages,
+        pages: Array.isArray(pdfResult.pages) ? pdfResult.pages : [],
       };
     }
 
@@ -6844,9 +7435,10 @@ async function extractTextFromPdf(buffer) {
 
   const pdf = await loadingTask.promise;
   const totalPages = pdf.numPages;
-  const processedPages = Math.min(totalPages, 10);
+  const processedPages = totalPages;
 
-  let collectedText = [];
+  const collectedText = [];
+  const pages = [];
 
   for (let pageNumber = 1; pageNumber <= processedPages; pageNumber += 1) {
     // eslint-disable-next-line no-await-in-loop
@@ -6856,6 +7448,9 @@ async function extractTextFromPdf(buffer) {
     const pageText = normalizeTextFromItems(textContent.items);
     if (pageText) {
       collectedText.push(`Page ${pageNumber}: ${pageText}`);
+      pages.push({ number: pageNumber, text: pageText });
+    } else {
+      pages.push({ number: pageNumber, text: '' });
     }
   }
 
@@ -6863,11 +7458,11 @@ async function extractTextFromPdf(buffer) {
 
   const merged = collectedText.join('\n\n').trim();
   if (!merged || merged.length < 50) {
-    return { text: null, totalPages, processedPages, truncated: false };
+    return { text: null, totalPages, processedPages, truncated: false, pages };
   }
 
   const { text, truncated } = truncateText(merged, GEMINI_TEXT_LIMIT);
-  return { text, totalPages, processedPages, truncated };
+  return { text, totalPages, processedPages, truncated, pages };
 }
 
 async function extractTextWithTesseract(buffer) {
@@ -6929,6 +7524,506 @@ function truncateText(text, limit) {
   }
 
   return { text: `${text.slice(0, limit)}…`, truncated: true };
+}
+
+function normalizeMoney(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Number(value.toFixed(2));
+  }
+
+  let text = String(value).trim();
+  if (!text) {
+    return null;
+  }
+
+  let isNegative = false;
+  if (text.includes('(') && text.includes(')')) {
+    isNegative = true;
+  }
+
+  text = text
+    .replace(/[()]/g, '')
+    .replace(/[^0-9,.-]/g, '')
+    .replace(/,/g, '');
+
+  if (!text) {
+    return null;
+  }
+
+  const parsed = Number.parseFloat(text);
+  if (Number.isNaN(parsed)) {
+    return null;
+  }
+
+  const valueNumber = isNegative ? -parsed : parsed;
+  return Number(valueNumber.toFixed(2));
+}
+
+const INVOICE_DETECTION_LOG_LABEL = '[InvoiceDetection]';
+
+function normalizeForInvoiceDetection(text) {
+  if (!text) {
+    return '';
+  }
+  return text
+    .replace(/\b([A-Za-z])\s+(?=[A-Za-z]\b)/g, '$1')
+    .replace(/\b([A-Z])\s+(?=[a-z]{2,})/g, '$1')
+    .replace(/i\s*n\s*v\s*o\s*i\s*c\s*e/gi, 'invoice')
+    .replace(/t\s*o\s*t\s*a\s*l/gi, 'total')
+    .replace(/a\s*m\s*o\s*u\s*n\s*t/gi, 'amount')
+    .replace(/\s+(?=[.,;:])/g, '')
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
+function detectInvoiceSegments(pages = []) {
+  if (!Array.isArray(pages) || !pages.length) {
+    return { segments: [], conflicts: [], detectedSegments: [], detectedSegmentCount: 0 };
+  }
+
+  const headerPattern =
+    /\b(invoice\s*(no\.?|number|#)|customer\s*reference\s*no\.?|tax\s*invoice)\s*([A-Za-z0-9\-]+)/gi;
+  const totalPattern = /\b(total|amount due|balance due)\b[^0-9]*([-£$€]?\(?[\d\s.,]+\)?)/gi;
+
+  const segments = [];
+  const conflicts = [];
+  const pageDebug = [];
+  let current = null;
+
+  pages.forEach((pageEntry) => {
+    const number = Number.isInteger(pageEntry?.number) ? pageEntry.number : null;
+    const text = typeof pageEntry?.text === 'string' ? pageEntry.text : '';
+    if (!number) {
+      return;
+    }
+
+    const normalized = normalizeForInvoiceDetection(text);
+    const debugEntry = {
+      page: number,
+      originalPreview: createLogPreviewText(text, 300),
+      normalizedPreview: createLogPreviewText(normalized, 300),
+      headers: [],
+      totals: [],
+    };
+    pageDebug.push(debugEntry);
+
+    const headerMatches = [];
+    const headerDebugMap = new Map();
+    const headerMatchesRaw = Array.from(normalized.matchAll(headerPattern));
+    headerPattern.lastIndex = 0;
+
+    headerMatchesRaw.forEach((headerMatch) => {
+      const rawPhrase = (headerMatch[1] || '').trim();
+      let rawValue = (headerMatch[3] || '').trim();
+      if (!rawPhrase || !rawValue) {
+        return;
+      }
+
+      let type = 'invoice-number';
+      let priority = 1;
+      const lowerPhrase = rawPhrase.toLowerCase();
+      if (lowerPhrase.includes('customer')) {
+        type = 'customer-reference';
+        priority = 2;
+      } else if (lowerPhrase.includes('tax invoice')) {
+        type = 'tax-invoice';
+      }
+
+      if (!/[0-9]/.test(rawValue)) {
+        const matchEnd = headerMatch.index + headerMatch[0].length;
+        const lookaheadWindow = normalized.slice(matchEnd, matchEnd + 160);
+        const tokens = lookaheadWindow.split(/\s+/).filter(Boolean);
+        let combinedDigits = '';
+        for (const token of tokens) {
+          const cleaned = token.replace(/[^0-9A-Za-z-]/g, '');
+          if (!cleaned) {
+            continue;
+          }
+
+          if (!/[0-9]/.test(cleaned)) {
+            if (combinedDigits.length >= 6) {
+              break;
+            }
+            combinedDigits = '';
+            continue;
+          }
+
+          if (!combinedDigits) {
+            if (cleaned.length >= 6) {
+              combinedDigits = cleaned;
+              break;
+            }
+            if (cleaned.length >= 3) {
+              combinedDigits = cleaned;
+            }
+            continue;
+          }
+
+          combinedDigits += cleaned;
+          if (combinedDigits.length >= 7) {
+            break;
+          }
+        }
+
+        if (combinedDigits.length >= 6) {
+          rawValue = combinedDigits;
+        } else {
+          const numericCandidate = lookaheadWindow.match(/([0-9][0-9A-Za-z-]{4,})/);
+          if (numericCandidate && /[0-9]/.test(numericCandidate[1])) {
+            rawValue = numericCandidate[1];
+          }
+        }
+      }
+
+      if (!/[0-9]/.test(rawValue) && type === 'invoice-number') {
+        return;
+      }
+
+      const value = rawValue.toUpperCase();
+      const key = `${type}:${value}`;
+      if (headerDebugMap.has(key)) {
+        return;
+      }
+
+      const headerInfo = {
+        type,
+        value,
+        priority,
+        source: 'normalized',
+      };
+      headerDebugMap.set(key, headerInfo);
+      headerMatches.push(headerInfo);
+    });
+    debugEntry.headers = Array.from(headerDebugMap.values());
+
+    const headerCount = new Set(headerMatches.map((match) => match.value)).size;
+    let invoiceHeaderMatch = headerMatches
+      .filter((entry) => entry.priority === 1)
+      .sort((a, b) => a.priority - b.priority)[0];
+    if (!invoiceHeaderMatch) {
+      invoiceHeaderMatch = headerMatches.sort((a, b) => a.priority - b.priority)[0];
+    }
+    const invoiceId = invoiceHeaderMatch ? invoiceHeaderMatch.value : null;
+
+    if (headerCount > 1) {
+      const uniqueHeaders = Array.from(new Set(headerMatches.map((match) => match.value).filter(Boolean)));
+      conflicts.push({
+        type: 'multiple-headers',
+        page: number,
+        invoiceNumbers: uniqueHeaders,
+      });
+    }
+
+    const totalCandidates = [];
+    const totalMatchesRaw = Array.from(normalized.matchAll(totalPattern));
+    totalPattern.lastIndex = 0;
+
+    totalMatchesRaw.forEach((match) => {
+      const rawWithSpacing = match[2] || '';
+      const amountRaw = rawWithSpacing.replace(/\s+/g, '').trim();
+      if (!amountRaw) {
+        return;
+      }
+      const numericValue = normalizeMoney(amountRaw);
+      if (numericValue === null) {
+        return;
+      }
+      const hasDecimal = /[.,]/.test(rawWithSpacing);
+      if (!hasDecimal && Math.abs(numericValue) > 1_000_000) {
+        return;
+      }
+      totalCandidates.push({
+        type: match[1]?.toLowerCase() || 'total',
+        amountRaw,
+        source: 'normalized',
+        numericValue,
+        hasDecimal,
+        position: match.index ?? 0,
+      });
+    });
+
+    const decimalCandidates = totalCandidates.filter((candidate) => candidate.hasDecimal);
+    const preferredCandidates = decimalCandidates.length ? decimalCandidates : totalCandidates;
+    const totalInfo = preferredCandidates.length
+      ? preferredCandidates.reduce((selected, candidate) => (candidate.position >= (selected?.position ?? -1)
+          ? candidate
+          : selected),
+        null)
+      : null;
+
+    debugEntry.totals = totalCandidates.map((candidate) => ({
+      type: candidate.type,
+      amountRaw: candidate.amountRaw,
+      source: candidate.source,
+    }));
+
+    const total = totalInfo ? totalInfo.numericValue : null;
+
+    const rawSnippet = text.slice(0, 300);
+    const normalizedSnippet = normalized.slice(0, 300);
+
+    if (!invoiceId) {
+      if (current) {
+        current.endPage = number;
+        if (total && !current.total) {
+          current.total = total;
+        } else if (total && current.total && total < current.total - 0.01) {
+          conflicts.push({
+            type: 'total-backwards',
+            page: number,
+            invoiceNumber: current.invoiceNumber,
+            previousTotal: current.total,
+            newTotal: total,
+          });
+        }
+      }
+      return;
+    }
+
+    if (!current || current.invoiceNumber !== invoiceId) {
+      if (current) {
+        segments.push(current);
+      }
+      current = {
+        invoiceNumber: invoiceId,
+        total,
+        startPage: number,
+        endPage: number,
+        rawSnippet,
+        normalizedSnippet,
+      };
+      return;
+    }
+
+    current.endPage = number;
+    if (!current.total && total) {
+      current.total = total;
+    } else if (total && current.total && total < current.total - 0.01) {
+      conflicts.push({
+        type: 'total-backwards',
+        page: number,
+        invoiceNumber: current.invoiceNumber,
+        previousTotal: current.total,
+        newTotal: total,
+      });
+    }
+    if (!current.rawSnippet && rawSnippet) {
+      current.rawSnippet = rawSnippet;
+    }
+    if (!current.normalizedSnippet && normalizedSnippet) {
+      current.normalizedSnippet = normalizedSnippet;
+    }
+  });
+
+  if (current) {
+    segments.push(current);
+  }
+
+  const detectedSegmentCount = segments.length;
+  let fallbackApplied = false;
+
+  if (!detectedSegmentCount) {
+    console.warn(
+      `${INVOICE_DETECTION_LOG_LABEL} No invoice headers detected; falling back to single segment across ${pageDebug.length} page(s).`
+    );
+    pageDebug.forEach((entry) => {
+      console.warn(
+        `${INVOICE_DETECTION_LOG_LABEL} Page ${entry.page} preview original="${entry.originalPreview}" normalized="${entry.normalizedPreview}"`
+      );
+    });
+  } else {
+    console.info(
+      `${INVOICE_DETECTION_LOG_LABEL} Detected ${detectedSegmentCount} segment(s) across ${pageDebug.length} page(s).`
+    );
+    pageDebug.forEach((entry) => {
+      const headerSummary = entry.headers.length
+        ? entry.headers.map((header) => `${header.type}:${header.value}`).join(', ')
+        : 'none';
+      const totalSummary = entry.totals.length
+        ? entry.totals.map((total) => `${total.type}:${total.amountRaw}`).join(', ')
+        : 'none';
+      console.info(
+        `${INVOICE_DETECTION_LOG_LABEL} Page ${entry.page} headers=[${headerSummary}] totals=[${totalSummary}]`
+      );
+    });
+  }
+
+  if (!segments.length) {
+    const firstPage = pages.find((entry) => Number.isInteger(entry?.number));
+    const lastPage = [...pages].reverse().find((entry) => Number.isInteger(entry?.number));
+    const start = firstPage?.number || 1;
+    const end = lastPage?.number || start;
+    const fallbackText = typeof firstPage?.text === 'string' ? firstPage.text : '';
+    const fallbackNormalized = normalizeForInvoiceDetection(fallbackText);
+    segments.push({
+      invoiceNumber: null,
+      total: null,
+      startPage: start,
+      endPage: end,
+      rawSnippet: fallbackText.slice(0, 300),
+      normalizedSnippet: fallbackNormalized.slice(0, 300),
+    });
+    fallbackApplied = true;
+  }
+
+  segments.sort((a, b) => a.startPage - b.startPage);
+  segments.forEach((segment, index) => {
+    const pageCount = segment.endPage >= segment.startPage ? segment.endPage - segment.startPage + 1 : 1;
+    segment.index = index + 1;
+    segment.pageCount = pageCount;
+  });
+
+  const segmentsForReturn = segments.map((segment) => ({ ...segment }));
+  const detectedSegments = fallbackApplied
+    ? []
+    : segmentsForReturn.slice(0, detectedSegmentCount).map((segment) => ({ ...segment }));
+
+  return { segments: segmentsForReturn, conflicts, detectedSegments, detectedSegmentCount };
+}
+
+function buildSegmentPreprocessing(segment, basePreprocessing) {
+  if (!segment || !basePreprocessing || !Array.isArray(basePreprocessing.pages)) {
+    return null;
+  }
+
+  const pages = basePreprocessing.pages.filter((page) =>
+    Number.isInteger(page?.number) && page.number >= segment.startPage && page.number <= segment.endPage
+  );
+
+  if (!pages.length) {
+    return null;
+  }
+
+  const joined = pages
+    .map((page) => {
+      const text = typeof page.text === 'string' ? page.text.trim() : '';
+      if (!text) {
+        return '';
+      }
+      return `Page ${page.number}: ${text}`;
+    })
+    .filter(Boolean)
+    .join('\n\n');
+
+  if (!joined) {
+    return null;
+  }
+
+  const { text, truncated } = truncateText(joined, GEMINI_TEXT_LIMIT);
+  return {
+    text,
+    truncated,
+    method: 'pdf-text-segment',
+    totalPages: pages.length,
+    processedPages: pages.length,
+    pages,
+  };
+}
+
+function normalizeNumeric(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Number(value);
+  }
+
+  const text = String(value).trim().replace(/[^0-9.+-]/g, '');
+  if (!text) {
+    return null;
+  }
+
+  const parsed = Number.parseFloat(text);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function deriveLineTotal(product = {}) {
+  const directTotal = normalizeMoney(product.lineTotal);
+  if (directTotal !== null) {
+    return directTotal;
+  }
+
+  const quantity = normalizeNumeric(product.quantity);
+  const unitPrice = normalizeMoney(product.unitPrice);
+  if (quantity === null || unitPrice === null) {
+    return null;
+  }
+
+  const computed = quantity * unitPrice;
+  if (!Number.isFinite(computed)) {
+    return null;
+  }
+
+  return Number(computed.toFixed(2));
+}
+
+function validateInvoiceTotals(invoice, { detectedTotal = null, tolerance = INVOICE_TOTAL_TOLERANCE } = {}) {
+  if (!invoice || typeof invoice !== 'object') {
+    return null;
+  }
+
+  const products = Array.isArray(invoice.products) ? invoice.products : [];
+  let computed = 0;
+  let hasLines = false;
+
+  products.forEach((product) => {
+    const lineTotal = deriveLineTotal(product);
+    if (lineTotal !== null) {
+      computed += lineTotal;
+      hasLines = true;
+    }
+  });
+
+  const computedTotal = hasLines ? Number(computed.toFixed(2)) : null;
+  const expected = normalizeMoney(detectedTotal !== null && detectedTotal !== undefined ? detectedTotal : invoice.totalAmount);
+
+  if (expected === null) {
+    return {
+      status: hasLines ? 'no-header-total' : 'unknown',
+      expected: null,
+      computed: computedTotal,
+      delta: null,
+      tolerance,
+    };
+  }
+
+  if (computedTotal === null) {
+    return {
+      status: 'insufficient-line-data',
+      expected,
+      computed: null,
+      delta: null,
+      tolerance,
+    };
+  }
+
+  const delta = Number((computedTotal - expected).toFixed(2));
+  const passed = Math.abs(delta) <= tolerance;
+
+  return {
+    status: passed ? 'pass' : 'mismatch',
+    expected,
+    computed: computedTotal,
+    delta,
+    tolerance,
+  };
+}
+
+function deriveSegmentInvoiceFilename(segment, originalName) {
+  const fallBackName = typeof originalName === 'string' && originalName.trim() ? originalName.trim() : 'invoice.pdf';
+  const baseName = path.basename(fallBackName, path.extname(fallBackName)) || 'invoice';
+  const normalizedBase = baseName.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'invoice';
+  const normalizedInvoice = typeof segment?.invoiceNumber === 'string'
+    ? segment.invoiceNumber.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').toLowerCase()
+    : '';
+  const prefix = normalizedInvoice ? `invoice-${normalizedInvoice}` : normalizedBase.toLowerCase();
+  const segmentIndex = Number.isInteger(segment?.index) ? segment.index : 1;
+  return `${prefix}-segment${segmentIndex}.pdf`;
 }
 
 
@@ -7270,6 +8365,11 @@ function normalizeRemoteSourceMetadata(remoteSource) {
     reason: sanitiseOptionalString(remoteSource.reason),
   };
 
+  const segmentIndex = Number.parseInt(remoteSource.segmentIndex, 10);
+  if (Number.isInteger(segmentIndex) && segmentIndex > 0) {
+    entry.segmentIndex = segmentIndex;
+  }
+
   if (provider === 'outlook') {
     entry.mailboxUserId = sanitiseOptionalString(remoteSource.mailboxUserId);
     entry.folderId = sanitiseOptionalString(remoteSource.folderId);
@@ -7304,6 +8404,12 @@ function isSameRemoteSource(existing, candidate) {
   }
 
   if (existing.provider !== candidate.provider) {
+    return false;
+  }
+
+  const existingSegmentIndex = Number.isInteger(existing.segmentIndex) ? existing.segmentIndex : null;
+  const candidateSegmentIndex = Number.isInteger(candidate.segmentIndex) ? candidate.segmentIndex : null;
+  if (existingSegmentIndex !== null && candidateSegmentIndex !== null && existingSegmentIndex !== candidateSegmentIndex) {
     return false;
   }
 
@@ -9188,7 +10294,7 @@ function normalizeStoredInvoice(entry) {
     return null;
   }
 
-  const status = entry.status === 'review' ? 'review' : 'archive';
+  const status = entry.status === 'review' ? 'review' : entry.status === 'needs-split' ? 'needs-split' : 'archive';
   const reviewSelection = normalizeReviewSelection(entry.reviewSelection);
   return {
     ...entry,
@@ -9294,6 +10400,14 @@ function getStoredInvoiceFilePath(checksum, metadata = {}) {
 }
 
 function deriveInvoiceFileExtension(metadata = {}) {
+  const derived = typeof metadata.invoiceFilename === 'string' ? metadata.invoiceFilename.trim() : '';
+  if (derived) {
+    const extFromInvoiceFilename = path.extname(derived).toLowerCase();
+    if (extFromInvoiceFilename) {
+      return extFromInvoiceFilename;
+    }
+  }
+
   const original = typeof metadata.originalName === 'string' ? metadata.originalName.trim() : '';
   const extFromName = original ? path.extname(original).toLowerCase() : '';
   if (extFromName) {

@@ -15,6 +15,7 @@
     "express": "^5.1.0",
     "multer": "^2.0.2",
     "node-fetch": "^3.3.2",
+    "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^4.8.69",
     "tesseract.js": "^5.1.0"
   },
